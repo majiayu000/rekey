@@ -76,7 +76,19 @@ pub fn list(socket: &Path, as_json: bool) -> Result<(), CliError> {
             .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
         }
         for operation in connection.operations {
-            writeln!(output, "  {}", operation.name)
+            let decision = connection
+                .decisions
+                .iter()
+                .find(|d| d.operation == operation.name)
+                .map(|d| {
+                    let class = match d.method_class {
+                        rekey_domain::connection::MethodClass::Read => "read",
+                        rekey_domain::connection::MethodClass::Write => "write",
+                    };
+                    format!("  {class}={:?}", d.effect)
+                })
+                .unwrap_or_default();
+            writeln!(output, "  {}{decision}", operation.name)
                 .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
         }
     }
@@ -136,29 +148,44 @@ mod expiry_tests {
     }
 }
 
-pub fn describe(socket: &Path, operation: String) -> Result<(), CliError> {
-    let response: DescribeResponse = decode(public(
-        socket,
-        agent_msg::DESCRIBE,
-        &DescribeMeta { operation },
-        30,
-    )?)?;
+#[derive(clap::Args)]
+pub struct DescribeArgs {
+    operation: String,
+    /// Connection to describe when several share the operation name.
+    #[arg(long)]
+    connection: Option<String>,
+}
+pub fn describe(socket: &Path, args: DescribeArgs) -> Result<(), CliError> {
+    let request = DescribeMeta {
+        operation: args.operation,
+        connection: args.connection,
+    };
+    let response: DescribeResponse = decode(public(socket, agent_msg::DESCRIBE, &request, 30)?)?;
     super::write_json(&response)
 }
-pub fn request(
-    socket: &Path,
-    provider: String,
+#[derive(clap::Args)]
+pub struct AccessRequestArgs {
+    /// Preset name or family, such as github-pat or github.
+    #[arg(required_unless_present = "connection")]
+    provider: Option<String>,
+    /// Name of an existing or wanted Connection instead of a provider.
+    #[arg(long, conflicts_with = "provider")]
+    connection: Option<String>,
+    /// Full operation name, such as github.list_issues.
+    #[arg(long = "op")]
     operation: Option<String>,
+    #[arg(long)]
     reason: String,
-) -> Result<(), CliError> {
+}
+pub fn request(socket: &Path, args: AccessRequestArgs) -> Result<(), CliError> {
     let response: RequestAccessResponse = decode(public(
         socket,
         agent_msg::REQUEST_ACCESS,
         &RequestAccessMeta {
-            provider: Some(provider),
-            connection: None,
-            operation,
-            reason,
+            provider: args.provider,
+            connection: args.connection,
+            operation: args.operation,
+            reason: args.reason,
         },
         30,
     )?)?;
@@ -238,6 +265,7 @@ pub fn approval(
 
 #[derive(Default)]
 struct CallOptions {
+    connection: Option<String>,
     args: BTreeMap<String, String>,
     query: BTreeMap<String, String>,
     headers: Vec<(String, String)>,
@@ -269,6 +297,8 @@ fn parse_call_options(raw: &[String]) -> Result<CallOptions, CliError> {
             .or_else(|| input.next().map(String::as_str))
             .ok_or_else(|| CliError::local("USAGE", "operation option requires a value"))?;
         match name {
+            // Reserved selector (§6.2), never an operation parameter.
+            "connection" => options.connection = Some(value.into()),
             "body-file" => options.body_file = Some(PathBuf::from(value)),
             "approval" => {
                 options.approval = Some(
@@ -305,6 +335,7 @@ fn parse_call_options(raw: &[String]) -> Result<CallOptions, CliError> {
 pub fn call(socket: &Path, operation: String, raw: Vec<String>) -> Result<(), CliError> {
     let options = parse_call_options(&raw)?;
     let mut request = CallMeta::operation(operation, options.args);
+    request.connection = options.connection.unwrap_or_default();
     request.query = options.query;
     request.headers = options.headers;
     request.dry_run = options.dry_run;
@@ -436,9 +467,12 @@ mod tests {
             "page=2",
             "--header",
             "Accept: application/json",
+            "--connection=github-work",
         ]
         .map(str::to_owned);
         let options = parse_call_options(&raw).unwrap();
+        assert_eq!(options.connection.as_deref(), Some("github-work"));
+        assert!(!options.args.contains_key("connection"));
         assert_eq!(options.args["title"], "Bug report");
         assert_eq!(options.args["repo"], "project");
         assert!(options.dry_run && options.no_wait);

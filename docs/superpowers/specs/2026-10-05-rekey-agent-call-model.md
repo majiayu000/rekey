@@ -280,6 +280,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 - **（2026-10-22 修订）本机审批的证明**：`APPROVAL_LOCAL_APPROVE/REJECT` 的证明体接受 presence（App）或保险库密码（基础模式 CLI：`rekey approval approve|reject ID --review-sha256 H --password`，隐藏输入或 `--password-stdin`）。恢复密钥不接受。审计 reason_code 分别为 `local-presence` 与 `local-password`；密码失败计入既有解锁失败限速。审阅元数据 `record_type` 为 `rekey.approval.local-review.v1`；审阅正文的 `record_type` 在 Connection/SSH/派生路径为 `rekey.approval.local-review.v1`，lab session 路径为 `rekey.approval.review.v1`，CLI 两者都接受，其余拒绝。校验规则定义在 `rekey-domain`，CLI 与 daemon 测试共用。
 - 调用方得到结构化的 `APPROVAL_REQUIRED{request_id, expires_at}`，可以等待或取消。CLI 默认等待（`--no-wait` 可关闭），MCP 返回后由 Agent 调用 `await_approval`。
 - HTTP Connection 重提只预留一次审批；同一个批准的并发重提不能同时取得预留。`approval.accepted` 与 `execution.started` 在同一 Authority 事务成功后才消费批准并清除审阅正文。忙、小时额度、日预算或 started 提交拒绝释放预留，尚有效批准可重试；已取消、过期、锁定或策略更新清除的批准不得恢复。两种时钟的审批期限也约束实际 started 提交。
+- **（2026-11-17 修订，0.5 开发线）批准前的重提**：只适用于 Connection 调用（Agent CALL、CLI、MCP 与 §6.3 本机服务）。同一调用方标注在用户决定前带该审批 ID（`approval_request_id`，或本机服务的 §6.3 请求头）重提同一规范化请求、同一策略时，返回同一 challenge 的 `APPROVAL_REQUIRED`，不执行、不预留；调用方标注、请求哈希或策略不一致时仍按不匹配拒绝。T1 派生路径（§8.4 `DERIVE_CREDENTIAL`）不变：决定前带审批 ID 重提仍按不匹配拒绝（Agent 收到 `DENIED`，消息为 `request denied: approval-request-mismatch`），调用方应先 `await_approval` 再重提；SSH 签名（§8.1）在 daemon 内等待审批，没有带 ID 的重提。审批与调用方标注的绑定不放宽：本机服务登记的审批不能由 CLI/MCP 的 `await_approval` / `cancel_approval` 操作。
 
 ### 5.5 时间窗审批（新增）
 
@@ -289,6 +290,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   3. "同一规则在本次 vault 解锁期内放行"，最长 8 小时。
 - 选项 2、3 在内存中登记一条临时 allow：绑定 Connection、规则 ID 和调用方标注。锁定、规则变更或到期即失效，不持久化。
 - 时间窗审批只适用于 effect 为 `approve` 的规则，不能用于 `deny`。
+- **（2026-11-17 修订，0.5 开发线）**：窗口键为（策略摘要、Connection、规则 ID、调用方标注）。同一 Connection 上命中另一条 approve 规则的请求不受该窗口覆盖，仍进入审批。成功激活新的策略版本时显式清空全部时间窗，即使新版本的规则内容不变；同一已生效版本的精确重放不清空。新版本经其他路径生效时（例如激活超时后对账发现已生效），首次窗口查找即丢弃其他策略摘要的窗口。待审批的批准仍按 §5.4 绑定策略摘要，策略变化后不能再被批准或消费。
 
 ### 5.6 预算与限速
 
@@ -321,19 +323,22 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 | `APPROVAL_REQUIRED` | 需要审批 | `已通知用户；调用 await_approval(request_id)` |
 | `LOCKED` | vault 已锁定 | `已通知用户解锁；调用 await_unlock() 后重试` |
 | `BUDGET_EXCEEDED` | 预算或限速 | `在 <time> 之后重试` |
+| `RATE_LIMITED` | 访问请求过于频繁（§7.2） | `在 <time> UTC 之后再发起访问请求` |
+| `INVALID_INPUT` | 参数不合法；具名操作被多个 Connection 共享而未指定 connection | `传 connection（可选：qwen, qwen-intl）` |
 | `UPSTREAM_ERROR` | 上游非 2xx | 透传状态码和已遮蔽的正文 |
 | `RESPONSE_BLOCKED` | 响应里检测到密钥反射 | `该响应包含凭据回显，已拦截；不要重试同一请求` |
 
-**dry-run**：返回规范化后的完整请求（密钥位置显示为 `«rekey:connection»`）和判定结果（allow / approve / deny 及命中的规则），不解密、不发送、不消耗额度。审计记录为 `call.dry_run`。
+**dry-run**：返回规范化后的完整请求（密钥位置显示为 `«rekey:connection»`）和判定结果（allow / approve / deny 及命中的规则），不解密、不发送、不消耗额度。审计记录为 `call.dry_run`。（2026-11-17 修订）`headers` 按 Connection 的注入方式列出认证头，值为 `<前缀>«rekey:<connection>»`，例如 `authorization: Bearer «rekey:github»`、`x-api-key: «rekey:anthropic»`；mTLS Connection 没有认证头。`credential_placeholder` 字段保留。占位只出现在预演输出中，不进入请求哈希与审批审阅。
 
 ### 6.2 CLI
 
 ```
-rekey list [--json]                                   # 能用什么：连接、具名操作、读写判定、等级
-rekey describe github.create_issue                    # 参数、示例、命中的规则
-rekey call github.create_issue --owner x --repo y --title "..." [--body-file f] [--dry-run] [--no-wait]
+rekey list [--json]                                   # 能用什么：连接、具名操作及各自的读写判定、等级
+rekey describe github.create_issue [--connection c]   # 参数、示例、命中的规则
+rekey call github.create_issue [--connection c] --owner x --repo y --title "..." [--body-file f] [--dry-run] [--no-wait]
 rekey http github POST /repos/x/y/issues --json '{"title":"..."}' [--dry-run]
-rekey request github --op create_issue --reason "需要提交 bug"   # 访问请求
+rekey request github --op github.create_issue --reason "需要提交 bug"           # 按 provider 请求
+rekey request --connection github --op github.create_issue --reason "..."      # 按 connection 请求
 rekey await <request_id> [--timeout 120]
 rekey scan [paths...] [--staged] [--stdin]            # §9
 rekey import .env [--dry-run]                         # §7.3
@@ -344,6 +349,12 @@ rekey ssh-agent status                                # §8.1
 - 调用类命令不需要任何令牌，也不需要 vault 密码。
 - 管理类命令（`add`、`connection`、`rule`、`import` 的确认步骤）走 App 或隐藏输入，并附 step-up 证明。
 - `rekey http` 是通用入口，仍然完全受规则约束。
+- **（2026-11-17 修订，0.5 开发线）Connection 选择器**：一个具名操作名可以被多个已启用 Connection 共享（同一 Preset 的多个 Connection，或 §5.2 地域变体共享的 `<provider>.chat`）。`describe` 与 `call` 接受可选 `connection`（CLI `--connection`，MCP 参数 `connection`，IPC `DescribeMeta.connection` 与既有 `CallMeta.connection`）。未指定且操作名命中多个已启用 Connection 时返回 `INVALID_INPUT`，`next` 按签名顺序列出这些 Connection 名并要求传 `connection`；指定的 Connection 不存在或未声明该操作时返回 `NOT_CONFIGURED`。`rekey call` 的 `--connection` 与 `--dry-run`、`--no-wait`、`--query`、`--header`、`--body-file`、`--approval` 一样是保留选项，不作为操作参数。
+- **（2026-11-17 修订）读写判定与示例**：
+  - `list` 中每个 Connection 的 `read` / `write` 保持原义：对根路径 `/` 的判定。新增可选 `decisions`：每个具名操作一项（`operation`、`method_class`、`effect`、`rule_id`），按该操作自身的 method、路径和读语义，以 `describe` 的示例参数经同一判定器求出（有签名绑定的路径参数在 daemon 内部换成绑定值，见下条）。示例参数不满足该操作或 Connection 的约束时省略该项；OAuth scope 不足、不可调用的操作为 `deny` 且无 `rule_id`。GraphQL 操作的示例不是查询文档，因此列出写判定；查询文档在调用时仍按读判定。
+  - `describe` 增加可选 `example_args`、`decision` 与 `matched_rule`（该判定命中的签名规则；无规则命中即 deny 时省略）。示例参数只含必填参数（有签名模型白名单时另加 `model`，取第一个允许值；白名单已在 `llm` 中公开），全部按 schema 生成占位：有 `enum` 取第一个值，整数与数字取 `minimum`（默认 1），布尔为 false，数组与对象为空，字符串为参数名的大写（如 `OWNER`、`TITLE`），schema 的 `pattern` 以转义点加字母数字的固定后缀结尾（如 `\.git$`）时补上该后缀，使示例满足 schema（github-git 的 `repo` 为 `REPO.git`）。示例参数从不包含签名绑定值（§6.4 不公开绑定细节）：路径参数有签名绑定时，daemon 只在内部把该参数换成绑定中第一个非 `*` 值来求 `decision` 与 `decisions`，使判定反映签名规则本身，绑定值不出现在任何发现输出中。因此这类操作的判定只代表绑定范围内的值，按占位原样调用可能命中其他规则或被拒绝。示例值不是授权，参数不同时判定可能不同，以 dry-run 为准。
+  - 新增字段都是可选字段，不改变已有字段；判定只用于发现，每次调用都在准入时重新判定。
+- `rekey list` 的文本输出在每个具名操作后显示其判定，例如 `github.create_issue  write=Approve`。
 
 ### 6.3 本机 HTTP 服务（替代 0.3 网关）
 
@@ -372,6 +383,10 @@ rekey ssh-agent status                                # §8.1
 - 流式 SSE、遮蔽、预算、错误透传沿用执行器；SDK 的 `x-stainless-*` 与 Node fetch 的 `Accept-Language` / `Sec-Fetch-Mode` 作为传输元数据剥除，不转发或参与授权。Git smart HTTP 可用 `git -c http.extraHeader="Authorization: Bearer rekey" ...` 携带同一公开标记。
 - 调用方识别见 §4.3。
 - 运行状态拒绝先于 Connection 查找，统一返回 503 和 §6.1 的错误 JSON：锁定为 `LOCKED`（不得因锁定清除了生效策略而报 `NOT_CONFIGURED`），容量超限为可重试的 `AUTHORITY_BUSY`，停机中为 `DRAINING`，终态审计失败后为不可重试的 `FAULTED`。403 只表示规则或请求形态被拒绝，使 SDK 不把暂时不可用当成权限错误。
+- **审批与重提（2026-11-17 修订，0.5 开发线）**：命中 approve 规则的请求返回 403 和 §6.1 的 `APPROVAL_REQUIRED` JSON，审批 ID 是 `approval.challenge_id`。本机服务登记的审批绑定该 HTTP 调用方的标注（§4.3、§5.4），CLI/MCP 的 `await_approval` 属于其他调用方，不能等待或取消它；因此 HTTP 错误的 `next` 不提 `await_approval`，而是要求：用户在 App 收件箱（或 `rekey approval approve`）批准后，用相同的方法、路径、查询、请求头与正文重提一次，并加请求头 `x-rekey-approval-challenge: <approval.challenge_id>`。
+  - 该头只关联审批，不是凭据或令牌，不参与请求哈希，也不转发上游；值不是合法审批 ID 时返回 400。
+  - 用户决定前带头重提返回同一 challenge 的 `APPROVAL_REQUIRED`，不执行；批准只能使用一次，消费后再带头重提返回 403 且不执行；正文或其他请求内容变化时不匹配，返回 403。
+  - 不带头的重提从不消费批准：用户决定前复用同一待审批 challenge，批准后则登记新的审批请求。
 - 端口抢占风险：rekeyd 未运行时，同 uid 进程可以先占用端口，收到的只是占位符和请求正文，拿不到任何 Secret。这一点写入威胁模型。
 
 **SDK 用法示例**
@@ -387,15 +402,16 @@ OPENAI_API_KEY=rekey
 
 **工具列表**
 - `list_capabilities()`：输出与 `rekey list --json` 相同。
-- `describe(operation)`。
-- `call(operation, args, dry_run?)`：通用调用。另外为每个具名操作生成独立工具，例如 `github_create_issue`，参数 schema 来自 Preset。
+- `describe(operation, connection?)`。
+- `call(operation, connection?, args, dry_run?)`：通用调用。另外为每个具名操作生成独立工具，例如 `github_create_issue`，参数 schema 来自 Preset。
   - 工具总数超过 40 时，只暴露通用工具，避免占用 Agent 的上下文。
+  - （2026-11-17 修订）`connection` 是 §6.2 的 Connection 选择器。多个 Connection 共享同一操作名时不生成具名工具（不替 Agent 选择 Connection），Agent 用 `describe` / `call` 传 `connection`；未传时的 `INVALID_INPUT` 的 `next` 列出可选的 Connection 名。`list_capabilities` 与 `describe` 的 `decisions`、`example_args`、`decision`、`matched_rule` 同 §6.2。
 - `http(connection, method, path, query?, headers?, body?, dry_run?)`。
-- `request_access(provider|connection, operation?, reason)`。
+- `request_access(provider|connection, operation?, reason)`：provider 的解析、限速与屏蔽见 §7.2。
 - `await_access(request_id, timeout_s≤120)`：等待 App 处理访问请求；使用已有 AWAIT_ACCESS IPC，与 CLI `rekey await` 返回相同状态。
 - `await_approval(request_id, timeout_s≤120)`、`cancel_approval(request_id)`。
 - **（2026-10-23 修订）让 Agent 一次调对**：
-  - `list_capabilities` 每个 Connection 增加可选 `llm`（签名的模型白名单、max_tokens 与每日额度），响应增加 `policy_expires_at_ms`。`describe(operation)` 增加该 Connection 的签名 `rules`、本调用方的 `caller_rules`（为空时省略）、`limits`、`llm` 与 `policy_expires_at_ms`。有 `llm` 时，具名操作参数 schema 中的 `model` 属性加上 `enum`（等于签名白名单）。这些都是公开的签名规则，不含 credential_id、密钥或绑定细节。
+  - `list_capabilities` 每个 Connection 增加可选 `llm`（签名的模型白名单、max_tokens 与每日额度），响应增加 `policy_expires_at_ms`。`describe(operation)` 增加该 Connection 的签名 `rules`、本调用方的 `caller_rules`（为空时省略）、`limits`、`llm` 与 `policy_expires_at_ms`。有 `llm` 时，具名操作参数 schema 中的 `model` 属性加上 `enum`（等于签名白名单）。这些都是公开的签名规则，不含 credential_id、密钥或绑定细节；（2026-11-17 修订）§6.2 新增的 `decisions`、`example_args`、`decision` 与 `matched_rule` 同样不含绑定值。
   - 审批 ID：`await_approval`/`cancel_approval` 的 `request_id` 参数取 `APPROVAL_REQUIRED` 错误中的 `approval.challenge_id`，不是错误信封顶层的 `request_id`（后者是本次帧的请求 ID）。`next` 文案、MCP 工具描述、插件 skill 与 `rekey connect` 写入的说明都必须这样写。
   - 上游拒绝原因：出站前因目标解析到非公网地址而拒绝时，返回公开错误码 `UPSTREAM_ADDRESS_BLOCKED`（CLI 退出码与 `UPSTREAM_ERROR` 相同），`next` 说明“目标域名解析到了非公网地址，常见原因是本机代理的 fake-IP DNS；Rekey 不会连接非公网地址”。错误中不回显解析到的 IP。其他出站拒绝原因仍为 `UPSTREAM_ERROR`。
   - 插件 skill、`rekey connect` 说明中出现的 MCP 工具名与 `rekey` 子命令，必须由测试核对确实存在。
@@ -463,6 +479,14 @@ OPENAI_API_KEY=rekey
    前两项走 §5.3 的签名流程。
 3. 处理完成后，Agent 的 `await` 返回 `GRANTED` 或 `REJECTED`。
 4. 防骚扰：同一调用方 1 分钟内最多 3 个请求，超出返回 `RATE_LIMITED`；用户可以在 App 中屏蔽某个调用方的请求。
+
+**（2026-11-17 修订，0.5 开发线）请求的解析、状态与审计**
+- **输入**：provider 与 connection 恰好给出一个；理由 1–500 字符；operation 可选，是完整的具名操作名（如 `github.list_issues`）。不合法时返回 `INVALID_INPUT`，`next` 说明这些约束。connection 必须是合法的 Connection 名（slug），可以尚不存在。
+- **provider 解析**：provider 是内置 Preset 名（`BUILTIN_PRESETS`）、Preset 家族（Preset 名第一个 `-` 之前的部分，例如 `github` → `github-pat`、`github-git`、`github-oauth`；`qwen` → 四个地域变体），或当前签名策略中某个 Connection 的 Preset（含同样的家族规则）。给出 operation 时只保留声明了该操作的 Preset（`github` + `github.list_issues` → `github-oauth`、`github-pat`）。没有候选时返回 `INVALID_INPUT`：未知 provider 的 `next` 列出全部内置 Preset，并提示其他 API 请求 `generic-bearer` 或 `generic-header`、已有 Connection 可直接传 connection；没有候选声明该操作时，`next` 列出这些 Preset 声明的操作。候选 Preset 随请求保存在内存中，管理端访问请求列表增加可选字段 `presets`。App 的“添加连接”按 App 自身的 Preset 顺序预填第一个属于候选的 Preset（`github` + `github.list_issues` 预填 `github-pat`）；没有可用候选时预填 provider 本身（若 App 支持），否则 `generic-bearer`。
+- **完成请求**：按 provider 的请求，任一候选 Preset 的已启用 Connection（给出 operation 时还须声明该操作）即可满足；按 connection 的请求要求该名称的已启用 Connection（及所需操作）。否则拒绝完成，批准请求不能绕过签名授权。
+- **顺序**：输入与 provider 解析先于屏蔽检查与限速，无效请求不占用额度；被屏蔽的调用方返回 `DENIED`。`RATE_LIMITED` 不可重试，`next` 给出 1 分钟窗口的重置时间（UTC）。窗口按调用方标注计数；标注可以伪造，限速只防骚扰，不是安全边界。
+- **状态**：处理前 `await` 返回 `PENDING`；10 分钟内未处理变为 `EXPIRED`（单调时钟或墙钟任一到期即过期，墙钟回拨同样视为过期）。拒绝并屏蔽（`block_caller`）与 App 的“解除屏蔽”都立即生效；屏蔽列表与访问请求一样只在内存中，daemon 重启后清空。
+- **审计**：`access_request.created` / `.resolved` / `.block_changed` 只使用既有字段，不新增持久字段。存在生效签名策略时，行绑定该策略的证据（版本、摘要，`resource_type` 为 `connection`，`resource_id` 为目标名，`parameter_hash` 绑定规范化的 provider、connection 与 operation），并带 Connection 审计上下文：`caller` 为调用方标注；`connection` 为请求的 connection 或 provider，单独的屏蔽变更为固定的 `access-requests`；operation 可在请求的 Connection 或候选 Preset 中解析时，`method_class` 与 `normalized_path` 为该操作的读写分类与声明路径模式，否则为 read 与 `/`；`rule_id` 为空。reason_code：created 为 `provider-request` 或 `connection-request`，resolved 为 `granted` 或 `rejected`，block_changed 为 `blocked` 或 `unblocked`；拒绝并屏蔽同时写入 resolved 与 block_changed 两行。created、resolved 与随拒绝写入的 block_changed 以访问请求 ID 为 `request_id`，单独的屏蔽变更使用新的关联 ID。没有生效签名策略时（例如首次使用）没有可绑定的策略证据，这些行只记录事件、reason_code 与 `request_id`，不伪造策略证据；调用方标注不满足审计上下文的格式约束时同样省略上下文。理由文本是不可信输入，从不写入审计。这些行记录的是访问请求，不是 Connection 调用：上下文中的 `connection` 可以是 provider 名或固定的 `access-requests`，与真实 Connection 名共用命名空间；无法解析操作时的 read 与 `/` 只是审计格式要求的占位，不表示读请求。读取审计的一方须按事件类型区分，App 活动页不收录这些行（§10）。
 
 ### 7.3 `.env` 导入
 
@@ -589,12 +613,12 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 - **不记录**：正文、查询值、头的值。
 - 新增事件类型：
   - `call.dry_run`
-  - `access_request.created` / `.resolved`
+  - `access_request.created` / `.resolved` / `.block_changed`（字段与上下文见 §7.2）
   - `ssh.sign`（目标主机公钥指纹、用途）
   - `credential.derived_issued`
   - `scan.performed`（命中数）
   - `oauth.authorized` / `.refreshed` / `.refresh_failed`
-- **活动页**：按调用方 × Connection × 读写分组，显示调用数、拒绝数、审批数、token 用量；支持点击查看最近 50 条。
+- **活动页**：按调用方 × Connection × 读写分组，显示调用数、拒绝数、审批数、token 用量；支持点击查看最近 50 条。（2026-11-17 修订）`access_request.*` 行不是调用，即使带 Connection 审计上下文（§7.2）也不进入活动页分组。
 
 ---
 

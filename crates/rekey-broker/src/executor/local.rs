@@ -63,6 +63,11 @@ impl ActionExecutor {
         if active.is_expired(now) {
             return Err(BrokerError::Denied("policy-expired"));
         }
+        BrokerError::require_selector(
+            active.snapshot(),
+            input.meta.operation.as_deref(),
+            &input.meta.connection,
+        )?;
         let authorized = evaluate_connection(
             active.snapshot(),
             &input.meta,

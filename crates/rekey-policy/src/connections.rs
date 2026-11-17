@@ -506,6 +506,21 @@ fn graphql_read(body: &[u8]) -> bool {
         })
 }
 
+/// Enabled Connections declaring a named operation, narrowed by an optional
+/// Connection selector, in signed order (§6.2). Several without a selector
+/// make a named call ambiguous; `evaluate_connection` refuses those too.
+pub fn operation_connections<'a>(
+    snapshot: &'a ValidatedSnapshot,
+    operation: &'a str,
+    selector: Option<&'a str>,
+) -> impl Iterator<Item = &'a Connection> + 'a {
+    snapshot.connections().iter().filter(move |c| {
+        c.enabled
+            && selector.is_none_or(|name| c.name == name)
+            && c.operations.iter().any(|o| o.name == operation)
+    })
+}
+
 pub(crate) fn ssh_name_valid(name: &str) -> bool {
     rekey_domain::connection::validate_request_path(&format!("/{name}")).is_ok()
         && !name.contains('/')

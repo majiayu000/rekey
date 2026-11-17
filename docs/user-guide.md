@@ -85,7 +85,14 @@ rekey connection list
 rekey describe github.list_issues
 ```
 
-`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。LLM 连接会列出签名的模型白名单与额度，文本输出末尾提示签名规则还有几天过期（不足 7 天时警告）。`describe` 同时返回该 Connection 的签名规则、本调用方的附加规则、限额与过期时间；LLM 具名操作的 `model` 参数只接受白名单中的值。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
+`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。LLM 连接会列出签名的模型白名单与额度，文本输出末尾提示签名规则还有几天过期（不足 7 天时警告）。每个具名操作附带自己的读写判定（JSON 中的 `decisions`，文本里如 `github.create_issue  write=Approve`）；连接一行的 `read=` / `write=` 只是对根路径 `/` 的判定。`describe` 同时返回该 Connection 的签名规则、本调用方的附加规则、限额与过期时间，以及一组示例参数（`example_args`，都是占位值，如 `OWNER`、`REPO.git`，需要换成实际值；连接签名绑定的仓库等值不会出现在示例里）和该示例的判定与命中的规则；LLM 具名操作的 `model` 参数只接受白名单中的值。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权；实际参数下的判定以 `--dry-run` 为准。
+
+同一个操作名可能属于多个连接，例如同时添加了 `qwen` 与 `qwen-intl`，两者都有 `qwen.chat`。这时 `describe` 和 `call` 需要用 `--connection` 指定连接（MCP 工具传 `connection` 参数），否则返回 `INVALID_INPUT`，提示里会列出可选的连接名：
+
+```bash
+rekey describe qwen.chat --connection qwen-intl
+rekey call qwen.chat --connection qwen-intl --model MODEL --dry-run
+```
 
 以下例子假定 App 已激活名为 `github` 的 GitHub PAT Connection，绑定相应仓库规则。替换公开的 owner / repo 参数：
 
@@ -95,7 +102,7 @@ rekey call github.list_issues --owner OWNER --repo REPO
 rekey call github.create_issue --owner OWNER --repo REPO --title 'Test from Rekey' --dry-run
 ```
 
-`dry-run` 返回规范化路径、读写分类、命中规则与判定，不访问上游、不解密凭据、不消耗审批。确认后去掉 `--dry-run`。命名操作的参数使用 `--name value`；查询使用 `--query name=value`，额外公开请求头使用 `--header name:value`，正文可通过 `--body-file FILE` 传入。
+`dry-run` 返回规范化路径、读写分类、命中规则与判定，不访问上游、不解密凭据、不消耗审批；请求头里会列出凭据注入的位置，值只是占位，例如 `authorization: Bearer «rekey:github»`。确认后去掉 `--dry-run`。命名操作的参数使用 `--name value`；查询使用 `--query name=value`，额外公开请求头使用 `--header name:value`，正文可通过 `--body-file FILE` 传入。`--connection`、`--dry-run`、`--no-wait`、`--approval` 是保留选项，不会当作操作参数。
 
 通用 HTTP 入口使用同一套签名规则：
 
@@ -118,11 +125,14 @@ App 显示完整请求后可批准一次、30 分钟或自定义时间窗，最�
 
 ```bash
 rekey request github --op github.list_issues --reason 'Read issues for this task'
+rekey request --connection github --op github.create_issue --reason 'File the bug found in this task'
 rekey await REQUEST_ID --timeout 120
 rekey await-unlock --timeout 120
 ```
 
-在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。0.5 源码起，在终端里直接运行时错误改为中文说明和建议命令，通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时仍是 JSON；`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
+provider 可以是预设名（如 `github-pat`），也可以是预设家族，即预设名第一个 `-` 之前的部分：`github` 对应 `github-pat`、`github-git`、`github-oauth`，带上 `--op github.list_issues` 后只剩声明了该操作的 `github-pat` 与 `github-oauth`；`qwen` 对应四个地域变体。已有连接时用 `--connection` 指定连接名。操作名写完整名称（如 `github.list_issues`）。未知 provider 或没有预设声明该操作时立即返回 `INVALID_INPUT`，提示里列出可用的预设或操作；其他 API 可以请求 `generic-bearer` 或 `generic-header`。
+
+在 App 中添加凭据并激活对应规则后，再批准访问请求；按 provider 的请求由任一候选预设的已启用连接满足，批准请求不能绕过签名授权。请求 10 分钟过期，过期后 `rekey await` 返回 `EXPIRED`；用户可拒绝（返回 `REJECTED`）或屏蔽调用方，屏蔽后该调用方的请求返回 `DENIED`，可在 App 中解除。同一调用方 1 分钟内最多发起 3 个请求，超出返回 `RATE_LIMITED`，提示里给出可以再次请求的 UTC 时间；格式不对的请求不占用这 3 个名额。访问请求与屏蔽列表只保存在内存中，`rekeyd` 重启后清空。创建、处理与屏蔽变更总会写入审计，但不记录理由文本；已激活签名策略时，这些审计行另外记录调用方标注、请求的连接或 provider 与操作路径。这些行不是调用，App 活动页不统计它们。CLI 错误输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。0.5 源码起，在终端里直接运行时错误改为中文说明和建议命令，通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时仍是 JSON；`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
 
 App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查访问请求和本机审批。首次连接服务或首次出现请求时，App 请求系统通知权限，选择会保存，重启后保留；可在审批收件箱关闭或重新开启。允许通知时，每个新请求发一条带提示音、固定文案的系统通知，不含提供方、理由或任何密钥，点击只会打开收件箱，不会批准。macOS 默认的横幅约 5 秒后收起，错过时可在通知中心找到；想让它一直显示，到“系统设置 › 通知 › Rekey”把样式改为“提醒”。排查时运行 `/usr/bin/log show --last 30m --info --predicate 'subsystem == "com.starlight.rekey"'`，日志只含请求编号和系统通知设置。无论是否允许通知，Dock 图标角标都会显示待处理请求数。App 未运行时没有提醒。
 
@@ -136,6 +146,17 @@ curl -H 'Authorization: Bearer rekey' \
 ```
 
 服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。
+
+写操作需要审批时返回 403 `APPROVAL_REQUIRED`，审批 ID 在 `approval.challenge_id`。这个审批属于发起 HTTP 请求的程序，`rekey approval await` 和 MCP `await_approval` 等不到它。用户在 App 收件箱（基础模式下用 `rekey approval approve`）批准后，把完全相同的请求（方法、路径、查询、请求头、正文都不变）再发一次，并加上请求头 `x-rekey-approval-challenge: <challenge_id>`：
+
+```bash
+curl -X POST -H 'Authorization: Bearer rekey' -H 'Content-Type: application/json' \
+  -H 'x-rekey-approval-challenge: CHALLENGE_ID' \
+  -d '{"title":"Test from Rekey"}' \
+  'http://127.0.0.1:7787/c/github/repos/OWNER/REPO/issues'
+```
+
+这个头只用来关联审批，不是令牌，也不会转发给上游。批准前带头重发会再次返回同一个 `APPROVAL_REQUIRED`，不会执行；批准只能用一次，正文变了也不能用；不带头重发不会使用这次批准。
 
 SDK 的 key 设置为公开占位值 `rekey`，base URL 指向相应 Connection：
 

@@ -33,6 +33,7 @@ type AdminResponse = (Vec<u8>, Zeroizing<Vec<u8>>);
 
 const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
+mod access;
 mod audit_query;
 mod credential_profiles;
 mod github;
@@ -1190,7 +1191,7 @@ async fn dispatch_operation(
         }
         admin_msg::SSH_KEY => ssh_admin(frame, ctx, request_deadline).await,
         admin_msg::IMPORT_ENV => import_admin(frame, ctx, request_deadline).await,
-        admin_msg::ACCESS_RESOLVE => access_admin(frame, ctx, request_deadline).await,
+        admin_msg::ACCESS_RESOLVE => access::handle(frame, ctx, request_deadline).await,
         admin_msg::PERSONAL_POLICY_DRAFT => {
             if !frame.body.is_empty() {
                 return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
@@ -1866,119 +1867,6 @@ async fn connection_approval_decision(
         BrokerError::ApprovalOutcomeUnconfirmed
     })?;
     Ok((json(&response)?, Zeroizing::new(Vec::new())))
-}
-
-async fn access_admin(
-    frame: &IncomingFrame,
-    ctx: &BrokerCtx,
-    deadline: tokio::time::Instant,
-) -> Result<AdminResponse, BrokerError> {
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-    enum AccessAdmin {
-        List,
-        Resolve {
-            request_id: rekey_domain::ids::RequestId,
-            granted: bool,
-            #[serde(default)]
-            block_caller: bool,
-        },
-        Block {
-            caller: String,
-            blocked: bool,
-        },
-    }
-    match meta::<AccessAdmin>(frame)? {
-        AccessAdmin::List => {
-            if !frame.body.is_empty() {
-                return Err(ipc::FrameError::InvalidField.into());
-            }
-            Ok((
-                b"{}".to_vec(),
-                Zeroizing::new(json(&ctx.local_calls.access_list()?)?),
-            ))
-        }
-        operation => {
-            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
-            ctx.lifecycle.reject_if_not_running()?;
-            authority_until(
-                deadline,
-                ctx.authority.verify_proof(proof_from(kind, proof)),
-            )
-            .await?;
-            match operation {
-                AccessAdmin::Resolve {
-                    request_id,
-                    granted,
-                    block_caller,
-                } => {
-                    let request = ctx.local_calls.access_get(request_id)?;
-                    if granted {
-                        let active = ctx
-                            .policy
-                            .read()
-                            .await
-                            .clone()
-                            .filter(|p| p.signer_id().is_some())
-                            .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-                        if active.is_expired(crate::now_ts()?)
-                            || !active.snapshot().connections().iter().any(|c| {
-                                c.enabled
-                                    && request.connection.as_ref().is_none_or(|v| &c.name == v)
-                                    && request.provider.as_ref().is_none_or(|v| &c.preset == v)
-                                    && request
-                                        .operation
-                                        .as_ref()
-                                        .is_none_or(|v| c.operations.iter().any(|o| &o.name == v))
-                            })
-                        {
-                            return Err(BrokerError::Denied("access-connection-not-active"));
-                        }
-                    }
-                    let mut audit = crate::runtime::call_audit(
-                        "access_request.resolved",
-                        "pending",
-                        &request.caller,
-                    )?;
-                    audit.request_context = None;
-                    audit.request_id = Some(request_id);
-                    audit.reason_code = if granted {
-                        "granted".into()
-                    } else {
-                        "rejected".into()
-                    };
-                    ctx.authority.append_audit(audit).await?;
-                    let response = ctx.local_calls.resolve_access(request_id, granted)?;
-                    if block_caller {
-                        ctx.local_calls.block_caller(request.caller, true);
-                    }
-                    Ok((b"{}".to_vec(), Zeroizing::new(json(&response)?)))
-                }
-                AccessAdmin::Block { caller, blocked } => {
-                    if caller.is_empty()
-                        || caller.len() > 256
-                        || caller.chars().any(char::is_control)
-                    {
-                        return Err(ipc::FrameError::InvalidField.into());
-                    }
-                    let mut audit = crate::runtime::call_audit(
-                        "access_request.block_changed",
-                        "pending",
-                        &caller,
-                    )?;
-                    audit.request_context = None;
-                    ctx.authority.append_audit(audit).await?;
-                    ctx.local_calls.block_caller(caller, blocked);
-                    Ok((
-                        b"{}".to_vec(),
-                        Zeroizing::new(json(&serde_json::json!({"blocked":blocked}))?),
-                    ))
-                }
-                AccessAdmin::List => unreachable!(),
-            }
-        }
-    }
 }
 
 async fn import_admin(

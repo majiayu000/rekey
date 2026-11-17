@@ -125,6 +125,18 @@ import CryptoKit
         var oauthActivity=ActivitySnapshot(nowMs:1000)
         try oauthActivity.ingest(JSONDecoder().decode(AuditPage.self,from:JSONSerialization.data(withJSONObject:["events":oauthEvents,"snapshot_max_sequence":7,"next_before_sequence":NSNull()])))
         precondition(oauthActivity.complete && oauthActivity.reauthorization.connections==["drive","gmail"])
+        // Access request rows carry a Connection-shaped audit context (§7.2) but are not calls.
+        let accessEvent:[String:Any] = ["sequence":4,"event_id":UUID().uuidString.lowercased(),"event_type":"access_request.created","outcome":"success","reason_code":"provider-request","created_at_ms":100,"request_id":UUID().uuidString.lowercased(),"request_context":["connection":"stripe","caller":"codex","method_class":"read","normalized_path":"/"]]
+        let accessPage=try JSONDecoder().decode(AuditPage.self,from:JSONSerialization.data(withJSONObject:["events":[accessEvent]+derivedEvents,"snapshot_max_sequence":4,"next_before_sequence":NSNull()]))
+        var accessActivity=ActivitySnapshot(nowMs:1000);try accessActivity.ingest(accessPage)
+        precondition(accessActivity.rows.count==1 && accessActivity.rows[0].context?.connection=="synthetic-eks" && accessActivity.totals.admitted==1,"access requests grouped as calls")
+        let accessJSON:[String:Any] = ["request_id":UUID().uuidString.lowercased(),"caller":"codex","provider":"github","connection":NSNull(),"operation":"github.list_issues","reason":"synthetic","created_at_ms":1,"expires_at_ms":2,"status":"PENDING","presets":["github-oauth","github-pat"]]
+        func accessItem(_ fields:[String:Any]) throws -> AccessRequestItem {try JSONDecoder().decode(AccessRequestItem.self,from:JSONSerialization.data(withJSONObject:fields))}
+        var olderDaemon=accessJSON;olderDaemon.removeValue(forKey:"presets")
+        var oauthFamily=accessJSON;oauthFamily["provider"]="google";oauthFamily["presets"]=["google-calendar","google-drive"]
+        var customOnly=accessJSON;customOnly["provider"]="stripe";customOnly["presets"]=["team-billing"]
+        let suggested=try [accessJSON,olderDaemon,oauthFamily,customOnly].map{try accessItem($0).suggestedPreset}
+        precondition(suggested==["github-pat","generic-bearer","google-drive","stripe"],"\(suggested)")
         var metadata=response["metadata"] as! [String:Any];var tampered=object as! [String:Any];tampered["origin"]="https://evil.example";metadata["connections"]=[tampered];response["metadata"]=metadata
         do {_ = try PersonalPolicyDraft(response:JSONSerialization.data(withJSONObject:response),expectedPolicySHA256:nil,expiresAtMs:10000,workspace:"/tmp/synthetic",revision:UUID());fatalError("mismatched displayed definition accepted")}catch{}
         let temporary=FileManager.default.temporaryDirectory.appendingPathComponent("rekey-import-contract-"+UUID().uuidString)

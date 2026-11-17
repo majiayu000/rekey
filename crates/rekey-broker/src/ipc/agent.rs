@@ -511,7 +511,7 @@ async fn dispatch_local(
                 .map_err(|_| ipc::FrameError::InvalidField)?;
             Ok((
                 b"{}".to_vec(),
-                serde_json::to_vec(&ctx.describe_operation(&meta.operation, caller).await?)
+                serde_json::to_vec(&ctx.describe_operation(&meta, caller).await?)
                     .map_err(|_| ipc::FrameError::InvalidField)?,
             ))
         }
@@ -586,12 +586,7 @@ async fn dispatch_local(
             }
             let meta: ipc::RequestAccessMeta = serde_json::from_slice(&frame.metadata)
                 .map_err(|_| ipc::FrameError::InvalidField)?;
-            let request = ctx.local_calls.create_access(caller, meta)?;
-            let mut audit =
-                super::super::runtime::call_audit("access_request.created", "pending", caller)?;
-            audit.request_context = None;
-            audit.request_id = Some(request.request_id);
-            ctx.authority.append_audit(audit).await?;
+            let request = ctx.request_access(caller, meta).await?;
             Ok((
                 b"{}".to_vec(),
                 serde_json::to_vec(&request).map_err(|_| ipc::FrameError::InvalidField)?,

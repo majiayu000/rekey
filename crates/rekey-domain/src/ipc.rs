@@ -2397,65 +2397,8 @@ impl CallMeta {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DescribeMeta {
-    pub operation: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConnectionCapability {
-    pub connection: String,
-    pub preset: String,
-    pub origin: HttpsOrigin,
-    pub grade: crate::connection::CredentialGrade,
-    pub read: crate::connection::RuleEffect,
-    pub write: crate::connection::RuleEffect,
-    pub operations: Vec<crate::connection::PresetOperation>,
-    /// Signed LLM model allow-list and budgets, when the Connection has them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm: Option<crate::connection::ConnectionLlmLimits>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ListCapabilitiesResponse {
-    pub connections: Vec<ConnectionCapability>,
-    pub derived_credentials: Vec<DerivedCredentialCapability>,
-    pub service_url: Option<String>,
-    /// When the active signed rules stop authorizing calls.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy_expires_at_ms: Option<i64>,
-}
-/// Public signed T1 authority. The source credential identifier is not part of
-/// agent discovery, and this record contains no issued credential values.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DerivedCredentialCapability {
-    pub connection: String,
-    pub kind: String,
-    pub target: crate::connection::DerivedCredentialTarget,
-    pub max_ttl_seconds: u32,
-    pub effect: crate::connection::RuleEffect,
-    pub grade: crate::connection::CredentialGrade,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DescribeResponse {
-    pub connection: String,
-    pub operation: crate::connection::PresetOperation,
-    /// The Connection's public signed rules (never credential identifiers).
-    #[serde(default)]
-    pub rules: Vec<crate::connection::ConnectionRule>,
-    /// Signed overrides for this caller; omitted when there are none.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub caller_rules: Vec<crate::connection::ConnectionRule>,
-    #[serde(default)]
-    pub limits: crate::connection::ConnectionLimits,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm: Option<crate::connection::ConnectionLlmLimits>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy_expires_at_ms: Option<i64>,
-}
+mod discovery;
+pub use discovery::*;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallResponseMetadata {
@@ -2478,39 +2421,6 @@ pub struct DryRunResponse {
     pub effect: crate::connection::RuleEffect,
     pub rule_id: Option<PolicyRuleId>,
     pub grade: crate::connection::CredentialGrade,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequestAccessMeta {
-    pub provider: Option<String>,
-    pub connection: Option<String>,
-    pub operation: Option<String>,
-    pub reason: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequestAccessResponse {
-    pub request_id: RequestId,
-    pub expires_at_ms: i64,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum AccessRequestStatus {
-    Pending,
-    Granted,
-    Rejected,
-    Expired,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AwaitAccessMeta {
-    pub request_id: RequestId,
-    pub timeout_s: u16,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AwaitAccessResponse {
-    pub status: AccessRequestStatus,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

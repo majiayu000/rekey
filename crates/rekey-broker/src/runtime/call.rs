@@ -7,6 +7,8 @@ use rekey_vault::AuthorityError;
 use super::BrokerCtx;
 use crate::error::BrokerError;
 
+mod discovery;
+
 impl BrokerCtx {
     pub(crate) fn service_url(&self) -> Option<String> {
         self.gateway.service_url()
@@ -23,7 +25,8 @@ impl BrokerCtx {
             .clone()
             .filter(|p| p.signer_id().is_some())
             .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-        if active.is_expired(crate::now_ts()?) {
+        let now = crate::now_ts()?;
+        if active.is_expired(now) {
             return Err(rekey_policy::PolicyError::Expired.into());
         }
         let connections = active
@@ -55,6 +58,7 @@ impl BrokerCtx {
                     write,
                     operations: described_operations(connection),
                     llm: connection.llm.clone(),
+                    decisions: discovery::decisions(active.snapshot(), connection, caller, now),
                 }
             })
             .collect();
@@ -90,7 +94,7 @@ impl BrokerCtx {
     }
     pub(crate) async fn describe_operation(
         &self,
-        operation: &str,
+        meta: &ipc::DescribeMeta,
         caller: &str,
     ) -> Result<ipc::DescribeResponse, BrokerError> {
         self.lifecycle.reject_if_not_running()?;
@@ -101,27 +105,37 @@ impl BrokerCtx {
             .clone()
             .filter(|p| p.signer_id().is_some())
             .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-        if active.is_expired(crate::now_ts()?) {
+        let now = crate::now_ts()?;
+        if active.is_expired(now) {
             return Err(rekey_policy::PolicyError::Expired.into());
         }
-        let mut matches = active
-            .snapshot()
-            .connections()
+        let selector = meta.connection.as_deref().filter(|name| !name.is_empty());
+        BrokerError::require_selector(
+            active.snapshot(),
+            Some(&meta.operation),
+            selector.unwrap_or_default(),
+        )?;
+        let connection = rekey_policy::connections::operation_connections(
+            active.snapshot(),
+            &meta.operation,
+            selector,
+        )
+        .next()
+        .ok_or(rekey_policy::PolicyError::NotConfigured)?;
+        let operation = connection
+            .operations
             .iter()
-            .filter(|c| c.enabled)
-            .flat_map(|c| {
-                c.operations
-                    .iter()
-                    .filter(move |o| o.name == operation)
-                    .map(move |o| (c, o))
-            });
-        let (connection, operation) = matches
-            .next()
+            .find(|o| o.name == meta.operation)
             .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-        if matches.next().is_some() {
-            return Err(rekey_policy::PolicyError::InvalidParameters.into());
-        }
+        let decision = discovery::decide(active.snapshot(), connection, operation, caller, now);
         Ok(ipc::DescribeResponse {
+            matched_rule: discovery::matched_rule(
+                connection,
+                caller,
+                decision.as_ref().and_then(|d| d.rule_id),
+            ),
+            example_args: Some(discovery::example_args(connection, operation)),
+            decision,
             connection: connection.name.clone(),
             operation: with_model_enum(operation.clone(), connection),
             rules: connection.rules.clone(),
@@ -152,6 +166,11 @@ impl BrokerCtx {
         if active.is_expired(crate::now_ts()?) {
             return Err(rekey_policy::PolicyError::Expired.into());
         }
+        BrokerError::require_selector(
+            active.snapshot(),
+            meta.operation.as_deref(),
+            &meta.connection,
+        )?;
         let request = evaluate_connection(active.snapshot(), meta, body, caller, crate::now_ts()?)?;
         let mut audit = super::call_audit("call.dry_run", &request.connection.name, caller)?;
         audit.action_id = Some(request.action.id);
@@ -183,7 +202,7 @@ impl BrokerCtx {
             method: request.action.method,
             path: request.target.path.as_str().to_owned(),
             query: request.target.query,
-            headers: request.headers,
+            headers: discovery::with_credential_placeholder(request.headers, &request.connection),
             credential_placeholder: format!("«rekey:{}»", request.connection.name),
             effect: request.effect,
             rule_id: request.rule_id,
