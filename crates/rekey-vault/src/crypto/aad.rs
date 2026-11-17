@@ -220,4 +220,27 @@ mod tests {
         other.credential_kind = 9;
         assert_ne!(bytes, other.encode());
     }
+    #[test]
+    fn mtls_identity_and_pki_ca_kinds_use_frozen_tags_sixteen_and_seventeen() {
+        use rekey_domain::credential::CredentialKind;
+        for (kind, tag) in [
+            (CredentialKind::MtlsIdentity, 16u16),
+            (CredentialKind::PkiCaSigner, 17u16),
+        ] {
+            let aad = AadV1 {
+                purpose: AadPurpose::CredentialPayload,
+                vault_id: vault_id(),
+                object_id: [0x22; 16],
+                object_version: 1,
+                credential_kind: kind.aad_code(),
+                constraints_hash: [0; 32],
+            };
+            let bytes = aad.encode();
+            assert_eq!(bytes.len(), 84);
+            assert_eq!(&bytes[48..50], &tag.to_be_bytes());
+            let mut swapped = aad;
+            swapped.credential_kind = if tag == 16 { 17 } else { 16 };
+            assert_ne!(bytes, swapped.encode());
+        }
+    }
 }

@@ -31,6 +31,15 @@ struct Server {
     task: JoinHandle<()>,
 }
 async fn server(stage: Option<TestStage>, slow_body: bool, reflected: bool) -> Server {
+    replying(stage, slow_body, reflected, "200 OK").await
+}
+/// `status` is the full status line tail, e.g. `302 Found\r\nlocation: ...`.
+async fn replying(
+    stage: Option<TestStage>,
+    slow_body: bool,
+    reflected: bool,
+    status: &'static str,
+) -> Server {
     let mut params = rcgen::CertificateParams::default();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let ca_key = rcgen::KeyPair::generate().unwrap();
@@ -105,7 +114,7 @@ async fn server(stage: Option<TestStage>, slow_body: bool, reflected: bool) -> S
                     b"okay".to_vec()
                 };
                 let headers = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nx-visible: yes\r\nconnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\ncontent-length: {}\r\nx-visible: yes\r\nconnection: close\r\n\r\n",
                     response_body.len()
                 );
                 let _ = tls.write_all(headers.as_bytes()).await;
@@ -347,6 +356,36 @@ async fn signed_connection_performs_real_mtls_without_auth_header_or_retry() {
     ));
     server.task.await.unwrap();
     f.stop().await;
+}
+
+#[tokio::test]
+async fn authenticated_redirect_is_never_followed_and_stays_indeterminate() {
+    for status in [
+        "302 Found\r\nlocation: https://mtls.test/elsewhere",
+        "307 Temporary Redirect\r\nlocation: https://redirect.example/fixed",
+    ] {
+        let server = replying(None, false, false, status).await;
+        let f = Fixture::new(&server).await;
+        let result = f.request().await.await.unwrap();
+        assert!(
+            matches!(result, Err(BrokerError::UpstreamUnconfirmed("redirect"))),
+            "{status}: {:?}",
+            result.err()
+        );
+        f.executor
+            .terminals
+            .wait_idle(Duration::from_secs(5))
+            .await
+            .unwrap();
+        // Client authentication happened, so the effect is unknown, never a retryable miss.
+        assert_eq!(server.fixture.probe.signs.load(Ordering::SeqCst), 1);
+        assert_eq!(f.count("execution.indeterminate"), 1, "{status}");
+        assert_eq!(f.count("execution.finished"), 0, "{status}");
+        // The server task fails if the runner reconnected to follow the Location.
+        server.task.await.unwrap();
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1);
+        f.stop().await;
+    }
 }
 
 #[tokio::test]
