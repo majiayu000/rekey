@@ -356,7 +356,7 @@ rekey ssh-agent status                                # §8.1
 - 路由格式为 `/c/<connection>/<path>`，规则判定与 §5 一致。
 
 **入站检查（防 A6）**
-- `Host` 必须是 `127.0.0.1:<port>` 或 `localhost:<port>`。
+- `Host` 必须是 `127.0.0.1:<port>` 或 `localhost:<port>`，逐字节比较：解析到回环地址的其他域名（DNS rebinding，即使端口正确）、大小写不同的 `LOCALHOST`、缺端口或端口不同，都返回 400，不访问上游、不写审计。
 - 带 `Origin` 或浏览器 `Sec-Fetch-Site` 的请求一律拒绝。
 - 拒绝 CONNECT、Upgrade、绝对 URI，以及同时出现 CL 和 TE 的请求。
 
