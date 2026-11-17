@@ -171,15 +171,8 @@ pub(crate) fn fuzz_wire(bytes: &[u8]) {
     }
 }
 
-#[derive(Default)]
-struct AgentSession {
-    bound: Option<BoundSession>,
-    budgets: std::collections::BTreeMap<String, (Instant, u32)>,
-}
-struct BoundSession {
-    host: Vec<u8>,
-    session: Vec<u8>,
-}
+mod session;
+use session::{AgentSession, BoundSession};
 impl AgentSession {
     fn bind(&mut self, mut r: Reader<'_>) -> Result<(), BrokerError> {
         let host = r.string()?;
@@ -417,7 +410,7 @@ async fn sign(
     let request = crate::random_id(RequestId::from_random_bytes)?;
     let correlation = SessionId::from_random_bytes(*request.as_bytes());
     let action_id = ActionId::from_random_bytes(id_bytes(format!("ssh:{}", key.name).as_bytes()));
-    let caller = "ssh-agent";
+    let caller = session.caller.as_str();
     let digest = active.snapshot().digest();
     let review_request = serde_json::json!({"key":key.name,"host":host,"bound_host_key":session.bound.as_ref().map(|b| BASE64.encode(&b.host)),"session_id":session.bound.as_ref().map(|b| HEXLOWER.encode(&b.session)),"public_key":encoded,"data_sha256":HEXLOWER.encode(&Sha256::digest(&data)),"data_base64":BASE64.encode(&data),"window_allowed":effect==RuleEffect::Approve && matched_host_rule && matches!(key.approver, ApproverSpec::LocalPresence {}),"use":purpose});
     let canonical = Zeroizing::new(serde_jcs::to_vec(&review_request).map_err(|_| denied())?);
@@ -781,8 +774,8 @@ pub(crate) async fn handle_connection(
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut session = AgentSession::for_peer(&stream).await;
     let (mut reader, mut writer) = stream.into_split();
-    let mut session = AgentSession::default();
     loop {
         let packet = tokio::select! {
             biased;

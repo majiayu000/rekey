@@ -138,7 +138,7 @@ pub async fn handle_agent_conn(
             }
             continue;
         }
-        let caller = super::caller::unix_caller(&stream);
+        let caller = super::caller::unix_caller(&stream).await;
         let response = if frame.header.message_type == agent_msg::AWAIT_APPROVAL {
             let mut extra = [0u8; 1];
             tokio::select! {

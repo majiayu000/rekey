@@ -197,9 +197,10 @@ async fn accept(
                 if !peer.ip().is_loopback() || tasks.len() >= CONNECTIONS { continue; }
                 let weak = weak.clone();
                 tasks.spawn(async move {
+                    let caller = crate::ipc::caller::tcp_caller(peer, address).await;
                     let service = service_fn(move |request| {
-                        let weak = weak.clone();
-                        async move { Ok::<_, Infallible>(handle(weak, address, request).await) }
+                        let (weak, caller) = (weak.clone(), caller.clone());
+                        async move { Ok::<_, Infallible>(handle(weak, address, caller, request).await) }
                     });
                     let _ = http1::Builder::new().keep_alive(false).max_headers(64).max_buf_size(16*1024)
                         .timer(TokioTimer::new()).header_read_timeout(READ_TIMEOUT)
@@ -304,6 +305,7 @@ fn single<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, Bro
 async fn handle(
     weak: Weak<BrokerCtx>,
     address: SocketAddr,
+    caller: String,
     request: Request<Incoming>,
 ) -> Response<GatewayBody> {
     let id = match crate::random_id(RequestId::from_random_bytes) {
@@ -317,7 +319,7 @@ async fn handle(
         }
     };
     let result = match weak.upgrade() {
-        Some(ctx) => handle_request(&ctx, address, request, id).await,
+        Some(ctx) => handle_request(&ctx, address, caller, request, id).await,
         None => Err((503, AuthorityError::Draining.into())),
     };
     match result {
@@ -328,6 +330,7 @@ async fn handle(
 async fn handle_request(
     ctx: &BrokerCtx,
     address: SocketAddr,
+    caller: String,
     request: Request<Incoming>,
     request_id: RequestId,
 ) -> Result<Response<GatewayBody>, (u16, BrokerError)> {
@@ -512,7 +515,7 @@ async fn handle_request(
                 args: Default::default(),
             },
             body: Zeroizing::new(bytes),
-            caller: "unknown".into(),
+            caller,
         })
         .await
         .map_err(map_error)?
