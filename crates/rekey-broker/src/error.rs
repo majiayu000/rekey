@@ -53,6 +53,9 @@ pub enum BrokerError {
     UnsupportedPlatform,
     #[error("launcher unavailable")]
     LauncherUnavailable,
+    /// SCAN bytes for this system user exceed the per-minute budget.
+    #[error("scan byte budget for this system user is exhausted")]
+    ScanBudgetExhausted { reset_at_ms: i64 },
 }
 
 impl BrokerError {
@@ -82,6 +85,7 @@ impl BrokerError {
             Self::Io(_) => "IPC_UNAVAILABLE",
             Self::UnsupportedPlatform => "UNSUPPORTED_PLATFORM",
             Self::LauncherUnavailable => "LAUNCHER_UNAVAILABLE",
+            Self::ScanBudgetExhausted { .. } => "RATE_LIMITED",
         }
     }
 
@@ -149,7 +153,9 @@ impl BrokerError {
                 .unwrap_or_else(|_| format!("Unix milliseconds {reset_at_ms}"))
         };
         match self {
-            Self::BudgetExceeded { reset_at_ms } => format!("Retry after {} UTC.", utc(*reset_at_ms)),
+            Self::BudgetExceeded { reset_at_ms } | Self::ScanBudgetExhausted { reset_at_ms } => {
+                format!("Retry after {} UTC.", utc(*reset_at_ms))
+            }
             Self::RateLimited { reset_at_ms } => format!(
                 "At most 3 access requests per caller per minute. Wait for the user or call await_access on a pending request; request again after {} UTC.",
                 utc(*reset_at_ms)

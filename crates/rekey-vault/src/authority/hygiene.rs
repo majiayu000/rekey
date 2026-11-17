@@ -7,7 +7,7 @@ use super::{Worker, ensure_mutation_current, unlock_audit};
 use crate::AuthorityError;
 use crate::command::UnlockProof;
 use crate::hygiene::{
-    EnvImportEntry, EnvImportReport, EnvImportRequest, ScanCredential, ScanFinding, ScanInput,
+    EnvImportEntry, EnvImportReport, EnvImportRequest, ScanCredential, ScanInput, ScanReport,
     finding, invalid, matching_positions, validate_scan_inputs,
 };
 use crate::model::outcome;
@@ -18,15 +18,30 @@ impl Worker {
         &mut self,
         inputs: Vec<ScanInput>,
         credentials: Vec<ScanCredential>,
-    ) -> Result<Vec<ScanFinding>, AuthorityError> {
+    ) -> Result<ScanReport, AuthorityError> {
         self.require_unlocked()?;
         validate_scan_inputs(&inputs)?;
         let mut positions = BTreeSet::new();
         let mut findings = Vec::new();
+        let mut unavailable = BTreeSet::new();
         for credential in credentials {
             // Prepared bytes are consumed inside the Authority thread. No
             // plaintext, encodings, or digest is returned to the broker.
-            let prepared = self.prepare_internal_credential(credential.credential_id)?;
+            let prepared = match self.prepare_internal_credential(credential.credential_id) {
+                Ok(prepared) => prepared,
+                // One revoked or missing reference must not disable every
+                // scan; it is counted. Crypto and integrity failures still
+                // fail closed.
+                Err(
+                    AuthorityError::CredentialRevoked
+                    | AuthorityError::CredentialNotFound
+                    | AuthorityError::CredentialSourceUnavailable,
+                ) => {
+                    unavailable.insert(credential.credential_id);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let kind = prepared.kind();
             prepared.consume(|payload| {
                 super::tokens::scan_payload(kind, payload, |secret| {
@@ -55,7 +70,10 @@ impl Worker {
         // Audit failure returns no result and faults the worker, as for every
         // other sensitive operation.
         self.append_audit(audit)?;
-        Ok(findings)
+        Ok(ScanReport {
+            findings,
+            unavailable_credentials: u32::try_from(unavailable.len()).unwrap_or(u32::MAX),
+        })
     }
 
     pub(super) fn import_env(

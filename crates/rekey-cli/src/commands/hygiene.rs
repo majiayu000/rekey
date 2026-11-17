@@ -7,14 +7,24 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use rekey_domain::ipc::{self, Channel, ProofKind, ScanMeta, ScanResponse, agent_msg};
+use rekey_domain::ipc::{self, Channel, ProofKind, ScanFinding, ScanMeta, ScanResponse, agent_msg};
 use serde_json::json;
 use zeroize::Zeroizing;
 
+use crate::client::human::printable;
 use crate::client::{CliError, Client};
 
 const FILE_LIMIT: usize = 10 * 1024 * 1024;
 const TOTAL_LIMIT: usize = 100 * 1024 * 1024;
+/// Daemon states in which nothing could be scanned. A staged (pre-commit)
+/// scan warns and lets the commit proceed unless --strict; findings in files
+/// that were scanned still block.
+const CANNOT_SCAN: [&str; 4] = [
+    "IPC_UNAVAILABLE",
+    "LOCKED",
+    "NOT_CONFIGURED",
+    "RATE_LIMITED",
+];
 fn usage(message: &str) -> CliError {
     CliError::local("USAGE", message)
 }
@@ -138,6 +148,91 @@ fn scan_one(socket: &Path, path: String, bytes: &[u8]) -> Result<ScanResponse, C
     serde_json::from_slice(&body)
         .map_err(|_| CliError::local("INVALID_FRAME", "invalid scan findings"))
 }
+/// The staged blob, or None when it is larger than one scan frame.
+fn staged_blob(name: &str) -> Result<Option<Zeroizing<Vec<u8>>>, CliError> {
+    let object = format!(":{name}");
+    let arguments = [
+        std::ffi::OsStr::new("cat-file"),
+        std::ffi::OsStr::new("blob"),
+        std::ffi::OsStr::new(&object),
+    ];
+    match git_bytes(&arguments, FILE_LIMIT) {
+        Ok(bytes) => Ok(Some(bytes)),
+        // read_bounded reports only an oversized stream as INVALID_FRAME.
+        Err(error) if error.code == "INVALID_FRAME" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+struct Batch<'a> {
+    socket: &'a Path,
+    total: usize,
+    findings: Vec<ScanFinding>,
+    unavailable: u32,
+}
+impl Batch<'_> {
+    fn send(&mut self, path: String, bytes: &[u8]) -> Result<(), CliError> {
+        self.total = self
+            .total
+            .checked_add(bytes.len())
+            .filter(|total| *total <= TOTAL_LIMIT)
+            .ok_or_else(|| usage("scan total exceeds 100 MiB"))?;
+        let response = scan_one(self.socket, path, bytes)?;
+        self.unavailable = self.unavailable.max(response.unavailable_credentials);
+        self.findings.extend(response.findings);
+        Ok(())
+    }
+}
+/// Non-blocking diagnostics: localized text for people, one JSON object per
+/// line for Agents and pipes. Never carries scanned content.
+fn warn(kind: &str, code: Option<&str>, summary: &str, next: &str) {
+    if crate::client::json_output() {
+        let mut warning = json!({"warnings": [kind], "message": summary, "next": next});
+        if let Some(code) = code {
+            warning["code"] = json!(code);
+        }
+        eprintln!("{warning}");
+    } else {
+        eprintln!("警告：{summary}\n下一步：{next}");
+    }
+}
+fn warn_not_scanned(error: &CliError, unscanned: usize) {
+    let detail = printable(&error.message);
+    let (reason, after) = match error.code.as_str() {
+        "IPC_UNAVAILABLE" => (
+            format!("连不上 Rekey 后台服务（{detail}）"),
+            "启动 Rekey（打开 App 或运行 `rekeyd serve`）后",
+        ),
+        "LOCKED" => (
+            "Rekey 保险库已锁定".to_owned(),
+            "运行 `rekey unlock` 解锁后",
+        ),
+        "NOT_CONFIGURED" => (
+            format!("Rekey 没有生效的签名连接规则（尚未签署或已过期：{detail}）"),
+            "在 Rekey 中签署或续签连接规则后",
+        ),
+        _ => (
+            format!(
+                "本机用户每分钟 {} MiB 的扫描额度已用完",
+                ipc::SCAN_USER_BYTES_PER_MINUTE >> 20
+            ),
+            "额度窗口重置后",
+        ),
+    };
+    let mut next = format!(
+        "{after}运行 `rekey scan --staged` 补扫；要在无法扫描时阻止提交，在钩子命令里加 `--strict`。"
+    );
+    if error.code == "RATE_LIMITED"
+        && let Some(reset) = &error.next
+    {
+        next.push_str(&format!("（{}）", printable(reset)));
+    }
+    warn(
+        "SCAN_NOT_PERFORMED",
+        Some(&error.code),
+        &format!("{reason}，{unscanned} 个暂存文件没有做密钥扫描；提交照常进行。"),
+        &next,
+    );
+}
 pub fn scan(
     socket: &Path,
     paths: Vec<PathBuf>,
@@ -145,6 +240,9 @@ pub fn scan(
     stdin: bool,
     strict: bool,
 ) -> Result<(), CliError> {
+    // `--staged` is the pre-commit hook path; --strict turns every state in
+    // which Rekey cannot scan into a blocking error.
+    let hook = staged && !strict;
     let mut inputs = Vec::new();
     if staged || (paths.is_empty() && !stdin) {
         inputs = repository_files(staged)?;
@@ -153,8 +251,6 @@ pub fn scan(
             collect(&path, &mut inputs)?;
         }
     }
-    let mut findings = Vec::new();
-    let mut total = 0usize;
     let stdin_bytes = if stdin {
         Some(super::read_bounded(
             std::io::stdin().lock(),
@@ -164,57 +260,77 @@ pub fn scan(
     } else {
         None
     };
-    let mut run_one = |path: String, bytes: &[u8]| -> Result<(), CliError> {
-        total = total
-            .checked_add(bytes.len())
-            .ok_or_else(|| usage("scan total exceeds 100 MiB"))?;
-        if total > TOTAL_LIMIT {
-            return Err(usage("scan total exceeds 100 MiB"));
-        }
-        findings.extend(scan_one(socket, path, bytes)?.findings);
-        Ok(())
+    let mut batch = Batch {
+        socket,
+        total: 0,
+        findings: Vec::new(),
+        unavailable: 0,
     };
-    let result: Result<(), CliError> = (|| {
-        if let Some(bytes) = &stdin_bytes {
-            run_one("<stdin>".into(), bytes)?;
-        }
-        for path in inputs {
-            let name = path
-                .to_str()
-                .ok_or_else(|| usage("scan paths must be UTF-8"))?;
-            let bytes = if staged {
-                git_bytes(
-                    &[
-                        std::ffi::OsStr::new("cat-file"),
-                        std::ffi::OsStr::new("blob"),
-                        std::ffi::OsStr::new(&format!(":{name}")),
-                    ],
-                    FILE_LIMIT,
-                )?
-            } else {
-                read_file(&path)?
-            };
-            run_one(name.into(), &bytes)?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        if staged && !strict && error.code == "LOCKED" {
-            eprintln!(
-                "Warning: Rekey is locked; staged credentials could not be scanned. Unlock Rekey or use --strict to block the commit."
+    if let Some(bytes) = &stdin_bytes {
+        batch.send("<stdin>".into(), bytes)?;
+    }
+    for (index, path) in inputs.iter().enumerate() {
+        let name = path
+            .to_str()
+            .ok_or_else(|| usage("scan paths must be UTF-8"))?;
+        let bytes = if !staged {
+            read_file(path)?
+        } else if let Some(bytes) = staged_blob(name)? {
+            bytes
+        } else if hook {
+            warn(
+                "SCAN_FILE_SKIPPED",
+                None,
+                &format!(
+                    "暂存文件 {} 超过 10 MiB，没有扫描；其余暂存文件照常扫描。",
+                    printable(name)
+                ),
+                "缩小或拆分这个文件后运行 `rekey scan --staged` 补扫；要在这种情况下阻止提交，在钩子命令里加 `--strict`。",
             );
-            return super::write_json(&json!([]));
+            continue;
+        } else {
+            return Err(CliError::local(
+                "INVALID_FRAME",
+                format!("staged file {name} exceeds 10 MiB and cannot be scanned"),
+            ));
+        };
+        if let Err(error) = batch.send(name.to_owned(), &bytes) {
+            if !(hook && CANNOT_SCAN.contains(&error.code.as_str())) {
+                return Err(error);
+            }
+            warn_not_scanned(&error, inputs.len() - index);
+            break;
         }
-        return Err(error);
     }
-    super::write_json(&findings)?;
-    if !findings.is_empty() {
-        return Err(CliError::local(
-            "LEAK_DETECTED",
-            "credential material was detected; replace it with rekey call or a local service placeholder",
-        ));
+    if batch.unavailable > 0 {
+        warn(
+            "SCAN_CREDENTIALS_UNAVAILABLE",
+            None,
+            &format!(
+                "签名规则引用的 {} 个凭据不可用（已吊销、不存在或不支持扫描），本次没有用它们扫描；其余凭据照常扫描。",
+                batch.unavailable
+            ),
+            "在 Rekey 中移除或更新引用这些凭据的连接，并重新签署规则。",
+        );
     }
-    Ok(())
+    super::write_json(&batch.findings)?;
+    if batch.findings.is_empty() {
+        return Ok(());
+    }
+    if !crate::client::json_output() {
+        for finding in &batch.findings {
+            eprintln!(
+                "检测到 {} 的密钥出现在 {}:{}；请改用 rekey call 或本机服务地址",
+                printable(&finding.connection),
+                printable(&finding.path),
+                finding.line
+            );
+        }
+    }
+    Err(CliError::local(
+        "LEAK_DETECTED",
+        "credential material was detected; replace it with rekey call or a local service placeholder",
+    ))
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]

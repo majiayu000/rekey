@@ -2443,24 +2443,8 @@ pub struct LocalAwaitApprovalMeta {
 pub struct LocalCancelApprovalMeta {
     pub request_id: ApprovalRequestId,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScanMeta {
-    pub path: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScanFinding {
-    pub path: String,
-    pub line: u32,
-    pub column: u32,
-    pub connection: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScanResponse {
-    pub findings: Vec<ScanFinding>,
-}
+mod scan;
+pub use scan::{SCAN_USER_BYTES_PER_MINUTE, ScanFinding, ScanMeta, ScanResponse};
 
 /// Authenticated signed editing base returned by admin CONNECTION_LIST (60).
 #[derive(Debug, Clone, Serialize, Deserialize)]

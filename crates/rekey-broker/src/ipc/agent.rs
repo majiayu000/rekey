@@ -73,7 +73,9 @@ pub async fn handle_agent_conn(
     mut stream: UnixStream,
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
+    scan_budget: Arc<super::scan::ScanBudget>,
 ) {
+    let scan_peer = super::scan::ScanPeer::new(&stream, scan_budget);
     loop {
         if *shutdown.borrow() {
             return;
@@ -144,12 +146,12 @@ pub async fn handle_agent_conn(
             tokio::select! {
                 _ = shutdown.changed() => return,
                 _ = stream.read(&mut extra) => return,
-                response = dispatch_local(&frame, &ctx, &caller) => response,
+                response = dispatch_local(&frame, &ctx, &caller, &scan_peer) => response,
             }
         } else {
             tokio::select! {
                 _ = shutdown.changed() => return,
-                response = dispatch_local(&frame, &ctx, &caller) => response,
+                response = dispatch_local(&frame, &ctx, &caller, &scan_peer) => response,
             }
         };
         #[cfg(feature = "lab")]
@@ -493,6 +495,7 @@ async fn dispatch_local(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
     caller: &str,
+    scan_peer: &super::scan::ScanPeer,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
         agent_msg::LIST_CAPABILITIES => {
@@ -618,60 +621,7 @@ async fn dispatch_local(
             )
             .await
         }
-        agent_msg::SCAN => {
-            let meta: ipc::ScanMeta = serde_json::from_slice(&frame.metadata)
-                .map_err(|_| ipc::FrameError::InvalidField)?;
-            ctx.lifecycle.reject_if_not_running()?;
-            ctx.local_calls
-                .admit_rate("scan:local-uid", 60, std::time::Duration::from_secs(60))?;
-            let active = ctx
-                .policy
-                .read()
-                .await
-                .clone()
-                .filter(|p| p.signer_id().is_some())
-                .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-            if active.is_expired(crate::now_ts()?) {
-                return Err(rekey_policy::PolicyError::Expired.into());
-            }
-            let credentials = active
-                .snapshot()
-                .connections()
-                .iter()
-                .filter(|c| c.enabled)
-                .map(|c| rekey_vault::hygiene::ScanCredential {
-                    connection: c.name.clone(),
-                    credential_id: c.credential_id,
-                })
-                .chain(active.snapshot().ssh_keys().iter().map(|c| {
-                    rekey_vault::hygiene::ScanCredential {
-                        connection: c.name.clone(),
-                        credential_id: c.credential_id,
-                    }
-                }))
-                .chain(active.snapshot().derived_credentials().iter().map(|c| {
-                    rekey_vault::hygiene::ScanCredential {
-                        connection: c.name.clone(),
-                        credential_id: c.credential_id,
-                    }
-                }))
-                .collect();
-            let findings = ctx
-                .authority
-                .scan_credentials(
-                    vec![rekey_vault::hygiene::ScanInput::new(
-                        meta.path,
-                        frame.body.to_vec(),
-                    )],
-                    credentials,
-                )
-                .await?;
-            Ok((
-                b"{}".to_vec(),
-                serde_json::to_vec(&ipc::ScanResponse { findings })
-                    .map_err(|_| ipc::FrameError::InvalidField)?,
-            ))
-        }
+        agent_msg::SCAN => super::scan::dispatch(frame, ctx, scan_peer).await,
         agent_msg::AWAIT_UNLOCK => {
             if !frame.body.is_empty() {
                 return Err(ipc::FrameError::InvalidField.into());

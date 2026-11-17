@@ -50,6 +50,14 @@ pub struct ScanCredential {
 
 pub use rekey_domain::ipc::ScanFinding;
 
+/// Complete-match locations plus the number of distinct referenced
+/// credentials skipped because they are revoked, missing or not scannable.
+#[derive(Debug, Default)]
+pub struct ScanReport {
+    pub findings: Vec<ScanFinding>,
+    pub unavailable_credentials: u32,
+}
+
 pub(crate) fn validate_scan_inputs(inputs: &[ScanInput]) -> Result<(), AuthorityError> {
     let mut total = 0usize;
     for input in inputs {

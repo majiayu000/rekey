@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 mod macos_peer;
 
 #[path = "client/human.rs"]
-mod human;
+pub(crate) mod human;
 
 /// Pipes and explicit JSON use the same structured diagnostics contract.
 pub fn json_output() -> bool {

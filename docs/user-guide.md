@@ -191,7 +191,58 @@ rekey scan /absolute/path/project/file
 rekey --state-dir /absolute/path/rekey-dev connect claude-code --with-hooks
 ```
 
-扫描使用保险库中完整秘密及支持的变体，结果仅含位置，不回显匹配内容。`--with-hooks` 安装受管 pre-commit 检查。扫描失败不等于文件安全；保险库锁定、超限或限速时应先处理错误。它不是对所有可能编码和历史提交的完整泄漏证明。
+扫描用保险库中的完整密钥及支持的编码变体（原始、base64、hex、percent、JSON 转义）做精确匹配，结果只有连接名、路径和行列，不回显匹配内容；部分片段不算命中。
+
+- **扫描范围**：生效签名规则中已启用的 Connection、SSH 密钥和临时凭据授权所引用的凭据。禁用的 Connection、只导入还没签署规则的凭据不参与。引用的凭据已吊销或不存在时跳过，并警告"签名规则引用的 N 个凭据不可用"，其余照常扫描。
+- **扫描哪些文件**：`--staged` 只读暂存区；不带参数时扫描当前仓库里 Git 跟踪的文件和未被 ignore 规则排除的新文件（`node_modules`、构建输出只有被 ignore 时才跳过）；显式给出的目录会递归扫描其中所有普通文件，包括 `.git` 和 `node_modules`，只跳过符号链接。单文件 10 MiB，单次 100 MiB。
+- **额度**：同一系统用户每分钟共享 600 MiB 的扫描额度，换调用方或改程序名不会重置；超出返回 `RATE_LIMITED`，并给出重置时间。
+- **pre-commit 钩子**：`--with-hooks` 安装受管 pre-commit 检查，钩子运行 `rekey --state-dir … scan --staged`。命中总是阻止提交，终端里每条命中显示"检测到 <连接> 的密钥出现在 <路径>:<行>；请改用 rekey call 或本机服务地址"。Rekey 未运行、保险库锁定、没有生效（或已过期）的签名规则、额度用完时，钩子打印警告并放行；超过 10 MiB 的暂存文件被跳过并警告，其余照常扫描。要在这些情况下也阻止提交，把钩子里的命令改成 `scan --staged --strict`。
+
+扫描失败或被跳过不等于文件安全；它也不是对所有可能编码和历史提交的完整泄漏证明。
+
+### Claude Code 工具输出扫描（示例，不自动安装）
+
+PostToolUse hook 在工具执行后运行，可以把它收到的 JSON（含工具输入和输出）原样交给 `rekey scan --stdin`。下面的脚本在命中时用 `updatedToolOutput` 把 Bash 输出换成占位文本，Claude 收到的是替换后的内容；hook 的任何输出都不含密钥值。工具已经执行，原输出仍可能留在 Claude Code 的本地记录或遥测中。保存为 `/absolute/path/rekey-scan-output.sh` 并 `chmod 700`：
+
+```sh
+#!/bin/sh
+# Claude Code PostToolUse hook: scan the hook input (tool input and output).
+findings=$(rekey scan --stdin)
+case $? in
+0) exit 0 ;;
+esac
+case "$findings" in
+*'"connection"'*)
+  cat <<'EOF'
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"Rekey 在这次命令输出里检测到已保存的密钥，输出已被替换。不要复述、保存或使用密钥；调用服务请改用 rekey call 或本机服务地址。","updatedToolOutput":{"stdout":"[Rekey 已隐藏这次输出：其中含有已保存的密钥]","stderr":"","interrupted":false,"isImage":false}}}
+EOF
+  exit 0 ;;
+esac
+echo "Rekey 没有扫描这次工具输出（保险库锁定、额度用完、Rekey 未运行或输出超过 10 MiB，见上面的错误）。" >&2
+exit 1
+```
+
+在项目的 `.claude/settings.json` 中登记：
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "/absolute/path/rekey-scan-output.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- 自定义保险库目录时，把脚本里的命令改成 `rekey --state-dir /absolute/path/rekey-dev scan --stdin`。
+- 保险库锁定、额度用完（`RATE_LIMITED`，错误里有重置时间）、Rekey 未运行或输入超过 10 MiB 时，`rekey scan --stdin` 以错误退出，脚本 `exit 1`：Claude Code 把它当作非阻断的 hook 错误显示给你，Claude 照常看到原输出，这次输出没有经过检查。想要"不能扫描就不给看"，把最后两行换成命中分支里的替换输出。
+- `updatedToolOutput` 必须符合工具的输出结构，上面的结构只适用于 Bash。其他工具（如 Read、MCP 工具）可以只输出 `additionalContext` 提示，Claude 仍会看到原输出。
+- 每次扫描都计入每分钟 600 MiB 的额度，与 pre-commit 钩子共用。
 
 ## SSH 与 Git
 
