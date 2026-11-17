@@ -639,6 +639,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
   - 判定结果和命中的规则 ID；
   - 审批 ID、状态码、字节数、LLM token 数。
 - **不记录**：正文、查询值、头的值。
+- 执行审计的 `request_id` 由 daemon 为每次执行生成。Agent 帧里的 `request_id` 只做传输关联（错误信封回显它），重复使用既不得合并两次执行的审计配对，也不得触发 `one_execution_started_per_request` 唯一约束而使运行时故障。
 - 新增事件类型：
   - `call.dry_run`
   - `access_request.created` / `.resolved` / `.block_changed`（字段与上下文见 §7.2）
@@ -691,7 +692,11 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C15 | 真实 Agent | Claude Code 和 Codex 在不经任何包装的情况下完成 U2–U5（合成上游，加一次真实 GitHub 测试仓库） |
 | C16 | 体验 | 已安装用户：添加 GitHub PAT 到 Claude Code 首次成功调用，总时长不超过 2 分钟，密码最多 1 次，Touch ID 最多 2 次 |
 
-现有 P0、fuzz、性能门槛全部保留；新增 fuzz 目标：规则路径匹配器、dotenv 解析器、SSH agent 协议解析器。 性能夹具必须使用签名 Connection 和无令牌 CALL，保留生产 KDF、Authority 队列/IPC 容量、500 次审计、4 MiB 密封、备份干扰、锁定/关停和 soak；旧 capability 的每 Session 四 permit 指标随该模型作废，该 UDS 性能夹具测量实际 IPC 请求处理器容量。默认 CI 必须实际执行测试并生成本次报告，不能将 lab 条件下的零测试视为通过。
+现有 P0、fuzz、性能门槛全部保留；新增 fuzz 目标：规则路径匹配器、dotenv 解析器、SSH agent 协议解析器。
+
+发布二进制级 P0 门槛按本模型重写，默认 CI 两个平台都实际运行，只用发布版 `rekey`、`rekeyd`、`rekey-policy-sign`：基础模式软件签名器（`rekey-policy-sign software-key`，0600 文件，不是 Secure Enclave）安装 trust 并签名 Connection，Agent 侧只做无令牌 CALL。证明和凭据只经 stdin 传递，不进 argv、环境变量或日志。允许的调用指向 `https://localhost`：`execution.started` 提交后，生产上游筛查拒绝回环地址，恰好一条 `execution.blocked(private-address)`，不需要网络，也不放宽筛查。`scripts/p0-acceptance.sh` 覆盖 init/serve、错误与正确解锁、凭据增改吊销、trust 安装、签名激活、无令牌发现、dry-run、签名 deny 与默认 deny、allow 调用、密码批准的一次性审批、重签停用、Agent 连接洪泛下锁定解锁、备份重叠拒绝、备份、关停、错误与正确证明的恢复、恢复后的签名 Connection、审计配对和磁盘 canary。`scripts/p0-crash-recovery.sh` 覆盖帧 `request_id` 复用、终态审计被扣住时 SIGKILL 后重启恰好补一条 `execution.indeterminate(abandoned-on-restart)` 且保留授权证据、重启后锁定且签名 Connection 仍生效、空闲时 SIGKILL 不追加终态、待批审批不在重启后复活。公网上游成功调用（`execution.finished`）只在 `REKEY_ACCEPTANCE_PUBLIC_UPSTREAM=1` 时运行，需要联网，默认关闭；上游已收到请求后再 SIGKILL 的场景不在发布二进制门槛内，因为发布二进制按设计拒绝本地夹具，公网上游又不确定。
+
+性能夹具必须使用签名 Connection 和无令牌 CALL，保留生产 KDF、Authority 队列/IPC 容量、500 次审计、4 MiB 密封、备份干扰、锁定/关停和 soak；旧 capability 的每 Session 四 permit 指标随该模型作废，该 UDS 性能夹具测量实际 IPC 请求处理器容量。默认 CI 必须实际执行测试并生成本次报告，不能将 lab 条件下的零测试视为通过。
 
 （2026-11-17 修订）只依赖默认操作码或命令的用例不得放在 lab 门控文件里：真实 socket 上锁定与解锁两态的 A2 `SHUTDOWN` 证明、默认入口拒绝 lab 线协议入口及 §11 所列 Profile/会话操作码（`crates/rekey-broker/tests/default_admin_ipc.rs`），以及 `rollback-confirm` 与离线恢复的 CLI/IPC 端到端（`tests/rollback_cli.rs` 首个用例，按 stderr JSON 信封的 `code` 断言）由默认 `cargo test --workspace` 执行。需要 lab capability 会话的用例留在 lab。
 

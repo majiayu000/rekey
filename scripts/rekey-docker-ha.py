@@ -23,18 +23,29 @@ class HAError(Exception):
     pass
 
 
-def command(args, data=None, timeout=90):
+def command(operation, args, data=None, timeout=90, stdin=None):
+    # Errors name only the caller's fixed operation label and the exit status,
+    # never child output, arguments or the stdin proof.
     try:
-        result = subprocess.run(args, input=data, capture_output=True, timeout=timeout)
+        result = subprocess.run(args, input=data, stdin=stdin, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise HAError('command timed out; outcome unconfirmed') from None
+        raise HAError(operation + ' timed out; outcome unconfirmed') from None
+    except OSError as error:
+        raise HAError(operation + ' could not run: ' + type(error).__name__) from None
     if result.returncode:
-        raise HAError('command failed with exit ' + str(result.returncode))
+        raise HAError(operation + ' failed with exit ' + str(result.returncode))
     return result.stdout
 
 
-def docker(*args, data=None, timeout=90):
-    return command(['docker', *args], data, timeout)
+def docker(operation, *args, data=None, timeout=90, stdin=None):
+    return command(operation, ['docker', *args], data, timeout, stdin)
+
+
+def lock(descriptor):
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise HAError('another controller holds this cluster directory') from None
 
 
 def require(condition, message):
@@ -83,32 +94,34 @@ class Controller:
 
     def nodes(self):
         # A daemon failure must raise, never look like an absent container.
-        return docker('container', 'ls', '--all', '--no-trunc', '--format', '{{.ID}}').decode().split()
+        return docker('list containers', 'container', 'ls', '--all', '--no-trunc',
+                      '--format', '{{.ID}}').decode().split()
 
     def owned(self, identity):
         if identity in self.nodes():
-            info = json.loads(docker('inspect', identity))[0]
+            info = json.loads(docker('inspect container', 'inspect', identity))[0]
             require(info['Config'].get('Labels', {}).get(LABEL) == self.state['cluster'],
                     'refusing unowned container')
             return info
         return None
 
     def cli(self, node, *args, proof=None):
-        return json.loads(docker('exec', '-i', node['id'], 'rekey', '--state-dir', STATE,
-                                 *args, data=proof, timeout=5 if args == ('status',) else 90))
+        # args[0] is always a literal subcommand chosen by this controller.
+        return json.loads(docker('rekey ' + args[0], 'exec', '-i', node['id'], 'rekey', '--state-dir',
+                                 STATE, *args, data=proof, timeout=5 if args == ('status',) else 90))
 
     def new_node(self):
         suffix = uuid.uuid4().hex
         volume = 'rekey-ha-' + suffix
         label = LABEL + '=' + self.state['cluster']
-        docker('volume', 'create', '--label', label, volume)
+        docker('create volume', 'volume', 'create', '--label', label, volume)
         # Persist volume ownership before effects whose completion may be unknown.
         self.state['volumes'].append(volume)
         self.save()
-        docker('run', '--rm', '--label', label, '--network', 'none', '--read-only',
+        docker('prepare volume', 'run', '--rm', '--label', label, '--network', 'none', '--read-only',
                '--mount', 'type=volume,src=' + volume + ',dst=/vault', self.state['image'],
                'sh', '-c', 'chown 10001:10001 /vault && chmod 0700 /vault')
-        identity = docker('run', '-d', '--name', volume, '--label', label,
+        identity = docker('start node container', 'run', '-d', '--name', volume, '--label', label,
                           '--user', '10001:10001', '--network', self.state['network'],
                           '--restart', 'no', '--read-only', '--cap-drop', 'ALL',
                           '--security-opt', 'no-new-privileges', '--log-driver', 'none',
@@ -117,8 +130,19 @@ class Controller:
                           'sleep', 'infinity').decode().strip()
         return {'id': identity, 'volume': volume}
 
+    def prepare_spare(self):
+        require(self.state['phase'] == 'ready' and self.state['standby'] is None,
+                'a spare is prepared only for a published primary without standby')
+        try:
+            standby = self.new_node()
+        except HAError as error:
+            raise HAError('spare preparation failed (' + str(error) + '); the published primary '
+                          'stays ready and the next run prepares a spare') from None
+        self.state['standby'] = standby
+        self.save()
+
     def start(self, node):
-        docker('exec', '-d', node['id'], 'rekeyd', 'serve', '--state-dir', STATE)
+        docker('start broker', 'exec', '-d', node['id'], 'rekeyd', 'serve', '--state-dir', STATE)
         end = time.monotonic() + 20
         while time.monotonic() < end:
             try:
@@ -141,33 +165,30 @@ class Controller:
 
     def replicate(self, proof):
         primary, standby = self.state['primary'], self.state['standby']
+        require(standby is not None, 'no standby to replicate to')
         self.validate_node(primary)
         self.validate_node(standby)
         path = '/vault/replica-' + uuid.uuid4().hex + '.rkbackup'
         receipt = self.cli(primary, 'backup', '--output', path, '--password-stdin', proof=proof)
         with tempfile.TemporaryDirectory(prefix='.transfer-', dir=self.directory) as directory:
             local = Path(directory) / 'snapshot.rkbackup'
-            docker('cp', primary['id'] + ':' + path, str(local))
+            docker('copy replica from primary', 'cp', primary['id'] + ':' + path, str(local))
             digest = hashlib.sha256()
             with local.open('rb') as source:
                 for block in iter(lambda: source.read(1024 * 1024), b''):
                     digest.update(block)
             require(digest.hexdigest() == receipt['sha256_hex'], 'source replica digest mismatch')
             with local.open('rb') as source:
-                try:
-                    copied = subprocess.run(['docker', 'exec', '-i', standby['id'], 'sh', '-c',
-                        'umask 077; set -C; cat > "$1"', 'sh', path], stdin=source,
-                        capture_output=True, timeout=90)
-                except subprocess.TimeoutExpired:
-                    raise HAError('replica transfer timed out; outcome unconfirmed') from None
-                require(copied.returncode == 0, 'replica transfer failed')
-        actual = docker('exec', standby['id'], 'sha256sum', path).decode().split()[0]
-        require(actual == receipt['sha256_hex'], 'standby replica digest mismatch')
-        docker('exec', standby['id'], 'sync', '-f', path)
+                docker('transfer replica to standby', 'exec', '-i', standby['id'], 'sh', '-c',
+                       'umask 077; set -C; cat > "$1"', 'sh', path, stdin=source)
+        actual = docker('hash standby replica', 'exec', standby['id'], 'sha256sum', path).decode().split()
+        require(actual[:1] == [receipt['sha256_hex']], 'standby replica digest mismatch')
+        docker('sync standby replica', 'exec', standby['id'], 'sync', '-f', path)
         receipt['output_path'] = path
-        docker('exec', '-i', standby['id'], 'sh', '-c', 'umask 077; set -C; cat > "$1"',
-               'sh', path + '.json', data=(json.dumps(receipt) + '\n').encode())
-        docker('exec', standby['id'], 'sync', '-f', path + '.json')
+        docker('write standby receipt', 'exec', '-i', standby['id'], 'sh', '-c',
+               'umask 077; set -C; cat > "$1"', 'sh', path + '.json',
+               data=(json.dumps(receipt) + '\n').encode())
+        docker('sync standby receipt', 'exec', standby['id'], 'sync', '-f', path + '.json')
         # Status publication occurs only after verified, durable transport.
         previous = self.state.get('replica')
         if previous:
@@ -177,22 +198,22 @@ class Controller:
         self.state['replica'] = {'receipt': receipt, 'container_id': standby['id'],
                                  'completed_at_ms': time.time_ns() // 1_000_000}
         self.save()
-        docker('exec', primary['id'], 'rm', '--', path)
+        docker('remove primary replica', 'exec', primary['id'], 'rm', '--', path)
         if previous and previous['container_id'] == standby['id']:
             prior = previous['receipt']['output_path']
-            docker('exec', standby['id'], 'rm', '--', prior, prior + '.json')
+            docker('remove previous replica', 'exec', standby['id'], 'rm', '--', prior, prior + '.json')
 
     def fence(self, primary):
         if self.owned(primary['id']) is not None:
-            docker('container', 'rm', '--force', primary['id'])
+            docker('remove primary container', 'container', 'rm', '--force', primary['id'])
         require(self.owned(primary['id']) is None, 'primary fencing unconfirmed')
         # A second container mounting the old state would invalidate quiescence.
-        require(not docker('container', 'ls', '--all', '--filter', 'volume=' + primary['volume'],
-                           '--format', '{{.ID}}').strip(),
+        require(not docker('list old volume users', 'container', 'ls', '--all', '--filter',
+                           'volume=' + primary['volume'], '--format', '{{.ID}}').strip(),
                 'old volume remains attached to another container')
 
     def copy_final_state(self, primary, standby):
-        volume = json.loads(docker('volume', 'inspect', primary['volume']))[0]
+        volume = json.loads(docker('inspect old volume', 'volume', 'inspect', primary['volume']))[0]
         require(volume.get('Labels', {}).get(LABEL) == self.state['cluster'],
                 'final source volume is missing or unowned')
         require(self.owned(primary['id']) is None, 'primary is not fenced')
@@ -206,7 +227,7 @@ tar -C /source/state --exclude=./runtime --exclude=./broker.lock -cf /tmp/final.
 tar -C /vault/state -xf /tmp/final.tar
 sync -f /vault/state
 '''
-        docker('run', '--rm', '--label', LABEL + '=' + self.state['cluster'],
+        docker('copy final state', 'run', '--rm', '--label', LABEL + '=' + self.state['cluster'],
                '--network', 'none', '--user', '10001:10001', '--read-only', '--cap-drop', 'ALL',
                '--security-opt', 'no-new-privileges', '--log-driver', 'none',
                '--tmpfs', '/tmp:rw,noexec,nosuid', '--mount',
@@ -216,6 +237,7 @@ sync -f /vault/state
 
     def promote(self, proof):
         primary, standby = self.state['primary'], self.state['standby']
+        require(standby is not None, 'no standby to promote; operator recovery required')
         self.validate_node(standby)
         self.state['phase'] = 'fencing'
         self.save()
@@ -225,13 +247,13 @@ sync -f /vault/state
         self.start(standby)
         self.cli(standby, 'unlock', '--password-stdin', proof=proof)
         require(self.cli(standby, 'status')['state'] == 'unlocked', 'promoted broker is not ready')
-        self.state['primary'] = standby
-        self.state['generation'] += 1
-        self.state['last_recovery_ms'] = (time.monotonic_ns() - started) / 1_000_000
-        self.state['standby'] = self.new_node()
-        self.state['replica'] = None
-        self.state['phase'] = 'ready'
+        # One atomic write publishes the unlocked primary. No spare exists yet,
+        # so no persisted state ever names the new primary as its own standby.
+        self.state.update(primary=standby, standby=None, replica=None, phase='ready',
+                          generation=self.state['generation'] + 1,
+                          last_recovery_ms=(time.monotonic_ns() - started) / 1_000_000)
         self.save()
+        self.prepare_spare()
 
     def healthy(self):
         # owned() requires a successful full daemon query before interpreting absence.
@@ -248,6 +270,8 @@ sync -f /vault/state
     def tick(self, proof):
         if not self.healthy():
             self.promote(proof)
+        if self.state['standby'] is None:
+            self.prepare_spare()  # An earlier spare preparation failed after promotion.
         try:
             self.replicate(proof)
         except HAError:
@@ -259,28 +283,39 @@ sync -f /vault/state
             self.replicate(proof)
 
 
-def create(directory, image, proof):
+def create(directory, image, proof, output):
     directory.mkdir(mode=0o700)  # Existing directories/vaults are never overwritten.
     descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        info = json.loads(docker('image', 'inspect', image))[0]
+        lock(descriptor)
+        info = json.loads(docker('inspect image', 'image', 'inspect', image))[0]
         require(info['Os'] == 'linux', 'Linux image required')
         cluster = uuid.uuid4().hex
         state = {'cluster': cluster, 'image': info['Id'], 'network': 'rekey-ha-' + cluster,
                  'phase': 'creating', 'volumes': [], 'generation': 1, 'replica': None}
         controller = Controller(directory, state)
         controller.save()
-        docker('network', 'create', '--label', LABEL + '=' + cluster, state['network'])
+        docker('create network', 'network', 'create', '--label', LABEL + '=' + cluster, state['network'])
         state['primary'] = controller.new_node()
         state['standby'] = controller.new_node()
         controller.save()
-        recovery = docker('exec', '-i', state['primary']['id'], 'rekeyd', 'init', '--state-dir', STATE,
-                          '--mode', 'personal', '--password-stdin', data=proof)
-        controller.start(state['primary'])
-        state['phase'] = 'ready'
-        controller.save()
-        return recovery
+        recovery = docker('initialize vault', 'exec', '-i', state['primary']['id'], 'rekeyd', 'init',
+                          '--state-dir', STATE, '--mode', 'personal', '--password-stdin', data=proof)
+        # Hand over recovery-key custody before any later step can fail.
+        try:
+            output.write(recovery)
+            output.flush()
+        except OSError:
+            raise HAError('vault initialized but its recovery output could not be written; '
+                          'run destroy and create a new cluster') from None
+        try:
+            controller.start(state['primary'])
+            state['phase'] = 'ready'
+            controller.save()
+        except (HAError, OSError) as error:
+            detail = str(error) if isinstance(error, HAError) else type(error).__name__
+            raise HAError(detail + '; the recovery output was already written to stdout: keep it, '
+                          'then run destroy and create a new cluster') from None
     finally:
         os.close(descriptor)
 
@@ -294,10 +329,10 @@ def destroy(controller):
         args = [kind, 'ls', '--filter', 'label=' + label, '--format', template]
         if kind == 'container':
             args.insert(2, '--all')
-        resources = docker(*args).decode().split()
+        resources = docker('list owned ' + kind + 's', *args).decode().split()
         if resources:
-            docker(kind, *remove, *resources)
-        require(not docker(*args).strip(), 'owned cleanup incomplete')
+            docker('remove owned ' + kind + 's', kind, *remove, *resources)
+        require(not docker('verify owned ' + kind + ' cleanup', *args).strip(), 'owned cleanup incomplete')
     controller.state['phase'] = 'destroyed'
     controller.save()
 
@@ -317,13 +352,13 @@ def main():
     commands.add_parser('destroy')
     args = parser.parse_args()
     if args.operation == 'create':
-        sys.stdout.buffer.write(create(args.directory, args.image, proof_from_stdin()))
+        create(args.directory, args.image, proof_from_stdin(), sys.stdout.buffer)
         return
     private_directory(args.directory)
     descriptor = os.open(args.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         if args.operation != 'status':
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock(descriptor)
         state = json.loads((args.directory / 'cluster.json').read_bytes())
         controller = Controller(args.directory, state)
         if args.operation == 'status':

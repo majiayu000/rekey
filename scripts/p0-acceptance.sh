@@ -1,103 +1,95 @@
 #!/usr/bin/env bash
-# P0 clean-install acceptance: release binaries, no FakeTransport.
-# Proves every public P0 CLI command through release binaries on this machine:
-# init → serve → unlock/lock → credential add/list/rotate/revoke → action
-# create/list/disable → session create/revoke → execute → backup → shutdown →
-# restore. The successful execute uses the production HTTPS transport.
+# P0 clean-install acceptance for the Connection model. Release binaries only:
+# no fixture transport, no injected CA and no bypass of the public-IP screen.
+# Real processes prove init → serve → wrong/right unlock → credential add/list/
+# rotate → basic-mode software trust through rekey-policy-sign → signed
+# Connection activation → tokenless discovery, dry run, signed deny, default
+# deny, allowed CALL and password-approved CALL → disable by re-signing →
+# revoke → lock/unlock under an Agent connection flood → backup overlap
+# refusal → backup → shutdown → restore with wrong/right proof → restored
+# signed Connections → audit pairing and disk secret canary.
 #
-# Execute uses the production ReqwestUpstreamTransport against
-# https://1.1.1.1/cdn-cgi/trace (public HTTPS GET with an IP SAN). The literal
-# public IP keeps this gate valid on hosts whose TUN/fake-IP DNS maps every
-# domain into the blocked 198.18.0.0/15 range. Override with
-# REKEY_ACCEPTANCE_ORIGIN / REKEY_ACCEPTANCE_PATH if needed.
-# Set REKEY_ACCEPTANCE_SKIP_EXECUTE=1 to skip the network hop.
+# Allowed CALLs target https://localhost. The production upstream screen
+# refuses that loopback answer after execution.started commits, so each such
+# CALL ends in exactly one execution.blocked(private-address) with no network.
+# REKEY_ACCEPTANCE_PUBLIC_UPSTREAM=1 additionally calls the public literal-IP
+# origin https://1.1.1.1/cdn-cgi/trace through the production HTTPS transport
+# and requires execution.finished. It needs Internet access; off by default.
 set -euo pipefail
-umask 000
+umask 077
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="${BIN_DIR:-$ROOT/target/release}"
-REKEY="${BIN_DIR}/rekey"
-REKEYD="${BIN_DIR}/rekeyd"
-PASSWORD="${REKEY_ACCEPTANCE_PASSWORD:-acceptance horse battery staple}"
-SECRET_V1="acceptance-credential-canary-v1"
-SECRET_V2="acceptance-credential-canary-v2"
-ORIGIN="${REKEY_ACCEPTANCE_ORIGIN:-https://1.1.1.1}"
-EXACT_PATH="${REKEY_ACCEPTANCE_PATH:-/cdn-cgi/trace}"
+# shellcheck source=scripts/p0-connection-lib.sh
+source "$ROOT/scripts/p0-connection-lib.sh"
+p0_require_binaries
 
-if [[ ! -x "$REKEY" || ! -x "$REKEYD" ]]; then
-  if [[ "${REKEY_ACCEPTANCE_REQUIRE_BINARIES:-}" == "1" ]]; then
-    echo "required release binaries are missing from BIN_DIR: $BIN_DIR" >&2
-    exit 1
-  fi
-  echo "building release binaries…"
-  cargo build --release -p rekey-cli -p rekey-broker
-fi
+random() { python3 -c 'import secrets; print(secrets.token_hex(16))'; }
+PASSWORD="p0-acceptance-password-$(random)"
+SECRET_V1="p0-acceptance-canary-v1-$(random)"
+SECRET_V2="p0-acceptance-canary-v2-$(random)"
 
 # macOS sockaddr_un is ~104 bytes; keep state-dir names tiny.
 WORKDIR="$(mktemp -d "/tmp/rk.XXXXXX")"
 STATE="$WORKDIR/s"
+KEY="$WORKDIR/signer.p8"
+SERVE_PID=""
+FLOOD_PID=""
 cleanup() {
-  if [[ -n "${FLOOD_PID:-}" ]]; then
-    kill "$FLOOD_PID" 2>/dev/null || true
-    wait "$FLOOD_PID" 2>/dev/null || true
+  for pid in $FLOOD_PID $SERVE_PID; do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  if [[ "${REKEY_KEEP_WORKDIR:-}" == "1" ]]; then
+    echo "kept acceptance artifacts at $WORKDIR"
+  else
+    rm -rf "$WORKDIR"
   fi
-  if [[ -n "${SERVE_PID:-}" ]]; then
-    kill "$SERVE_PID" 2>/dev/null || true
-    wait "$SERVE_PID" 2>/dev/null || true
-  fi
-  rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
 
-json_field() {
-  python3 -c 'import json,sys; print(json.load(sys.stdin)['"$1"'])'
+stop_broker() {
+  p0_proof | "$REKEY" --state-dir "$1" shutdown --password-stdin >/dev/null
+  wait "$SERVE_PID" 2>/dev/null || true
+  SERVE_PID=""
 }
 
-echo "== init"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null
+audit() { p0_sql "$STATE/vault.sqlite3" "$1"; }
+
+# The newest execution.started for a Connection, with its terminal rows.
+last_execution() {
+  audit "SELECT t.event_type, t.reason_code FROM audit_events t
+    WHERE t.request_id = (SELECT s.request_id FROM audit_events s
+      WHERE s.event_type = 'execution.started' AND s.resource_id = '$1'
+      ORDER BY s.sequence DESC LIMIT 1)
+      AND t.event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate')"
+}
+
+echo "== init (personal) under umask 000"
+p0_proof | (umask 000; exec "$REKEY" --state-dir "$STATE" init --mode personal --password-stdin) >/dev/null
+p0_private_service_port "$STATE"
 
 echo "== delegated exit codes (usage=2, storage/state=5)"
-set +e
-"$REKEY" --state-dir "$STATE" serve --idle-lock 1s >/dev/null 2>&1
-usage_rc=$?
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null 2>&1
-state_rc=$?
-set -e
-[[ "$usage_rc" -eq 2 ]] || { echo "expected invalid idle exit 2, got $usage_rc"; exit 1; }
-[[ "$state_rc" -eq 5 ]] || { echo "expected second init exit 5, got $state_rc"; exit 1; }
+p0_expect_exit 2 "$REKEY" --state-dir "$STATE" serve --idle-lock 1s
+p0_proof | p0_expect_exit 5 "$REKEY" --state-dir "$STATE" init --mode personal --password-stdin
 
-echo "== serve"
-"$REKEY" --state-dir "$STATE" serve --idle-lock 15m >/dev/null 2>&1 &
+echo "== serve (delegated to rekeyd) under umask 000"
+(umask 000; exec "$REKEY" --state-dir "$STATE" serve --idle-lock 15m) >/dev/null 2>"$WORKDIR/serve-1.jsonl" &
 SERVE_PID=$!
-for _ in $(seq 1 100); do
-  [[ -S "$STATE/runtime/admin.sock" ]] && break
-  sleep 0.05
-done
-[[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
+p0_wait_for_broker "$STATE" "$SERVE_PID"
 
-echo "== wrong password"
-set +e
-printf 'wrong-password\n' | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null 2>&1
-unlock_rc=$?
-set -e
-[[ "$unlock_rc" -eq 3 ]] || { echo "expected unlock exit 3, got $unlock_rc"; exit 1; }
+echo "== wrong password, then unlock"
+printf 'wrong-password\n' | p0_expect_exit 3 "$REKEY" --state-dir "$STATE" unlock --password-stdin
+p0_proof | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 
-echo "== unlock"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+echo "== credential add, list and rotate"
+cred_id="$(printf '%s\n%s\n' "$PASSWORD" "$SECRET_V1" \
+  | "$REKEY" --state-dir "$STATE" credential add p0-acceptance --stdin-secrets | p0_field id)"
+p0_output_has p0-acceptance "$REKEY" --state-dir "$STATE" credential list || p0_fail "credential list lacks the credential"
+printf '%s\n%s\n' "$PASSWORD" "$SECRET_V2" \
+  | "$REKEY" --state-dir "$STATE" credential rotate "$cred_id" --stdin-secrets >/dev/null
 
-echo "== credential add"
-cred_json="$(printf '%s\n%s\n' "$PASSWORD" "$SECRET_V1" | "$REKEY" --state-dir "$STATE" credential add acceptance --stdin-secrets)"
-cred_id="$(printf '%s\n' "$cred_json" | json_field '"id"')"
-
-echo "== credential list"
-credential_list="$("$REKEY" --state-dir "$STATE" credential list)"
-printf '%s\n' "$credential_list" | grep -q acceptance
-[[ "$credential_list" != *"$SECRET_V1"* ]] || { echo "credential list leaked secret"; exit 1; }
-
-echo "== credential rotate"
-printf '%s\n%s\n' "$PASSWORD" "$SECRET_V2" | "$REKEY" --state-dir "$STATE" credential rotate "$cred_id" --stdin-secrets >/dev/null
-
-echo "== owner-only runtime and SQLite modes under umask 000"
+echo "== owner-only runtime and SQLite modes"
 python3 - "$STATE" <<'PY'
 import os, pathlib, stat, sys
 root = pathlib.Path(sys.argv[1])
@@ -119,133 +111,94 @@ for path, wanted in expected.items():
         raise SystemExit(f"wrong mode for {path.name}: {oct(got)} != {oct(wanted)}")
 PY
 
-echo "== action create"
-action_file="$WORKDIR/action.json"
-cat >"$action_file" <<EOF
-{
-  "name": "acceptance-get",
-  "credential_id": "$cred_id",
-  "origin": "$ORIGIN",
-  "method": "GET",
-  "exact_path": "$EXACT_PATH",
-  "auth_header": "authorization",
-  "auth_prefix": "Bearer ",
-  "timeout_ms": 15000,
-  "request_max_bytes": 1024,
-  "allowed_extra_headers": [],
-  "response_max_bytes": 65536,
-  "allowed_response_headers": ["content-type"]
-}
-EOF
-action_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action create --file "$action_file" --password-stdin)"
-action_id="$(printf '%s\n' "$action_json" | json_field '"id"')"
-action_ver="$(printf '%s\n' "$action_json" | json_field '"version"')"
-action_ref="${action_id}@${action_ver}"
+echo "== basic-mode software trust through rekey-policy-sign"
+p0_install_software_trust "$STATE" "$KEY"
+[[ "$("$REKEY" --state-dir "$STATE" policy status | p0_field trust_installed)" == "true" ]] \
+  || p0_fail "software trust was not installed"
 
-echo "== action list"
-action_list="$("$REKEY" --state-dir "$STATE" action list)"
-printf '%s\n' "$action_list" | grep -q acceptance-get
+echo "== sign and activate Connections"
+p0_connection "$STATE" p0-local https://localhost "$cred_id" true "$WORKDIR/local.json"
+p0_connection "$STATE" p0-public https://1.1.1.1 "$cred_id" true "$WORKDIR/public.json"
+combine() { python3 -c 'import json, sys; print(json.dumps([json.load(open(p)) for p in sys.argv[1:]]))' "$@"; }
+combine "$WORKDIR/local.json" "$WORKDIR/public.json" >"$WORKDIR/connections.json"
+p0_activate_connections "$STATE" "$KEY" "$WORKDIR/connections.json"
+"$REKEY" --state-dir "$STATE" policy status >"$WORKDIR/policy-status.json"
+[[ "$(p0_field status <"$WORKDIR/policy-status.json")" == "active" ]] || p0_fail "policy is not active"
 
-echo "== action update + retired-version denial"
-action_update_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action update "$action_id" --file "$action_file" --password-stdin)"
-action_ver="$(printf '%s\n' "$action_update_json" | json_field '"version"')"
-[[ "$action_ver" -eq 2 ]] || { echo "expected updated action version 2, got $action_ver"; exit 1; }
-set +e
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 1 --password-stdin >/dev/null 2>&1
-retired_rc=$?
-set -e
-[[ "$retired_rc" -eq 4 ]] || { echo "expected retired action exit 4, got $retired_rc"; exit 1; }
-action_ref="${action_id}@${action_ver}"
-
-echo "== session create"
-session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 5 --password-stdin)"
-session_id="$(printf '%s\n' "$session_json" | json_field '"session_id"')"
-revoked_token="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
-
-echo "== session revoke + denied replay"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session revoke "$session_id" --password-stdin >/dev/null
-set +e
-"$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$revoked_token" >/dev/null 2>&1
-revoked_rc=$?
-set -e
-[[ "$revoked_rc" -eq 4 ]] || { echo "expected revoked session exit 4, got $revoked_rc"; exit 1; }
-
-echo "== fresh session"
-session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 5 --password-stdin)"
-token="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
-principal_id="$(printf '%s\n' "$session_json" | json_field '"principal_id"')"
-
-echo "== activate typed authorization policy"
-policy_file="$WORKDIR/policy.json"
-python3 - "$policy_file" "$action_id" "$action_ver" "$principal_id" <<'PY'
-import json, pathlib, sys, time, uuid
-path, action_id, action_version, principal_id = sys.argv[1:]
-resource = {"type": "fixed-http-action", "id": action_id}
-pathlib.Path(path).write_text(json.dumps({
-    "format_version": 6,
-    "version": 1,
-    "expires_at_ms": int(time.time() * 1000) + 600000,
-    "approvers": [],
-    "profiles": [], "workload_identities": [],
-    "bindings": [{
-        "action_id": action_id,
-        "version": int(action_version),
-        "resource": resource,
-        "parameter_schema_id": "p0-empty/v1",
-        "parameter_schema": {"type": "null"},
-    }],
-    "rules": [{
-        "id": str(uuid.uuid4()),
-        "effect": "permit",
-        "principal_id": principal_id,
-        "action_id": action_id,
-        "version": int(action_version),
-        "resource": resource,
-        "parameters": {"kind": "any_validated"},
-    }],
-}))
+echo "== tokenless discovery and dry run"
+"$REKEY" --state-dir "$STATE" list --json >"$WORKDIR/list.json"
+python3 - "$WORKDIR/list.json" <<'PY'
+import json, sys
+names = {c["connection"]: c for c in json.load(open(sys.argv[1]))["connections"]}
+if set(names) != {"p0-local", "p0-public"} or names["p0-local"]["origin"] != "https://localhost":
+    raise SystemExit(f"unexpected discovery: {sorted(names)}")
 PY
-python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
-  --snapshot "$policy_file" --bundle "$WORKDIR/policy-bundle.json" \
-  --trust "$WORKDIR/policy-trust.json"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
-  --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
-read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
-  --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
-"$REKEY" --state-dir "$STATE" policy status | grep -q '"version": 1'
+"$REKEY" --state-dir "$STATE" http p0-local GET /p0/allowed --dry-run >"$WORKDIR/dry-run.json"
+"$REKEY" --state-dir "$STATE" http p0-public GET /cdn-cgi/trace --dry-run >"$WORKDIR/dry-run-public.json"
+python3 - "$WORKDIR/dry-run.json" "$WORKDIR/dry-run-public.json" <<'PY'
+import json, sys
+for path, name in zip(sys.argv[1:], ("p0-local", "p0-public")):
+    dry = json.load(open(path))
+    if dry["effect"] != "allow" or dry["credential_placeholder"] != f"«rekey:{name}»":
+        raise SystemExit(f"unexpected dry run: {dry}")
+PY
+[[ "$(audit "SELECT count(*) FROM audit_events WHERE event_type = 'execution.started'")" == "0" ]] \
+  || p0_fail "dry run started an execution"
 
-if [[ "${REKEY_ACCEPTANCE_SKIP_EXECUTE:-}" != "1" ]]; then
-  echo "== execute (production HTTPS transport, origin $ORIGIN$EXACT_PATH)"
-  set +e
-  exec_out="$("$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" 2>"$WORKDIR/exec.err")"
-  exec_rc=$?
-  set -e
-  if [[ "$exec_rc" -ne 0 ]]; then
-    echo "execute failed (rc=$exec_rc). This harness does not inject FakeTransport."
-    echo "stderr:"
-    cat "$WORKDIR/exec.err" || true
-    echo "stdout:"
-    printf '%s\n' "$exec_out"
-    exit "$exec_rc"
-  fi
-  echo "$exec_out" | head -n 5
+echo "== signed deny and default deny refuse before execution.started"
+p0_expect_exit 4 "$REKEY" --state-dir "$STATE" http p0-local POST /p0/allowed --json '{}'
+grep -q DENIED "$WORKDIR/expect.err" || p0_fail "write was not denied by the signed rule"
+p0_expect_exit 4 "$REKEY" --state-dir "$STATE" http p0-local GET /p0/unlisted
+grep -q DENIED "$WORKDIR/expect.err" || p0_fail "unlisted path was not denied"
+[[ "$(audit "SELECT count(*) FROM audit_events WHERE event_type = 'execution.started'")" == "0" ]] \
+  || p0_fail "denied CALL started an execution"
+[[ "$(audit "SELECT count(*) FROM audit_events WHERE event_type = 'execution.blocked'
+  AND reason_code = 'connection-rule-denied'")" == "2" ]] || p0_fail "denials were not audited"
+
+echo "== allowed tokenless CALL: started, then the production screen refuses loopback"
+p0_expect_exit 6 "$REKEY" --state-dir "$STATE" http p0-local GET /p0/allowed
+grep -q UPSTREAM_ADDRESS_BLOCKED "$WORKDIR/expect.err" || p0_fail "loopback target was not refused"
+[[ "$(last_execution p0-local)" == "execution.blocked|private-address" ]] \
+  || p0_fail "allowed CALL lacks exactly one private-address terminal: $(last_execution p0-local)"
+
+echo "== approve rule: password-approved local challenge, single use"
+p0_expect_exit 4 "$REKEY" --state-dir "$STATE" http p0-local GET /p0/approve --no-wait
+grep -q APPROVAL_REQUIRED "$WORKDIR/expect.err" || p0_fail "approve rule did not require approval"
+approval_id="$(p0_field approval challenge_id <"$WORKDIR/expect.err")"
+"$REKEY" --state-dir "$STATE" approval review "$approval_id" >"$WORKDIR/review.json"
+review_sha="$(p0_field metadata review_sha256 <"$WORKDIR/review.json")"
+p0_proof | "$REKEY" --state-dir "$STATE" approval approve "$approval_id" \
+  --review-sha256 "$review_sha" --password --password-stdin >"$WORKDIR/approved.json"
+[[ "$(p0_field state <"$WORKDIR/approved.json")" == "approved" ]] || p0_fail "approval was not recorded"
+p0_expect_exit 6 "$REKEY" --state-dir "$STATE" http p0-local GET /p0/approve --approval "$approval_id"
+[[ "$(last_execution p0-local)" == "execution.blocked|private-address" ]] \
+  || p0_fail "approved CALL lacks exactly one terminal"
+p0_expect_exit 4 "$REKEY" --state-dir "$STATE" http p0-local GET /p0/approve --approval "$approval_id"
+grep -q DENIED "$WORKDIR/expect.err" || p0_fail "a consumed approval was accepted again"
+
+if [[ "${REKEY_ACCEPTANCE_PUBLIC_UPSTREAM:-}" == "1" ]]; then
+  echo "== public upstream through the production HTTPS transport"
+  "$REKEY" --state-dir "$STATE" http p0-public GET /cdn-cgi/trace >"$WORKDIR/public-call.json"
+  [[ "$(p0_field status <"$WORKDIR/public-call.json")" == "200" ]] || p0_fail "public CALL failed"
+  [[ "$(last_execution p0-public)" == "execution.finished|finished" ]] \
+    || p0_fail "public CALL lacks execution.finished: $(last_execution p0-public)"
 else
-  echo "== execute skipped (REKEY_ACCEPTANCE_SKIP_EXECUTE=1)"
+  echo "== public upstream CALL skipped (REKEY_ACCEPTANCE_PUBLIC_UPSTREAM=1 needs Internet)"
 fi
 
-echo "== action disable + denied execution"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action disable "$action_id" --password-stdin >/dev/null
-set +e
-"$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" >/dev/null 2>&1
-disabled_rc=$?
-set -e
-[[ "$disabled_rc" -eq 4 ]] || { echo "expected disabled action exit 4, got $disabled_rc"; exit 1; }
+echo "== disable by re-signing; disabled Connection is refused and hidden"
+p0_connection "$STATE" p0-local https://localhost "$cred_id" false "$WORKDIR/local.json"
+combine "$WORKDIR/local.json" "$WORKDIR/public.json" >"$WORKDIR/connections.json"
+p0_activate_connections "$STATE" "$KEY" "$WORKDIR/connections.json"
+p0_expect_exit 4 "$REKEY" --state-dir "$STATE" http p0-local GET /p0/allowed
+grep -q NOT_CONFIGURED "$WORKDIR/expect.err" || p0_fail "disabled Connection was not refused"
+p0_output_has '"p0-local"' "$REKEY" --state-dir "$STATE" list --json && p0_fail "disabled Connection is discoverable"
 
 echo "== credential revoke"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential revoke "$cred_id" --password-stdin >/dev/null
+p0_proof | "$REKEY" --state-dir "$STATE" credential revoke "$cred_id" --password-stdin >/dev/null
+p0_output_has '"revoked"' "$REKEY" --state-dir "$STATE" credential list || p0_fail "credential was not revoked"
 
-echo "== explicit lock + unlock"
+echo "== explicit lock under an Agent connection flood, locked CALL, unlock"
 flood_ready="$WORKDIR/agent-flood-ready"
 python3 - "$STATE/runtime/agent.sock" "$flood_ready" <<'PY' &
 import pathlib, signal, socket, sys
@@ -262,91 +215,63 @@ for _ in $(seq 1 100); do
   [[ -f "$flood_ready" ]] && break
   sleep 0.02
 done
-[[ -f "$flood_ready" ]] || { echo "agent connection flood did not start"; exit 1; }
+[[ -f "$flood_ready" ]] || p0_fail "agent connection flood did not start"
 "$REKEY" --state-dir "$STATE" status >/dev/null
 "$REKEY" --state-dir "$STATE" lock >/dev/null
 kill "$FLOOD_PID" 2>/dev/null || true
 wait "$FLOOD_PID" 2>/dev/null || true
 FLOOD_PID=""
-locked_status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$locked_status" | grep -q locked
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+[[ "$("$REKEY" --state-dir "$STATE" status | p0_field state)" == "locked" ]] || p0_fail "broker did not lock"
+p0_expect_exit 3 "$REKEY" --state-dir "$STATE" http p0-public GET /cdn-cgi/trace
+grep -q LOCKED "$WORKDIR/expect.err" || p0_fail "locked CALL was not refused as LOCKED"
+p0_proof | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 
-echo "== reject backup overlap with live state"
+echo "== reject backup overlap with live state and a second broker"
 ln -s "$STATE" "$WORKDIR/state-alias"
 for protected_output in \
   "$STATE/vault.sqlite3" \
   "$STATE/broker.lock" \
   "$STATE/runtime/admin.sock" \
   "$WORKDIR/state-alias/vault.sqlite3"; do
-  set +e
-  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" backup --output "$protected_output" --password-stdin >/dev/null 2>&1
-  protected_rc=$?
-  set -e
-  [[ "$protected_rc" -eq 5 ]] || {
-    echo "expected protected backup output exit 5, got $protected_rc: $protected_output"
-    exit 1
-  }
+  p0_proof | p0_expect_exit 5 "$REKEY" --state-dir "$STATE" backup --output "$protected_output" --password-stdin
 done
-set +e
-"$REKEYD" serve --state-dir "$STATE" --idle-lock 15m >/dev/null 2>&1
-second_serve_rc=$?
-set -e
-[[ "$second_serve_rc" -eq 5 ]] || {
-  echo "expected second broker exit 5 after rejected lock overwrite, got $second_serve_rc"
-  exit 1
-}
-"$REKEY" --state-dir "$STATE" credential list | grep -q acceptance
+p0_expect_exit 5 "$REKEYD" serve --state-dir "$STATE" --idle-lock 15m
+p0_output_has p0-acceptance "$REKEY" --state-dir "$STATE" credential list || p0_fail "live state changed"
 
-echo "== backup"
+echo "== backup and shutdown"
 backup="$WORKDIR/out.rkbackup"
-backup_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" backup --output "$backup" --password-stdin)"
-hash="$(printf '%s\n' "$backup_json" | json_field '"sha256_hex"')"
+hash="$(p0_proof | "$REKEY" --state-dir "$STATE" backup --output "$backup" --password-stdin | p0_field sha256_hex)"
+stop_broker "$STATE"
+p0_assert_audit_pairing "$STATE/vault.sqlite3"
 
-echo "== shutdown"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
-wait "$SERVE_PID" 2>/dev/null || true
-SERVE_PID=""
-
-echo "== restore"
+echo "== restore: wrong proof refused, then restored signed Connections"
 restored="$WORKDIR/r"
 bad_restore="$WORKDIR/bad"
-# These are isolated acceptance targets. Inspect with the valid proof first so
-# the negative case exercises actual restore authentication, not inspect.
-bad_context="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$bad_restore" restore --input "$backup" --sha256 "$hash" --inspect --password-stdin)"
-set +e
-printf 'wrong-password\n' | "$REKEY" --state-dir "$bad_restore" restore --input "$backup" --sha256 "$hash" --expected-context "$bad_context" --password-stdin >/dev/null 2>&1
-auth_rc=$?
-set -e
-[[ "$auth_rc" -eq 3 ]] || { echo "expected wrong restore proof exit 3, got $auth_rc"; exit 1; }
-restore_context="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$restored" restore --input "$backup" --sha256 "$hash" --inspect --password-stdin)"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$restored" restore --input "$backup" --sha256 "$hash" --expected-context "$restore_context" --password-stdin >/dev/null
-
-echo "== restored serve + list"
-"$REKEY" --state-dir "$restored" serve --idle-lock 15m >/dev/null 2>&1 &
+# Inspect with the valid proof first so the negative case exercises restore
+# authentication itself, not inspect.
+bad_context="$(p0_proof | "$REKEY" --state-dir "$bad_restore" restore --input "$backup" --sha256 "$hash" --inspect --password-stdin)"
+printf 'wrong-password\n' | p0_expect_exit 3 "$REKEY" --state-dir "$bad_restore" restore --input "$backup" \
+  --sha256 "$hash" --expected-context "$bad_context" --password-stdin
+context="$(p0_proof | "$REKEY" --state-dir "$restored" restore --input "$backup" --sha256 "$hash" --inspect --password-stdin)"
+p0_proof | "$REKEY" --state-dir "$restored" restore --input "$backup" --sha256 "$hash" \
+  --expected-context "$context" --password-stdin >/dev/null
+p0_private_service_port "$restored"
+"$REKEYD" serve --state-dir "$restored" --idle-lock 15m >/dev/null 2>"$WORKDIR/serve-restored.jsonl" &
 SERVE_PID=$!
-for _ in $(seq 1 100); do
-  [[ -S "$restored/runtime/admin.sock" ]] && break
-  sleep 0.05
-done
-[[ -S "$restored/runtime/admin.sock" ]] || { echo "restored broker did not start"; exit 1; }
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$restored" unlock --password-stdin >/dev/null
-list="$("$REKEY" --state-dir "$restored" credential list)"
-printf '%s\n' "$list" | grep -q acceptance
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$restored" shutdown --password-stdin >/dev/null
-wait "$SERVE_PID" 2>/dev/null || true
-SERVE_PID=""
+p0_wait_for_broker "$restored" "$SERVE_PID"
+p0_proof | "$REKEY" --state-dir "$restored" unlock --password-stdin >/dev/null
+p0_output_has p0-acceptance "$REKEY" --state-dir "$restored" credential list || p0_fail "restored credential missing"
+"$REKEY" --state-dir "$restored" connection list >"$WORKDIR/restored-connections.json"
+python3 - "$WORKDIR/restored-connections.json" <<'PY'
+import json, sys
+listed = {c["name"]: c["enabled"] for c in json.load(open(sys.argv[1]))["connections"]}
+if listed != {"p0-local": False, "p0-public": True}:
+    raise SystemExit(f"restored signed Connections differ: {listed}")
+PY
+stop_broker "$restored"
+p0_assert_audit_pairing "$restored/vault.sqlite3"
 
-echo "== disk secret canary"
-printf '%s\n%s\n' "$SECRET_V1" "$SECRET_V2" | python3 -c '
-import pathlib, sys
-root = pathlib.Path(sys.argv[1])
-needles = [line.rstrip(b"\n") for line in sys.stdin.buffer if line.rstrip(b"\n")]
-for path in root.rglob("*"):
-    if path.is_file():
-        data = path.read_bytes()
-        if any(needle in data for needle in needles):
-            raise SystemExit(f"plaintext credential found in {path}")
-' "$STATE"
+echo "== disk and output secret canary"
+printf '%s\n' "$PASSWORD" "$SECRET_V1" "$SECRET_V2" | p0_assert_no_secret_on_disk "$WORKDIR"
 
-echo "P0 acceptance passed in $WORKDIR"
+echo "P0 acceptance passed"

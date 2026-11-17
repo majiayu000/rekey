@@ -532,7 +532,8 @@ async fn dispatch_local(
             let receiver = ctx
                 .executions
                 .submit_local(crate::executor::LocalExecuteRequest {
-                    request_id: frame.header.request_id,
+                    // As for Actions: the frame ID only correlates transport.
+                    request_id: crate::random_id(RequestId::from_random_bytes)?,
                     meta,
                     body: frame.body.clone(),
                     caller: caller.to_owned(),

@@ -548,3 +548,53 @@ async fn daily_denial_preserves_approval_without_started_or_effect() {
     f.assert_paired_terminals(1);
     f.broker.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reused_call_frame_id_is_transport_correlation_not_audit_identity() {
+    // Agents choose frame IDs. Reusing one must neither fault the Authority on
+    // the one-started-per-request index nor merge two executions' audit.
+    use tokio::io::AsyncReadExt;
+    let f = Fixture::new(1, 1000, false).await;
+    let frame_id = RequestId::new_random();
+    let metadata = serde_json::to_vec(&read(0)).unwrap();
+    let mut stream = UnixStream::connect(f.broker.agent_sock()).await.unwrap();
+    for _ in 0..2 {
+        let mut frame = FrameHeader {
+            channel: Channel::Agent,
+            flags: 0,
+            message_type: agent_msg::CALL,
+            request_id: frame_id,
+            metadata_len: metadata.len() as u32,
+            body_len: 0,
+        }
+        .encode()
+        .to_vec();
+        frame.extend_from_slice(&metadata);
+        stream.write_all(&frame).await.unwrap();
+        let mut raw = [0; ipc::FRAME_HEADER_LEN];
+        stream.read_exact(&mut raw).await.unwrap();
+        let header = FrameHeader::decode(&raw).unwrap();
+        let mut rest = vec![0; (header.metadata_len + header.body_len) as usize];
+        stream.read_exact(&mut rest).await.unwrap();
+        assert_eq!(
+            header.message_type,
+            ipc::resp_msg::OK,
+            "{}",
+            String::from_utf8_lossy(&rest)
+        );
+        assert_eq!(header.request_id, frame_id, "responses echo the frame ID");
+    }
+    f.assert_paired_terminals(2);
+    let started: Vec<Vec<u8>> = f
+        .db()
+        .prepare("SELECT request_id FROM audit_events WHERE event_type='execution.started'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_ne!(started[0], started[1]);
+    assert!(started.iter().all(|id| id[..] != frame_id.as_bytes()[..]));
+    assert_eq!(f.count("runtime.faulted"), 0);
+    f.broker.shutdown().await;
+}
