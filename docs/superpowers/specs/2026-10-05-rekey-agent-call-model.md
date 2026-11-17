@@ -269,6 +269,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   - 信任根仍是每个保险库唯一且不可替换：首次 `rekey add` 在未安装信任时安装软件密钥的信任根；已信任 App Secure Enclave 密钥的保险库拒绝软件签名（`TRUST_MISMATCH`），只能用 `--app` 或新建保险库。
   - 安装的信任算法沿用现有 P-256 标签 `secure-enclave-p256`（该标签只描述曲线与签名编码，`signed.rs` 已声明不证明硬件位置），不新增持久格式。命令行输出与指南必须如实说明“软件签名、基础模式”，不得把基础模式称为 Secure Enclave 或 L1 以上。
   - 基础模式可选“记住解锁”：`rekey unlock --remember <期限>`（≤30 天）复用既有记住此电脑授权（`DESKTOP_REMEMBER`），把解封密钥写入状态目录 0600 文件；rekeyd 启动时若文件有效即调用既有 resume 路径解锁，失效或被删除则保持锁定。这同样是软件保护，不是 Secure Enclave。
+  - **（2026-11-17 修订）期限先于密码校验。** `--remember` 只接受 1 秒至 30 天（含两端，即 `DESKTOP_REMEMBER` 的 1,000..=2,592,000,000 ms）。CLI 在读取或发送密码之前校验，越界返回 `USAGE`，不发送 `UNLOCK`，保险库保持锁定，也不写记住文件；Worker 仍按同一范围复核。
   - **（2026-10-22 修订）记住解锁只能解锁。** 该文件同用户进程可读，因此 CLI 以 `DESKTOP_REMEMBER {lifetime_ms, unlock_only: true}` 签发“仅解锁”票据：沿用 84 字节布局，magic 为 `RKDSU001`（App 票据仍为 `RKDSK001`），magic 属于 AEAD AAD，不能改写。由仅解锁票据恢复的 PresenceGrant 只用于 resume 解锁，**不能**作为任何 presence 证明（本机审批、明文查看、关机及其他 step-up）。`unlock_only` 缺省为 false，App 行为不变。修订前由 CLI 写下的 `RKDSK001` 文件不迁移、不重解释，仍具 presence 权限；基础模式用户须重新执行 `rekey unlock --remember` 或 `rekey lock --forget-remembered`。
   - LLM 预设必须签署非空的精确模型白名单与每日额度；CLI 交互时询问一次模型，`--stdin-secrets` 时必须给 `--model`，不猜测默认模型。
 - 团队模式沿用外部 Ed25519。
