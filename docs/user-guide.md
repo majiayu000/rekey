@@ -1,8 +1,8 @@
-# Rekey 0.4 用户指南
+# Rekey 用户指南（0.5 开发线）
 
-本文对应 **2026-10-08 已公开预发布的 0.4.0-alpha.1**（GitHub prerelease）。当前源码为未发布的 0.5.0-alpha.1。每个版本线都需要新建保险库，不会迁移或覆盖旧的；请保留旧目录，在新目录重建。各版本的数据格式和保护等级见[安全模型与术语](security/README.md)。完整验收状态见[验收报告](evidence/agent-call-acceptance-2026-10-05.md)。
+本文描述当前源码的 **0.5.0-alpha.1 开发线**（未发布，vault27 / policy8）。最新公开预发布是 2026-10-08 的 0.4.0-alpha.1（GitHub prerelease，vault26 / policy7）；标“0.5 起”的行为在 0.4 中不存在。每个版本线都需要新建保险库，不会迁移或覆盖旧的；请保留旧目录，在新目录重建。各版本的数据格式和保护等级见[安全模型与术语](security/README.md)。0.4 的验收状态见[验收报告](evidence/agent-call-acceptance-2026-10-05.md)。
 
-本机软件检查、真实 Codex 的合成上游链及 GitHub 读写分项已有通过证据；Claude 账号、真实 OAuth/云服务、正式设备交互与公开下载安装仍待验。以下命令描述当前实现的操作，不表示候选版已经完成发布验收。
+0.4 验收中，本机软件检查、真实 Codex 的合成上游链及 GitHub 读写分项已有通过证据；Claude 账号、真实 OAuth/云服务、正式设备交互与公开下载安装仍待验。以下命令描述当前源码的操作，不表示候选版已经完成发布验收。
 
 Rekey 保存凭据，Agent 正常启动，在需要凭据时调用 Rekey。CLI、MCP、本机 HTTP 和 SSH agent 的本机调用不需要授权令牌；权限来自用户签署的 Connection / SSH / 临时凭据规则。HTTP 请求仍须带公开占位值 `rekey`，它只是请求标记。AWS、EKS 和 GitHub App 的临时凭据入口会把短期凭据交给 Agent，使用前须单独签署开启。
 
@@ -24,15 +24,15 @@ rekey add glm
 
 `setup` 在 App 中创建新的个人保险库并保存恢复密钥。**当前 0.5 开发版**在 macOS 默认目录且已安装 App 时，`rekey add <预设>` 会打开 App：保存或选择已有凭据，审阅完整连接规则，再系统认证签署并激活。CLI 的打开回执只表示已发起跳转，是否成功以 App 的激活结果为准。连接名、凭据 ID、模型白名单和有效期都会带入表单；用户仍须审阅确认。
 
-App 提前检查已安装信任根对应的签名密钥。已有 Secure Enclave 密钥继续由硬件签名；已有基础模式 `policy-signer-p256.p8` 继续由随 App 安装的签名器使用，并明确显示软件保护等级。后者是当前用户 0600 文件，同用户进程可读。找不到匹配密钥时停止，不创建替代密钥或更换信任根。
+**0.5 起**，App 提前检查已安装信任根对应的签名密钥。已有 Secure Enclave 密钥继续由硬件签名；已有基础模式 `policy-signer-p256.p8` 继续由随 App 安装的签名器使用，并明确显示软件保护等级。后者是当前用户 0600 文件，同用户进程可读。找不到匹配密钥时停止，不创建替代密钥或更换信任根。
 
-**减少密码输入**：在 App 安全设置中选择 30 天密码复核周期，并用原密码启用系统认证。有效期内，日常界面解锁和规则激活可使用系统认证；每次敏感操作仍需确认。30 天不是所有管理操作的免确认期。修改密码、恢复因素或续期系统认证仍需原因素。界面锁定保留已签署的 Agent 规则；锁定整个保险库会撤销访问。
+**减少密码输入（0.5 起）**：在 App 安全设置中选择 30 天密码复核周期，并用原密码启用系统认证。有效期内，日常界面解锁和规则激活可使用系统认证；每次敏感操作仍需确认。30 天不是所有管理操作的免确认期。修改密码、恢复因素或续期系统认证仍需原因素。界面锁定保留已签署的 Agent 规则；锁定整个保险库会撤销访问，并删除这份系统认证授权。daemon 的空闲自动锁定（`--idle-lock`，默认也是最长 7 天无活动）同样会删除它，之后须重新用密码解锁；所以 30 天只在期间没有完整锁定或空闲锁定时才能用满。
 
-无 App、自定义目录或显式 `--stdin-secrets` 使用 CLI 基础模式，仍以原密码操作。CLI 的 `rekey unlock --remember 7d`（最长 30d）是另一种机制：0600 的 `remembered-unlock.key` 用于后台重启解锁，同用户可读，不等于 App 的受保护系统认证，也不能代替敏感操作证明。`rekey lock --forget-remembered` 可撤销此记住状态。这把密钥**只能用于解锁**：它不能批准写操作，也不能代替任何二次验证（明文查看、关机等）。2026-10-22 之前用 `--remember` 写下的文件不会自动降级，请重新执行一次 `rekey unlock --remember` 或 `rekey lock --forget-remembered`。
+**0.5 起**，无 App、自定义目录或显式 `--stdin-secrets` 使用 CLI 基础模式，仍以原密码操作。CLI 的 `rekey unlock --remember 7d`（最长 30d）让 daemon 重启后自动解锁：0600 的 `remembered-unlock.key` 同用户可读，不等于 App 的受保护系统认证，也不能代替敏感操作证明。它与 App 的系统认证授权共用 daemon 中同一份记住票据（`desktop-unlock.bin`），任一方新建都会替换另一方：CLI 记住后 App 的系统认证随之失效，App 重新启用后 CLI 的记住解锁也失效。任何完整锁定（`rekey lock`、App 的“锁定整个保险库”）和 daemon 空闲自动锁定都会删除这份票据，之后重启保持锁定；所以 30d 同样只在期间没有完整锁定或空闲锁定时才能用满。`rekey lock --forget-remembered` 另外删除本地的 `remembered-unlock.key`。这把密钥**只能用于解锁**：它不能批准写操作，也不能代替任何二次验证（明文查看、关机等）。2026-10-22 之前用 `--remember` 写下的文件不会自动降级，请重新执行一次 `rekey unlock --remember` 或 `rekey lock --forget-remembered`。
 
-**不用 App 批准（基础模式）**：写操作进入审批后，先用 `rekey approval pending` 找到请求，用 `rekey approval review ID` 查看完整请求和 `review_sha256`，确认后执行 `rekey approval approve ID --review-sha256 HASH --password`，在隐藏输入里填保险库密码（脚本用 `--password-stdin`）；拒绝用 `reject`。连续输错会触发与解锁相同的限速。
+**不用 App 批准（基础模式，0.5 起）**：写操作进入审批后，先用 `rekey approval pending` 找到请求，用 `rekey approval review ID` 查看完整请求和 `review_sha256`，确认后执行 `rekey approval approve ID --review-sha256 HASH --password`，在隐藏输入里填保险库密码（脚本用 `--password-stdin`）；拒绝用 `reject`。连续输错会触发与解锁相同的限速。
 
-常用选项：`--name` 设置连接名，`--credential-id` 复用已保存密钥，`--model` 可重复，`--valid-days` 设置规则有效期（默认 90 天）。`--app` 明确要求走 App，不能与 `--stdin-secrets` 合用。OAuth 的 client 参数在 App 表单中填写。取消或草案失败后，可在凭据来源中选择已保存条目继续，无需再次粘贴 Key。
+`rekey add` 的常用选项（0.5 起）：`--name` 设置连接名，`--credential-id` 复用已保存密钥，`--model` 可重复，`--valid-days` 设置规则有效期（默认 90 天）。`--app` 明确要求走 App，不能与 `--stdin-secrets` 合用。OAuth 的 client 参数在 App 表单中填写。取消或草案失败后，可在凭据来源中选择已保存条目继续，无需再次粘贴 Key。
 
 需要独立目录的源码用户可在自己的终端中操作：
 
@@ -85,7 +85,7 @@ rekey connection list
 rekey describe github.list_issues
 ```
 
-`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。LLM 连接会列出签名的模型白名单与额度，文本输出末尾提示签名规则还有几天过期（不足 7 天时警告）。`describe` 同时返回该 Connection 的签名规则、本调用方的附加规则、限额与过期时间；LLM 具名操作的 `model` 参数只接受白名单中的值。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
+`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。**0.5 起**，LLM 连接会列出签名的模型白名单与额度，文本输出末尾提示签名规则还有几天过期（不足 7 天时警告）；`describe` 同时返回该 Connection 的签名规则、本调用方的附加规则、限额与过期时间；LLM 具名操作的 `model` 参数只接受白名单中的值。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
 
 以下例子假定 App 已激活名为 `github` 的 GitHub PAT Connection，绑定相应仓库规则。替换公开的 owner / repo 参数：
 
@@ -122,20 +122,20 @@ rekey await REQUEST_ID --timeout 120
 rekey await-unlock --timeout 120
 ```
 
-在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。0.5 源码起，在终端里直接运行时错误改为中文说明和建议命令，通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时仍是 JSON；`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
+在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`（0.5 起），供 Agent 提醒用户打开 Rekey。0.5 起，在终端里直接运行时错误改为中文说明和建议命令，通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时仍是 JSON；`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
 
-App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查访问请求和本机审批。首次连接服务或首次出现请求时，App 请求系统通知权限，选择会保存，重启后保留；可在审批收件箱关闭或重新开启。允许通知时，每个新请求发一条带提示音、固定文案的系统通知，不含提供方、理由或任何密钥，点击只会打开收件箱，不会批准。macOS 默认的横幅约 5 秒后收起，错过时可在通知中心找到；想让它一直显示，到“系统设置 › 通知 › Rekey”把样式改为“提醒”。排查时运行 `/usr/bin/log show --last 30m --info --predicate 'subsystem == "com.starlight.rekey"'`，日志只含请求编号和系统通知设置。无论是否允许通知，Dock 图标角标都会显示待处理请求数。App 未运行时没有提醒。
+**0.5 起**，App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查访问请求和本机审批。首次连接服务或首次出现请求时，App 请求系统通知权限，选择会保存，重启后保留；可在审批收件箱关闭或重新开启。允许通知时，每个新请求发一条带提示音、固定文案的系统通知，不含提供方、理由或任何密钥，点击只会打开收件箱，不会批准。macOS 默认的横幅约 5 秒后收起，错过时可在通知中心找到；想让它一直显示，到“系统设置 › 通知 › Rekey”把样式改为“提醒”。排查时运行 `/usr/bin/log show --last 30m --info --predicate 'subsystem == "com.starlight.rekey"'`，日志只含请求编号和系统通知设置。无论是否允许通知，Dock 图标角标都会显示待处理请求数。App 未运行时没有提醒。
 
 ## 本机 HTTP 与 SDK
 
-服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。每个保险库各用一个端口：端口已被另一个保险库或程序占用时，服务不会启动，`rekeyd` 报 `SERVICE_PORT_IN_USE` 并给出被占用的端口；在该保险库目录的 `service.json` 写入空闲端口（如 `{"port":7788}`，权限 0600）后重新启动，并相应修改 SDK 的 base URL。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
+服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。每个保险库各用一个端口：端口已被另一个保险库或程序占用时，服务不会启动，`rekeyd` 报 `SERVICE_PORT_IN_USE`（0.5 起）并给出被占用的端口；在该保险库目录的 `service.json` 写入空闲端口（如 `{"port":7788}`，权限 0600）后重新启动，并相应修改 SDK 的 base URL。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
 
 ```bash
 curl -H 'Authorization: Bearer rekey' \
   'http://127.0.0.1:7787/c/github/repos/OWNER/REPO/issues'
 ```
 
-服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。
+**0.5 起**，服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。
 
 SDK 的 key 设置为公开占位值 `rekey`，base URL 指向相应 Connection：
 
@@ -151,7 +151,7 @@ SDK 的 key 设置为公开占位值 `rekey`，base URL 指向相应 Connection�
 | OpenRouter | `http://127.0.0.1:7787/c/openrouter/api/v1` |
 | Gemini（OpenAI 兼容） | `http://127.0.0.1:7787/c/gemini/v1beta/openai` |
 
-百炼和 Moonshot 的 Key 按地域签发、不能跨地域使用，请按 Key 所属地域选预设（连接名默认与预设同名）。DeepSeek、Moonshot、Qwen、OpenRouter 和 Gemini 预设只开放 Chat Completions 与模型列表（Qwen 的模型列表走原生 `/api/v1/models`），未声明的端点（例如 OpenRouter 的 `/api/v1/responses`）一律拒绝。DeepSeek 和 Gemini 的单次输出上限只认 `max_tokens`，带 `max_completion_tokens` 的请求会被拒绝；OpenRouter、Moonshot 和 Qwen 两者都接受，缺省时注入 `max_completion_tokens`（Qwen 思考模型只有它同时限制思维链）。Stripe 预设只读：固定 `Stripe-Version`，只允许余额、客户、扣款和 PaymentIntent 的查询，写入和删除一律拒绝（Stripe 写请求要求表单编码，Connection 操作只发送 JSON）。
+DeepSeek、Moonshot、Qwen、OpenRouter、Gemini 和 Stripe 预设 0.5 起提供。百炼和 Moonshot 的 Key 按地域签发、不能跨地域使用，请按 Key 所属地域选预设（连接名默认与预设同名）。DeepSeek、Moonshot、Qwen、OpenRouter 和 Gemini 预设只开放 Chat Completions 与模型列表（Qwen 的模型列表走原生 `/api/v1/models`），未声明的端点（例如 OpenRouter 的 `/api/v1/responses`）一律拒绝。DeepSeek 和 Gemini 的单次输出上限只认 `max_tokens`，带 `max_completion_tokens` 的请求会被拒绝；OpenRouter、Moonshot 和 Qwen 两者都接受，缺省时注入 `max_completion_tokens`（Qwen 思考模型只有它同时限制思维链）。Stripe 预设只读：固定 `Stripe-Version`，只允许余额、客户、扣款和 PaymentIntent 的查询，写入和删除一律拒绝（Stripe 写请求要求表单编码，Connection 操作只发送 JSON）。
 
 在 App 中明确签署允许的模型、单次输出上限和日预算后再使用 LLM。CLI 与 HTTP 共用预算。预算按已结算用量准入，在途并发可能超出；它不保证对抗本机状态回滚的费用封顶。流式响应未完成或安全检查失败时应视为失败，不能把收到部分正文当成完整成功。
 
@@ -215,7 +215,7 @@ rekey lock
 rekey shutdown
 ```
 
-锁定立即终止本机授权和审批窗口。关闭 App 不等于停止 daemon。`shutdown` 和备份等写操作需要新的逐次证明。备份、恢复、磁盘故障和格式升级的具体步骤见[运维手册](operations-runbook.md)。公开安装包、真实设备验收和发布状态见[候选发布说明](releases/v0.4.0-alpha.1.md)。
+锁定立即终止本机授权和审批窗口，并删除记住的解锁（见上文）。关闭 App 不等于停止 daemon。`shutdown` 和备份等写操作需要新的逐次证明。备份不包含基础模式的签名私钥 `policy-signer-p256.p8`（0.5 起）：请把它单独离线保存，否则恢复后无法再签署或续签规则，只能新建保险库。备份、恢复、磁盘故障和格式升级的具体步骤见[运维手册](operations-runbook.md)。已发布 0.4 的安装包、真实设备验收和发布状态见[0.4 发布说明](releases/v0.4.0-alpha.1.md)，0.5 见[候选发布说明](releases/v0.5.0-alpha.1.md)。
 
 ### 0.5 开发候选：管理界面锁定
 
