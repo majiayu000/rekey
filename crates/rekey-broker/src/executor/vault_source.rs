@@ -1096,7 +1096,7 @@ impl ActionExecutor {
             let send_start=Instant::now();
             let response=tokio::select! { biased; result=send=>result?, _=wait_for_cancel(self.lifecycle.subscribe_cancel())=>return Err(BrokerError::Indeterminate("cancelled-after-remote-effect")) };
             if Instant::now()>=business_deadline { return Err(BrokerError::Indeterminate("upstream-timeout")); }
-            if decoded_reflection(&response.body,&needles) || contains_secret(&response.body,&needles) || headers_contain_secret(&response.headers,&needles) { return Err(BrokerError::ResponseSecurityViolation); }
+            if !super::http::response_is_identity(&response.headers) || decoded_reflection(&response.body,&needles) || contains_secret(&response.body,&needles) || headers_contain_secret(&response.headers,&needles) { return Err(BrokerError::ResponseSecurityViolation); }
             Ok((response,send_start.elapsed().as_millis() as i64))
         }.await;
         if probe.tokens.is_empty() {

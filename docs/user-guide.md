@@ -135,7 +135,7 @@ curl -H 'Authorization: Bearer rekey' \
   'http://127.0.0.1:7787/c/github/repos/OWNER/REPO/issues'
 ```
 
-服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。
+服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。Rekey 只向上游请求未压缩的响应，SDK 自带的 `Accept-Encoding` 不会转发；上游仍返回压缩正文时按 502 `RESPONSE_BLOCKED` 拒绝，不转交任何内容。
 
 SDK 的 key 设置为公开占位值 `rekey`，base URL 指向相应 Connection：
 

@@ -90,8 +90,8 @@ fn hint(code: &str) -> (&'static str, String) {
             "先到上游服务确认是否已生效，再决定是否重试。".into(),
         ),
         "RESPONSE_BLOCKED" | "RESPONSE_SECURITY_VIOLATION" => (
-            "上游响应里出现了凭据内容，Rekey 已拦截。",
-            "不要重试这次请求；检查上游接口是否会回显凭据。".into(),
+            "上游响应里出现了凭据内容，或用了 Rekey 无法检查的压缩编码，已拦截。",
+            "不要重试这次请求；检查上游接口是否会回显凭据或强制压缩响应。".into(),
         ),
         "CREDENTIAL_UNAVAILABLE" => (
             "所需凭据不可用（可能已删除或吊销）。",

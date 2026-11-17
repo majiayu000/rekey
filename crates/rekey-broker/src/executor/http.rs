@@ -6,7 +6,8 @@ use rekey_domain::template::RenderedTarget;
 use zeroize::Zeroizing;
 
 use super::ExecuteRequest;
-use crate::upstream::{UpstreamError, UpstreamRequest};
+use super::sealing::{contains_secret, headers_contain_secret};
+use crate::upstream::{ResponseHeaders, UpstreamError, UpstreamRequest};
 
 const FORBIDDEN_RESPONSE_HEADERS: &[&str] = &[
     "authentication-info",
@@ -179,4 +180,99 @@ pub(super) fn filter_response_headers(
         })
         .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
         .collect()
+}
+
+/// Sealing reads upstream bytes exactly as received, and a compressed body
+/// would hide a reflected credential from every needle. Every request asks
+/// for identity; this admits no content coding and no transfer coding other
+/// than HTTP/1.1 chunked framing. Non-UTF-8 coding values are refused too.
+pub(super) fn response_is_identity(headers: &ResponseHeaders) -> bool {
+    headers.name_value_bytes().all(|(name, value)| {
+        let value = value.trim_ascii();
+        if name.eq_ignore_ascii_case(b"content-encoding") {
+            value.eq_ignore_ascii_case(b"identity")
+        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
+            value.eq_ignore_ascii_case(b"chunked")
+        } else {
+            true
+        }
+    })
+}
+
+/// Terminal audit reason for a buffered response that must not be released.
+pub(super) fn buffered_refusal(
+    headers: &ResponseHeaders,
+    body: &[u8],
+    needles: &[Zeroizing<Vec<u8>>],
+) -> Option<&'static str> {
+    if !response_is_identity(headers) {
+        Some("response-encoding")
+    } else if contains_secret(body, needles) || headers_contain_secret(headers, needles) {
+        Some("reflected-secret")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> ResponseHeaders {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    #[test]
+    fn only_identity_bodies_are_released() {
+        for allowed in [
+            vec![],
+            vec![("content-type", "application/json")],
+            vec![("Content-Encoding", " Identity ")],
+            vec![("transfer-encoding", "chunked")],
+        ] {
+            assert!(response_is_identity(&headers(&allowed)), "{allowed:?}");
+        }
+        for coded in [
+            vec![("content-encoding", "gzip")],
+            vec![("Content-Encoding", "br")],
+            vec![("content-encoding", "identity, gzip")],
+            vec![
+                ("content-encoding", "identity"),
+                ("content-encoding", "zstd"),
+            ],
+            vec![("content-encoding", "")],
+            vec![("transfer-encoding", "gzip, chunked")],
+        ] {
+            assert!(!response_is_identity(&headers(&coded)), "{coded:?}");
+        }
+        let mut map = reqwest::header::HeaderMap::new();
+        map.append(
+            "content-encoding",
+            reqwest::header::HeaderValue::from_bytes(b"gzip\xff").unwrap(),
+        );
+        let unsupported = ResponseHeaders::from_header_map(&map);
+        assert!(unsupported.is_empty(), "the value is not a visible string");
+        assert!(!response_is_identity(&unsupported));
+    }
+
+    #[test]
+    fn encoding_refusal_precedes_the_secret_scan() {
+        let needles = super::super::sealing_needles(b"synthetic-secret-value", b"");
+        let gzip = headers(&[("content-encoding", "gzip")]);
+        let plain = headers(&[("content-type", "text/plain")]);
+        // A coded body is refused even when its bytes look harmless.
+        assert_eq!(
+            buffered_refusal(&gzip, b"\x1f\x8b\x08\x00", &needles),
+            Some("response-encoding")
+        );
+        assert_eq!(
+            buffered_refusal(&plain, b"synthetic-secret-value", &needles),
+            Some("reflected-secret")
+        );
+        assert_eq!(buffered_refusal(&plain, b"safe", &needles), None);
+    }
 }

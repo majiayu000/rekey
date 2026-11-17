@@ -244,6 +244,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 **请求头与正文**
 - 调用方只能设置 Preset 允许的请求头。
 - 出站传输默认发送公开的 `User-Agent: rekey/<version>`，满足 GitHub 等服务的必需请求头；它不携带调用方身份或凭据。
+- **（2026-11-17 修订，0.5 开发线）不协商压缩。** 每个出站请求都恰好带一个 `accept-encoding: identity`：Connection HTTP、LLM 流式与非流式、OAuth token 请求（与 Connection 共用出站传输）、T1 派生请求与 lab source 由出站传输统一设置并丢弃其他取值，mTLS 由其一次性客户端设置。调用方、Preset 与签名 Connection 都不能设置 `accept-encoding` / `content-encoding`（禁止头），本机服务剥除入站 `Accept-Encoding`（§6.3）。上游响应只要带非 `identity` 的 `content-encoding`（含多值与非 UTF-8 值）或 `chunked` 以外的 `transfer-encoding`，就在任何正文字节或允许的响应头交给调用方之前拒绝：返回不可重试的 `RESPONSE_SECURITY_VIOLATION`（Agent 侧 `RESPONSE_BLOCKED`），不解压、不重试；终态审计与反射密钥拒绝相同，记 `execution.indeterminate`，缓冲响应的 reason 为 `response-encoding`，流式与 mTLS 沿用各自既有 reason（`text-stream-failed`、`private-execution-failed`）。遮蔽因此始终作用于未压缩的原始字节。只在 daemon 内按固定格式解析、正文不交给调用方的响应（OAuth token、T1 派生凭证、source 读取）收到压缩正文时解析失败，按各自原错误合同拒绝。
 - OAuth refresh-token 轮换也属于远程副作用：发出前检查同一个生命周期 gate，取消或超时后无法确认结果时记为 indeterminate，不能记成未执行。缓存命中不打开该 gate。
 - 普通 HTTP 的最后一次 `send` / `open_stream` 在既有 lifecycle coordinator 内构造并首次 poll，再交给已准入执行持有；lab capability 调用同时验证原预留 permit，Connection 调用继续由其终态审计持有准入许可。Connection gate 已关闭时在等待 coordinator 前拒绝，锁内仍重新检查；已排队后才关闭的竞态继续受绝对期限及原取消/自然 drain 宽限约束。首次交接后保留自然 drain 宽限和原绝对期限。若 OAuth refresh 已发生副作用，后续 handoff 被拒绝或目标传输在发送前失败仍记为 indeterminate。
 - 普通 HTTP 或 OAuth refresh 的未知副作用失败保留内部 `UPSTREAM_FAILED` 与安全 message `upstream request failed`，但 `retryable=false`，不得邀请重放；当前 CALL 与 lab unary EXECUTE 的公开信封继续映射为 `UPSTREAM_ERROR`。终态审计的可重试错误（包括立即返回的 Authority 忙和等待超过绝对期限）不能把已交接的远端副作用重新标为可重试；OAuth refresh 交接后且无法证明未发生副作用时，refresh 或其持久化失败（含不可重试的锁定、epoch 变化及凭据版本冲突）必须返回不可重试的未知结果；provider 明确撤销或拒绝 grant 的既有 `NEEDS_REAUTH` 保留，并只引导重新授权，不重放 refresh；写入失败审计时出现的 Authority 错误不能使用此业务结果。终态审计本身失败仍保留 Authority 的原错误合同。此类信封的 `error.next` 必须要求核对上游结果，禁止自动重试。
@@ -322,7 +323,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 | `LOCKED` | vault 已锁定 | `已通知用户解锁；调用 await_unlock() 后重试` |
 | `BUDGET_EXCEEDED` | 预算或限速 | `在 <time> 之后重试` |
 | `UPSTREAM_ERROR` | 上游非 2xx | 透传状态码和已遮蔽的正文 |
-| `RESPONSE_BLOCKED` | 响应里检测到密钥反射 | `该响应包含凭据回显，已拦截；不要重试同一请求` |
+| `RESPONSE_BLOCKED` | 响应里检测到密钥反射，或上游返回了无法遮蔽的压缩编码（§5.1） | `该响应包含凭据回显或无法检查的编码，已拦截；不要重试同一请求` |
 
 **dry-run**：返回规范化后的完整请求（密钥位置显示为 `«rekey:connection»`）和判定结果（allow / approve / deny 及命中的规则），不解密、不发送、不消耗额度。审计记录为 `call.dry_run`。
 
@@ -367,7 +368,7 @@ rekey ssh-agent status                                # §8.1
   - 同时出现 `x-api-key` 和 `Authorization` 时，两者都必须是占位符。
 
 **其他行为**
-- 流式 SSE、遮蔽、预算、错误透传沿用执行器；SDK 的 `x-stainless-*` 与 Node fetch 的 `Accept-Language` / `Sec-Fetch-Mode` 作为传输元数据剥除，不转发或参与授权。Git smart HTTP 可用 `git -c http.extraHeader="Authorization: Bearer rekey" ...` 携带同一公开标记。
+- 流式 SSE、遮蔽、预算、错误透传沿用执行器；SDK 的 `x-stainless-*` 与 Node fetch 的 `Accept-Language` / `Sec-Fetch-Mode` 作为传输元数据剥除，不转发或参与授权。入站 `Accept-Encoding` 同样剥除，不能改变出站固定的 `accept-encoding: identity`；上游返回压缩响应时本服务回 502 `RESPONSE_BLOCKED`，不转发其正文或响应头（§5.1）。Git smart HTTP 可用 `git -c http.extraHeader="Authorization: Bearer rekey" ...` 携带同一公开标记。
 - 调用方识别见 §4.3。
 - 运行状态拒绝先于 Connection 查找，统一返回 503 和 §6.1 的错误 JSON：锁定为 `LOCKED`（不得因锁定清除了生效策略而报 `NOT_CONFIGURED`），容量超限为可重试的 `AUTHORITY_BUSY`，停机中为 `DRAINING`，终态审计失败后为不可重试的 `FAULTED`。403 只表示规则或请求形态被拒绝，使 SDK 不把暂时不可用当成权限错误。
 - 端口抢占风险：rekeyd 未运行时，同 uid 进程可以先占用端口，收到的只是占位符和请求正文，拿不到任何 Secret。这一点写入威胁模型。

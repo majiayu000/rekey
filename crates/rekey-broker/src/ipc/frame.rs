@@ -208,7 +208,7 @@ pub(crate) fn agent_next(code: &str) -> &'static str {
         "DENIED" | "REQUEST_DENIED" => "Use request_access to explain the required operation.",
         "BUDGET_EXCEEDED" => "Retry after the budget or rate window resets.",
         "RESPONSE_BLOCKED" | "RESPONSE_SECURITY_VIOLATION" => {
-            "Do not retry this request: its response reflected credential material."
+            "Do not retry this request: its response reflected credential material or used a content encoding Rekey cannot inspect."
         }
         "UPSTREAM_ADDRESS_BLOCKED" => {
             "The target host resolved to a non-public address, commonly a local proxy's fake-IP DNS. Rekey never connects to non-public addresses: make the host resolve to its public IP (for example exclude it from the proxy's fake-IP range), then retry."

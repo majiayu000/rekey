@@ -364,7 +364,8 @@ async fn execute(
         .method(action.method.as_str())
         .uri(target.request_target())
         .header("host", host)
-        .header("connection", "close");
+        .header("connection", "close")
+        .header("accept-encoding", "identity");
     if let Some(content_type) = &request.content_type {
         builder = builder.header("content-type", content_type);
     }
@@ -405,7 +406,8 @@ async fn execute(
         return Err(BrokerError::Upstream("redirect"));
     }
     let headers = ResponseHeaders::from_header_map(response.headers());
-    if headers_contain_secret(&headers, needles) {
+    // A coded body cannot be sealed; refuse it like a reflected credential.
+    if !super::http::response_is_identity(&headers) || headers_contain_secret(&headers, needles) {
         return Err(BrokerError::ResponseSecurityViolation);
     }
     let mut incoming = response.into_body();
