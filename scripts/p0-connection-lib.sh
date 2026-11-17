@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helpers for the release-binary P0 Connection-model gates. Source it
 # after setting ROOT, BIN_DIR and PASSWORD; it is not executable on its own.
 #
