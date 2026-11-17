@@ -206,6 +206,8 @@ rekey github-token CONNECTION
 
 AWS 返回 `credential_process` JSON，固定 role / region / session policy，TTL 为 900–3600 秒；EKS 返回 `ExecCredential`，固定 cluster / region，AWS 验证窗口约 15 分钟，客户端过期时间提前到约 14 分钟；GitHub App 返回安装令牌，固定 installation、repository IDs 与 permission ceiling，TTL 上限 3600 秒。调用方不能覆盖签名目标。根密钥不会返回；这些命令的 stdout 本身包含临时秘密，不应贴进日志或提交。
 
+授权为 approve 时，三个命令与 `rekey call` 一样默认等待本机批准，最长 120 秒；批准后用同一审批 ID 重试一次，拒绝或超时则返回 `APPROVAL_REQUIRED`，不会签发。因此 `credential_process` 和 kubectl exec plugin 的固定命令行无需改动。等待提示只在终端的 stderr 显示，stdout 仍只有凭证；`--no-wait` 立即返回。
+
 ## 日常维护
 
 ```bash

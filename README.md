@@ -59,7 +59,7 @@ rekey connect claude-code --with-hooks
 
 Google、GitHub、Slack、Notion 使用用户自己的 OAuth client。授权和 refresh 在 daemon 内完成，源令牌不会交给 Agent。各供应商的 PKCE、回调、refresh 与 Notion 持久 access token 例外见 [SPEC](docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md)。
 
-AWS `credential_process`、EKS kubectl exec plugin 和 GitHub App 可以单独开启**临时凭据**：Agent 进程会收到短期有效的凭据。目标 role / cluster / installation、仓库、权限和 TTL 均在签名规则中固定，调用方不能覆盖。
+AWS `credential_process`、EKS kubectl exec plugin 和 GitHub App 可以单独开启**临时凭据**：Agent 进程会收到短期有效的凭据。目标 role / cluster / installation、仓库、权限和 TTL 均在签名规则中固定，调用方不能覆盖。规则要求审批时，命令会等待本机批准（最长 120 秒）后签发一次。
 
 ```bash
 rekey aws-credentials CONNECTION

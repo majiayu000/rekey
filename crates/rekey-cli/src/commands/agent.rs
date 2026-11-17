@@ -235,6 +235,18 @@ pub fn approval(
     };
     super::write_json(&approval_state(result, request_id)?)
 }
+/// One bounded local wait, as `rekey call` does before its single retry.
+pub(super) fn await_approved(
+    socket: &Path,
+    request_id: ApprovalRequestId,
+) -> Result<bool, CliError> {
+    let wait = LocalAwaitApprovalMeta {
+        request_id,
+        timeout_s: 120,
+    };
+    let decision = public(socket, agent_msg::AWAIT_APPROVAL, &wait, 120)?;
+    Ok(approval_state(decision, request_id)?.state == LocalApprovalState::Approved)
+}
 
 #[derive(Default)]
 struct CallOptions {
