@@ -397,7 +397,7 @@ OPENAI_API_KEY=rekey
   - `list_capabilities` 每个 Connection 增加可选 `llm`（签名的模型白名单、max_tokens 与每日额度），响应增加 `policy_expires_at_ms`。`describe(operation)` 增加该 Connection 的签名 `rules`、本调用方的 `caller_rules`（为空时省略）、`limits`、`llm` 与 `policy_expires_at_ms`。有 `llm` 时，具名操作参数 schema 中的 `model` 属性加上 `enum`（等于签名白名单）。这些都是公开的签名规则，不含 credential_id、密钥或绑定细节。
   - 审批 ID：`await_approval`/`cancel_approval` 的 `request_id` 参数取 `APPROVAL_REQUIRED` 错误中的 `approval.challenge_id`，不是错误信封顶层的 `request_id`（后者是本次帧的请求 ID）。`next` 文案、MCP 工具描述、插件 skill 与 `rekey connect` 写入的说明都必须这样写。
   - 上游拒绝原因：出站前因目标解析到非公网地址而拒绝时，返回公开错误码 `UPSTREAM_ADDRESS_BLOCKED`（CLI 退出码与 `UPSTREAM_ERROR` 相同），`next` 说明“目标域名解析到了非公网地址，常见原因是本机代理的 fake-IP DNS；Rekey 不会连接非公网地址”。错误中不回显解析到的 IP。其他出站拒绝原因仍为 `UPSTREAM_ERROR`。
-  - 插件 skill、`rekey connect` 说明中出现的 MCP 工具名与 `rekey` 子命令，必须由测试核对确实存在。
+  - 插件 skill、`rekey connect` 说明中出现的 MCP 工具名与 `rekey` 子命令，必须由测试核对确实存在。（2026-11-17）反引号中每个形如工具名的小写标识符都要核对，包括 `call`、`describe` 这类不含下划线的词；只有列出的参数名、字段名和占位 Key 可以例外，反引号中的 `rekey <子命令>` 由 CLI 测试核对。
 - `await_unlock(timeout_s≤120)`。
 
 **协议与返回**
