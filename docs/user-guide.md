@@ -22,7 +22,7 @@ rekey setup
 rekey add glm
 ```
 
-`setup` 在 App 中创建新的个人保险库并保存恢复密钥。**当前 0.5 开发版**在 macOS 默认目录且已安装 App 时，`rekey add <预设>` 会打开 App：保存或选择已有凭据，审阅完整连接规则，再系统认证签署并激活。CLI 的打开回执只表示已发起跳转，是否成功以 App 的激活结果为准。连接名、凭据 ID、模型白名单和有效期都会带入表单；用户仍须审阅确认。
+`setup` 在 App 中创建新的个人保险库并保存恢复密钥。**当前 0.5 开发版**在 macOS 默认目录且已安装 App 时，`rekey add <预设>` 会打开 App：保存或选择已有凭据，审阅完整连接规则，再系统认证签署并激活。CLI 的打开回执只表示已发起跳转，是否成功以 App 的激活结果为准。App 刚启动、仍在连接服务时收到的接入页面，会在连接完成后按同样的检查打开。连接名、凭据 ID、模型白名单和有效期都会带入表单；用户仍须审阅确认。
 
 App 提前检查已安装信任根对应的签名密钥。已有 Secure Enclave 密钥继续由硬件签名；已有基础模式 `policy-signer-p256.p8` 继续由随 App 安装的签名器使用，并明确显示软件保护等级。后者是当前用户 0600 文件，同用户进程可读。找不到匹配密钥时停止，不创建替代密钥或更换信任根。
 
@@ -181,7 +181,7 @@ rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host g
 rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host github.com
 ```
 
-macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
+macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定（新生成密钥的 git 签名默认允许）。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
 
 Git smart HTTP 使用独立 `github-git` 预设，固定 `https://github.com`、owner 和完整 `repo.git`。`info/refs` 与 `git-upload-pack` 为读，`git-receive-pack` 为写；PAT 在 daemon 内转换为固定 Basic 认证。通过本机 HTTP 使用时也要配置公开请求标记，例如只对该 URL 设置 Git 的 `http.extraHeader=Authorization: Bearer rekey`。默认请求正文上限为 1 MiB，不宣称无限仓库传输。
 
@@ -194,7 +194,7 @@ rekey add google-drive
 rekey oauth login CONNECTION
 ```
 
-支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。
+支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。提供方撤销授权或拒绝刷新（invalid_grant）时，调用返回 `NEEDS_REAUTH`，App 活动页显示“需重新授权”，可直接打开浏览器重新授权；网络或服务端错误保留授权，不显示此提示。该提示取自当日（UTC）的审计记录。
 
 临时凭据入口必须逐个签署开启，**Agent 进程会拿到短期有效的凭据**（安全模型里称为 T1，见[安全模型与术语](security/README.md#调用结果与临时凭据)）：
 
@@ -233,4 +233,4 @@ rekey shutdown
 
 ### 0.5 开发候选：管理界面锁定
 
-App 默认在电脑空闲五分钟或锁屏、休眠、切换用户时锁定管理界面；打开窗口仍需显式认证。设置可调整空闲阈值和 1/7/30 天系统认证期限，或要求每次输入密码。保存设置会撤销旧授权。界面锁定后 Agent 继续工作；“锁定整个保险库”才撤销 Agent 授权。若服务端会话撤销未确认，先用界面的重试完成撤销再解锁。此功能属于 0.5 源码候选，不代表已安装 App 已更新或真机系统认证已验收。
+App 默认在电脑空闲五分钟或锁屏、休眠、切换用户时锁定管理界面；打开窗口仍需显式认证。设置可调整空闲阈值和 1/7/30 天系统认证期限，或要求每次输入密码。保存设置会撤销旧授权。用密码解锁并启用系统认证时，界面在新授权保存后才打开；其间锁定会撤销这次登录和刚签发的授权。界面锁定后 Agent 继续工作；“锁定整个保险库”才撤销 Agent 授权。若服务端会话撤销未确认，先用界面的重试完成撤销再解锁。此功能属于 0.5 源码候选，不代表已安装 App 已更新或真机系统认证已验收。

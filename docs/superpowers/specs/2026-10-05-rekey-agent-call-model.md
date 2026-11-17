@@ -485,7 +485,7 @@ OPENAI_API_KEY=rekey
 - **首批 Preset**：Google Drive、Gmail、Calendar，GitHub OAuth App、Slack、Notion。Google 原生 client 与 GitHub OAuth App 使用随机 literal-loopback callback；Slack 使用用户已登记的固定 localhost callback；Notion 使用用户已登记的 HTTP loopback callback，若提供方拒绝该 callback 则提示配置错误，不能假装完成授权。
 - **client 凭据**：用户自行提供 client_id / client_secret（存为 Secret），0.4 不内置 Rekey 自有 client。Google 原生 client 的 secret 可选；GitHub OAuth App 和 Notion REST 的 secret 必需；Slack public PKCE client 不发送 secret，且只使用 user scopes。
 - **签名绑定**：HTTP Connection 增加 `oauth: {provider, client_id, scopes}`。client identity、所需 scope ceiling 与 HTTP 规则一起签名；未知路径不猜 scope。Notion 的 scopes 表示 Developer Portal capability 提示，并不作为 OAuth scope query 发送。
-- **token 处理**：refresh token 与 client secret 加密持久；Google/GitHub/Slack access token 仅在 daemon 内存缓存，到期刷新。GitHub 请求 `offline_access`；Slack 必须启用 rotation。Notion REST 没有文档化 expires_in，且 refresh_token 可为 null，因此其 access token 加密持久，并以实际响应决定是否具备刷新能力。旋转 refresh token 必须原子持久后继续使用。网络/5xx 错误保留 grant；refresh 已交接且结果未知时返回不可重试上游错误。provider 明确撤销或 invalid_grant 才返回 `NEEDS_REAUTH` 并通知用户重新授权。该拒绝记为 `oauth.refresh_failed`，reason `oauth-needs-reauth`；网络、5xx、超时等其它刷新失败记为 `oauth-refresh-failed`，不提示重新授权。审计行不含 token 或 provider 响应。
+- **token 处理**：refresh token 与 client secret 加密持久；Google/GitHub/Slack access token 仅在 daemon 内存缓存，到期刷新。GitHub 请求 `offline_access`；Slack 必须启用 rotation。Notion REST 没有文档化 expires_in，且 refresh_token 可为 null，因此其 access token 加密持久，并以实际响应决定是否具备刷新能力。旋转 refresh token 必须原子持久后继续使用。网络/5xx 错误保留 grant；refresh 已交接且结果未知时返回不可重试上游错误。provider 明确撤销或 invalid_grant 才返回 `NEEDS_REAUTH` 并通知用户重新授权。该拒绝记为 `oauth.refresh_failed`，reason `oauth-needs-reauth`；网络、5xx、超时等其它刷新失败记为 `oauth-refresh-failed`，不提示重新授权。App 活动页读当日（UTC）审计快照：某连接所用凭据最新的 OAuth 记录是这种拒绝、其后没有同一凭据的 `oauth.authorized` / `.refreshed` 时，标出“需重新授权”并提供打开浏览器授权页的入口；刷新失败和浏览器授权失败不会清除这一提示。审计行和页面都不含 token 或 provider 响应。grant 里没有 refresh token 时（从未授权，或 Notion 无刷新能力）返回的 `NEEDS_REAUTH` 不写审计，App 不据此标记。
 - **scope 展示**：只从有限具名操作推导 scope，实际 granted scopes 必须满足已签名操作且不扩大 scope ceiling。Google 按 Drive/Gmail/Calendar 的读写 operation 分开；GitHub 私有仓库 OAuth `repo` 本身含写权限，UI 明示“上游权限较宽，由本机规则收紧”；Slack 首批只开放公共频道信息/历史与本人消息写入；Notion 提示 portal capability 和 page picker grants，不能宣称动态推导上游 scope。
 - **凭据 purpose**：`oauth-grant` AAD code 14、`aws-static` AAD code 15；常规 HTTP 凭据准备入口拒绝把其 JSON 载荷作为 token 注入，只能使用专用 OAuth/派生路径。
 - 上游依据：[Google native OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)、[GitHub OAuth App](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)、[Slack PKCE](https://docs.slack.dev/authentication/using-pkce/)、[Notion REST token](https://developers.notion.com/reference/create-a-token)。
@@ -513,7 +513,7 @@ OPENAI_API_KEY=rekey
 - 按目标 host 授权：依据 `session-bind` 提供的目标主机公钥，匹配用户登记的 `known_hosts` 条目。
   - 示例：`github.com` allow，`prod-bastion` approve，其他 deny。
   - 客户端不支持 `session-bind`（OpenSSH < 8.9）时，视为 unknown host，按 approve 处理。
-- git 的签名用途（`ssh-keygen -Y sign`、namespace `git`）单独设规则，默认 allow。
+- git 的签名用途（`ssh-keygen -Y sign`、namespace `git`）单独设规则，默认 allow。App 新建 SSH 授权时按此默认填入 allow，签署前可改为 approve 或 deny。
 
 **不能区分的内容**
 - SSH agent 看不到 push 的是哪个分支。分支级保护应交给 GitHub 的分支保护规则，Rekey 不做任何宣称。

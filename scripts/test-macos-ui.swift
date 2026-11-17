@@ -18,6 +18,7 @@ struct ConnectionUIContract {
             try await privacy()
             try await requestAlerts()
             try await startupRecords()
+            try await appFlows()
             return
         }
         if CommandLine.arguments == [CommandLine.arguments[0], "--startup-only"] {
@@ -31,6 +32,7 @@ struct ConnectionUIContract {
         try await privacy()
         try await requestAlerts()
         try await startupRecords()
+        try await appFlows()
         try await live(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
     }
 

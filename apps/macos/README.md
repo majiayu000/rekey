@@ -77,9 +77,11 @@ target/release/rekey-approval-sign --help
 cargo check --workspace
 xcrun swiftc -warnings-as-errors -swift-version 5 -O \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Updater.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Onboarding.swift apps/macos/OAuthReauthorization.swift apps/macos/Updater.swift scripts/test-macos-ui.swift scripts/test-macos-app-flows.swift -o /tmp/rekey-ui-contract
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
+
+同一程序还用合成 CLI 检查四种设备信号各自锁定界面（关闭设置后都不锁）、迟到的 resume / remember / login 令牌被撤销、忙碌时收到的接入页面在空闲后按原检查打开，以及签名预检先于保存密钥（Secure Enclave 匹配用注入的公钥）；不读取钥匙串，也不使用 Secure Enclave。
 
 自动连接回归检查复用同一个测试程序和随包 CLI，不访问用户保险库：
 
@@ -98,11 +100,11 @@ ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContr
 xcrun swiftc -warnings-as-errors -swift-version 5 \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift \
-  apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
+  apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Onboarding.swift apps/macos/OAuthReauthorization.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
 /tmp/rekey-connection-app-contract
 ```
 
-已完成完整 Swift 源码的 warnings-as-errors typecheck，以及连接序列化、编辑基线、展示定义与实际签名字节一致性、URL 路由、导入 stdin 合同、有界认证 context 复用、到期和取消失效、HTTP/SSH 审批合同、最近 50 条去重分组、OAuth scope 声明、T1 实际目标 / 过期时间和完整草案 stdin 的合成检查。未完成 0.4 真实设备上的 Touch ID 弹窗次数、Secure Enclave 签署激活、OAuth 登录和 C16；软件检查不能代替这些验收。
+已完成完整 Swift 源码的 warnings-as-errors typecheck，以及连接序列化、编辑基线、展示定义与实际签名字节一致性、URL 路由、导入 stdin 合同、有界认证 context 复用、到期和取消失效、HTTP/SSH 审批合同、最近 50 条去重分组、OAuth scope 声明与“需重新授权”判定、新建 SSH 授权的 git 签名默认值、T1 实际目标 / 过期时间和完整草案 stdin 的合成检查。未完成 0.4 真实设备上的 Touch ID 弹窗次数、Secure Enclave 签署激活、OAuth 登录和 C16；软件检查不能代替这些验收。
 
 测试使用随机临时保险库和合成凭证，不访问真实 provider。原生界面另行检查空状态、搜索、详情、表单与页面导航。没有把所有 GUI submit 路径宣称为自动化覆盖。
 

@@ -93,6 +93,9 @@ import CryptoKit
         precondition(SSHHostDefinition.wireBlob(publicBlob)==publicBlob)
         let preservedSSH=try JSONDecoder().decode(SSHKeyDefinition.self,from:JSONEncoder().encode(sshKey))
         precondition(preservedSSH==sshKey && preservedSSH.hosts[0].rule_id==hostRuleID && preservedSSH.hosts[0].effect=="deny")
+        // agent-call §8.1: a key generated in the App starts with no host and allows git signing.
+        let generated=SSHKeyDefinition.generated(credentialID:sshKey.credential_id,publicKey:publicBlob)
+        precondition(generated.git_signing=="allow" && generated.hosts.isEmpty && generated.approver.kind=="local-presence" && generated.name.hasPrefix("ssh-") && generated.user_public_key==publicBlob)
         let grant=DerivedCredentialDefinition(name:"synthetic-eks",credential_id:UUID().uuidString.lowercased(),effect:"approve",max_ttl_seconds:900,target:.init(kind:"kubernetes-eks",region:"us-east-1",cluster_id:"build"))
         let grantObject=try JSONSerialization.jsonObject(with:JSONEncoder().encode(grant))
         let signObject:[String:Any] = ["format_version":1,"signer_id":"test","snapshot":["version":1,"expires_at_ms":10000,"connections":[object],"ssh_keys":[sshObject],"derived_credentials":[grantObject]]]
@@ -111,6 +114,17 @@ import CryptoKit
         var derivedActivity=ActivitySnapshot(nowMs:1000);try derivedActivity.ingest(derivedPage)
         precondition(derivedActivity.rows.count==1 && derivedActivity.totals.admitted==1 && derivedActivity.rows[0].context?.classification=="临时凭据")
         precondition(derivedActivity.rows[0].recent.count==1 && derivedActivity.rows[0].recent[0].request_context?.expires_at_ms==900100)
+        // agent-call §7.4: only a provider refusal that no later authorization or refresh cleared asks for re-authorization.
+        func oauthEvent(_ sequence:Int,_ type:String,_ reason:String,_ credential:String,_ connection:String?)->[String:Any] {
+            var event:[String:Any]=["sequence":sequence,"event_id":UUID().uuidString.lowercased(),"event_type":type,"outcome":type=="oauth.refresh_failed" ? "denied":"success","reason_code":reason,"created_at_ms":100,"request_id":NSNull(),"credential_id":credential]
+            if let connection{event["request_context"]=["connection":connection,"caller":"rekeyd","method_class":"read","normalized_path":"/"]}
+            return event
+        }
+        let drive=UUID().uuidString.lowercased(),gmail=UUID().uuidString.lowercased(),calendar=UUID().uuidString.lowercased(),notion=UUID().uuidString.lowercased()
+        let oauthEvents=[oauthEvent(7,"oauth.refresh_failed","oauth-needs-reauth",drive,"drive"),oauthEvent(6,"oauth.refresh_failed","oauth-refresh-failed",gmail,"gmail"),oauthEvent(5,"oauth.authorized","oauth-authorization",calendar,nil),oauthEvent(4,"oauth.refresh_failed","oauth-needs-reauth",calendar,"calendar"),oauthEvent(3,"oauth.refresh_failed","oauth-needs-reauth",gmail,"gmail"),oauthEvent(2,"oauth.refresh_failed","oauth-authorization-failed",notion,"notion"),oauthEvent(1,"oauth.refreshed","oauth-refresh",drive,nil)]
+        var oauthActivity=ActivitySnapshot(nowMs:1000)
+        try oauthActivity.ingest(JSONDecoder().decode(AuditPage.self,from:JSONSerialization.data(withJSONObject:["events":oauthEvents,"snapshot_max_sequence":7,"next_before_sequence":NSNull()])))
+        precondition(oauthActivity.complete && oauthActivity.reauthorization.connections==["drive","gmail"])
         var metadata=response["metadata"] as! [String:Any];var tampered=object as! [String:Any];tampered["origin"]="https://evil.example";metadata["connections"]=[tampered];response["metadata"]=metadata
         do {_ = try PersonalPolicyDraft(response:JSONSerialization.data(withJSONObject:response),expectedPolicySHA256:nil,expiresAtMs:10000,workspace:"/tmp/synthetic",revision:UUID());fatalError("mismatched displayed definition accepted")}catch{}
         let temporary=FileManager.default.temporaryDirectory.appendingPathComponent("rekey-import-contract-"+UUID().uuidString)
@@ -192,7 +206,7 @@ import CryptoKit
         precondition(upgrade?.version=="0.5.0-alpha.1" && upgrade?.page.absoluteString=="https://github.com/\(UpdateFeed.repository)/releases/tag/v0.5.0-alpha.1" && current==nil)
         let major=try UpdateFeed.newest(try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v1.0.0")]),current:"0.5.0-alpha.1")
         precondition(major?.version=="1.0.0")
-        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, SSH generation proof boundaries and update feed selection.")
+        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes and re-authorization, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, the App SSH git-signing default, SSH generation proof boundaries and update feed selection.")
     }
     static func reviewResponse(_ review:[String:Any],id:String)throws->Data {
         let raw=try JSONSerialization.data(withJSONObject:review,options:[.sortedKeys,.withoutEscapingSlashes])

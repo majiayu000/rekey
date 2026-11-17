@@ -230,17 +230,17 @@ struct AddCredentialForm: View {
         secret="";message=nil
         Task {
             do {
-                signerMode=try await model.checkPolicySigner()
-                let definition=try await model.loadPreset(selectedPreset,origin:selectedOrigin,header:selectedPreset=="generic-header" ? selectedHeader:"",prefix:selectedPreset=="generic-header" ? selectedPrefix:"")
-                let baseline=try await model.loadConnectionEditor()
-                guard !baseline.connections.contains(where:{$0.name==connection}) else {throw UIError(message:"已有同名连接，请在授权页编辑现有规则。")}
-                let credential:Credential
-                if let prior=saved {credential=prior}
+                // The model runs the signer preflight and reads the signed base before it saves anything.
+                let key:OnboardingKey
+                if let prior=saved {key = .existing(prior)}
                 else if !reuseID.isEmpty {
                     guard let prior=model.credentials.first(where:{$0.id==reuseID && $0.active && $0.kind=="opaque-token"}) else {throw UIError(message:"所选凭据不可用，请刷新后重新选择。")}
-                    credential=prior
-                } else {credential=try await model.saveAPIKey(label:name,secret:value);saved=credential}
-                model.onboardingConnection=definition.connection(name:connection,credentialID:credential.id,models:selectedModels)
+                    key = .existing(prior)
+                } else {key = .new(label:name,secret:value)}
+                let prepared=try await model.prepareKeyConnection(key,name:connection,preset:selectedPreset,origin:selectedOrigin,header:selectedHeader,prefix:selectedPrefix,models:selectedModels)
+                signerMode=prepared.mode
+                if case .new=key {saved=prepared.credential}
+                model.onboardingConnection=prepared.connection
                 dismiss()
                 await Task.yield()
                 model.showPolicyDraft=true
@@ -913,7 +913,7 @@ struct PersonalPolicyDraftForm:View {
         Task{do{
             let receipt=try await model.generateSSHKey(label:label,mode:mode,proof:proof,recovery:useRecovery,presence:usePresence)
             guard model.acceptsNativeCompletion(revision,workspace:workspace)else{return}
-            sshKeys.append(.init(name:"ssh-"+UUID().uuidString.lowercased().prefix(8),credential_id:receipt.credential.id,user_public_key:receipt.public_key,hosts:[],git_signing:"approve"))
+            sshKeys.append(.generated(credentialID:receipt.credential.id,publicKey:receipt.public_key))
             sshLabel="";message="密钥已保存在保险库。请登记并独立核对 host 公钥，审阅完整草稿后签署；尚未启用 SSH 权限。"
         }catch{if model.acceptsNativeCompletion(revision,workspace:workspace){message=error.localizedDescription+"\n结果未知时先检查凭据列表，勿自动重试。"}}}
     }

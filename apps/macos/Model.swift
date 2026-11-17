@@ -728,6 +728,7 @@ struct AuditEvent: Decodable, Identifiable {
     let created_at_ms: Int64
     let request_id: String?
     let approval_request_id: String?
+    let credential_id: String?
     let request_context: ActivityContext?
     let usage: ActivityUsage?
     var id: UInt64 { sequence }
@@ -792,6 +793,8 @@ struct ActivitySnapshot {
     private var groups: [ActivityContext?: ActivityRow] = [:]
     private var sequences = Set<UInt64>(), eventIDs = Set<String>()
     private var approvalIDs = Set<String>(), settledRequests = Set<String>()
+    /// OAuth connections whose newest record is a provider refusal (agent-call §7.4).
+    private(set) var reauthorization = OAuthReauthorization()
 
     init(nowMs: Int64) {
         untilMs = max(0, nowMs)
@@ -820,6 +823,7 @@ struct ActivitySnapshot {
         for event in page.events {
             guard !next.sequences.contains(event.sequence), !next.eventIDs.contains(event.event_id) else { continue }
             next.sequences.insert(event.sequence); next.eventIDs.insert(event.event_id)
+            next.reauthorization.note(event)
             var counts = ActivityCounts()
             if event.event_type == "execution.started" { counts.admitted = 1 }
             if event.event_type == "execution.blocked" { counts.denied = 1 }
@@ -851,52 +855,6 @@ struct ActivitySnapshot {
         self = next
     }
 }
-
-struct OnboardingAddRequest: Equatable, Hashable, Sendable {
-    let provider: String
-    var name: String? = nil
-    var label: String? = nil
-    var credentialID: String? = nil
-    var origin: String? = nil
-    var header: String? = nil
-    var prefix: String? = nil
-    var validDays: Int? = nil
-    var models: [String] = []
-}
-
-enum OnboardingRoute: Equatable, Hashable, Sendable {
-    case setup
-    case add(OnboardingAddRequest)
-    case importEnv(String)
-    case oauth(String)
-    var rawValue: String { switch self { case .setup:return "rekey://setup";case .add(let request):return "rekey://add/"+request.provider;case .importEnv(let path):return "import:"+path;case .oauth(let connection):return "oauth:"+connection } }
-    init?(url: URL) {
-        guard url.scheme == "rekey", url.fragment == nil, url.user == nil, url.password == nil, url.port == nil, url.absoluteString.utf8.count <= 8192 else { return nil }
-        if url.host == "import",url.path.isEmpty,let components=URLComponents(url:url,resolvingAgainstBaseURL:false),let query=components.queryItems,query.count==1,query[0].name=="path",let path=query[0].value,path.hasPrefix("/"),!path.contains("\0") {self = .importEnv(path);return}
-        if url.host == "oauth",url.path.isEmpty,let query=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems,query.count==1,query[0].name=="connection",let connection=query[0].value,!connection.isEmpty,connection.utf8.count<=100,connection.utf8.allSatisfy({$0>=48 && $0<=57 || $0>=65 && $0<=90 || $0>=97 && $0<=122 || [45,46,95].contains($0)}) {self = .oauth(connection);return}
-        if url.host == "setup", url.query == nil, url.path.isEmpty { self = .setup; return }
-        let presets = ConnectionPreset.apiKeyPresets+OAuthSetup.presets
-        guard url.host == "add", presets.contains(String(url.path.dropFirst())),url.path.hasPrefix("/") else { return nil }
-        var request = OnboardingAddRequest(provider: String(url.path.dropFirst()))
-        var seen = Set<String>()
-        for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] {
-            guard let value = item.value, !value.contains("\0"), item.name == "model" || seen.insert(item.name).inserted else { return nil }
-            switch item.name {
-            case "name": request.name = value
-            case "label": request.label = value
-            case "credential_id": guard UUID(uuidString: value) != nil else { return nil }; request.credentialID = value.lowercased()
-            case "origin": request.origin = value
-            case "header": request.header = value
-            case "prefix": request.prefix = value
-            case "valid_days": guard let days = Int(value), (1...365).contains(days) else { return nil }; request.validDays = days
-            case "model": request.models.append(value)
-            default: return nil
-            }
-        }
-        self = .add(request)
-    }
-}
-
 
 struct InstalledTemplateActions: Decodable, Sendable {
     struct Item: Decodable, Sendable { let binding_index: UInt64; let action: FixedAction }
@@ -1032,6 +990,8 @@ final class AppModel: ObservableObject {
     private(set) var notifiedApprovalIDs = Set<String>()
     private var notificationRevision = UUID()
     @Published var onboardingRoute: OnboardingRoute?
+    /// The latest valid CLI handoff that arrived while busy; applied once idle.
+    var pendingOnboarding: OnboardingRoute?
     @Published var onboardingConnection: ConnectionDefinition?
     @Published var onboardingCommand: String?
     @Published var showPolicyDraft = false
@@ -1063,7 +1023,7 @@ final class AppModel: ObservableObject {
     @Published var selectedCredential: String? { didSet {
         if oldValue != selectedCredential { nativeFlowRevision = UUID() }
     } }
-    @Published var busy = false
+    @Published var busy = false { didSet { if oldValue && !busy { applyPendingOnboarding() } } }
     @Published var error: String?
     @Published var warning: String?
     @Published var connectionError: String?
@@ -1476,25 +1436,6 @@ final class AppModel: ObservableObject {
     func requestDesktopLogin() {
         operation = Operation(title: "解锁管理会话", detail: "验证后可管理密钥。自动锁定只关闭管理界面；锁定整个保险库会撤销 Agent 授权。", arguments: ["unlock"])
     }
-    func openOnboarding(_ url: URL) {
-        guard let route = OnboardingRoute(url: url) else { error = "不支持的 Rekey 页面地址。"; return }
-        guard !busy, operation == nil, result == nil, !showPolicyDraft, !showTemplate,
-              BackgroundService.usesDefaultState(stateDirectory), oidcProfileFile == nil, oidcSessionFile == nil else {
-            error = "请先完成当前操作，并在默认保险库工作区打开设置或接入页面。"; return
-        }
-        clearNativeFlow(); onboardingConnection = nil; onboardingCommand = nil; onboardingRoute = route
-        if case .add(let request) = route { addPreset = request.provider }
-    }
-    func checkPolicySigner() async throws -> PolicySigning.Mode {
-        guard !busy, unlocked else { throw UIError(message: "请先解锁并等待当前操作完成。") }
-        busy = true; defer { busy = false }
-        let client = cli, revision = nativeFlowRevision
-        let mode = try await Task.detached {
-            try PolicySigning.available(current: client.decode(PolicyStatus.self, ["policy", "status"]), client: client)
-        }.value
-        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory) else { throw UIError(message: "签名检查期间工作区已改变，请重试。") }
-        return mode
-    }
     func saveAPIKey(label: String, secret: String, client injectedClient: CLI? = nil) async throws -> Credential {
         guard desktopReady, let token = desktopToken else { throw UIError(message: "管理会话已过期，请先解锁管理会话。") }
         guard !busy else { throw UIError(message: "当前操作尚未完成，未保存凭据。") }
@@ -1732,36 +1673,51 @@ final class AppModel: ObservableObject {
             guard onboardingCurrent() else { throw UIError(message: "设置上下文已改变，未提交后续操作。") }
             let command = args, requestInput = body
             let data = try await Task.detached { try client.run(command, input: requestInput, redacting: [operationProof, secret]) }.value
+            let loginToken = desktopLogin ? String(data: data, encoding: .utf8).flatMap { try? PresenceKey.validated($0) } : nil
             guard desktopAttempt == desktopRevision, client.stateDirectory == stateDirectory else {
-                if desktopLogin, let token = String(data: data, encoding: .utf8), let valid = try? PresenceKey.validated(token) { revokeDesktop(valid, client: client) }
+                if let loginToken { revokeDesktop(loginToken, client: client) }
                 busy = false; return
             }
             guard !guarded || acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: desktopLogin) else {
+                if let loginToken { revokeDesktop(loginToken, client: client) }
                 throw UIError(message: "操作上下文已改变，结果未展示；请检查审计，不要自动重试。")
             }
             guard onboardingCurrent() else { throw UIError(message: "设置上下文已改变，结果未展示；已提交步骤可能完成，请检查状态，勿自动重试。") }
             guard let output = String(data: data, encoding: .utf8) else { throw UIError(message: "命令返回了无法解码的内容，操作结果需重新确认。") }
             if desktopLogin {
-                acceptDesktopSession(try PresenceKey.validated(output), expiry: Date().addingTimeInterval(7 * 24 * 60 * 60))
+                let token = try PresenceKey.validated(output)
+                var expiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
                 if let vaultID = issuingVault {
-                    let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
-                    guard UUID(uuidString: current.vault_id) == vaultID, current.mode != nil,
-                          acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
-                        throw UIError(message: "保险库或操作上下文已改变，未签发系统认证授权。")
+                    // The UI opens only after the grant is saved. A lock or context change meanwhile
+                    // revokes this login and, once a grant may exist, forgets it with the same token.
+                    func current() -> Bool { desktopAttempt == desktopRevision && acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true) && !Task.isCancelled }
+                    var sent = false
+                    do {
+                        let latest = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+                        guard UUID(uuidString: latest.vault_id) == vaultID, latest.mode != nil, current() else {
+                            throw UIError(message: "保险库或操作上下文已改变，未签发系统认证授权。")
+                        }
+                        guard securitySettings.passwordInterval != .everyUnlock else { throw UIError(message: "当前设置要求每次输入保险库密码，未签发系统认证授权。") }
+                        let rememberArgs = ["desktop-remember", "--ttl", "\(securitySettings.passwordInterval.rawValue)h"] + (recovery ? ["--recovery"] : [])
+                        sent = true
+                        let receipt = try await Task.detached { try client.run(rememberArgs, input: requestInput, redacting: [operationProof]) }.value
+                        let key = try PresenceKey.issuedKey(receipt)
+                        expiry = min(expiry, try DesktopReceipt.parse(receipt).expiresAt)
+                        guard current() else { throw UIError(message: "操作上下文已改变，新授权未保存，请重新用密码解锁。") }
+                        presenceAuthenticating = true
+                        defer { presenceAuthenticating = false }
+                        try await Task.detached { try PresenceKey.save(key, vaultID: vaultID) }.value
+                    } catch {
+                        // Outside a lock the password login stands; only remembering failed.
+                        if current() { acceptDesktopSession(token, expiry: expiry) } else { revokeDesktop(token, client: client, forget: sent) }
+                        throw error
                     }
-                    guard securitySettings.passwordInterval != .everyUnlock else { throw UIError(message: "当前设置要求每次输入保险库密码，未签发系统认证授权。") }
-                    let rememberArgs = ["desktop-remember", "--ttl", "\(securitySettings.passwordInterval.rawValue)h"] + (recovery ? ["--recovery"] : [])
-                    let receipt = try await Task.detached { try client.run(rememberArgs, input: requestInput, redacting: [operationProof]) }.value
-                    let key = try PresenceKey.issuedKey(receipt)
-                    desktopExpiry = min(desktopExpiry, try DesktopReceipt.parse(receipt).expiresAt)
-                    guard desktopAttempt == desktopRevision, acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
-                        throw UIError(message: "操作上下文已改变，新授权未保存，请重新用密码解锁。")
+                    guard current() else {
+                        revokeDesktop(token, client: client, forget: true)
+                        throw UIError(message: "操作上下文已改变，系统认证授权已撤销，请重新用密码解锁。")
                     }
-                    presenceAuthenticating = true
-                    do { try await Task.detached { try PresenceKey.save(key, vaultID: vaultID) }.value }
-                    catch { presenceAuthenticating = false; throw error }
-                    presenceAuthenticating = false
                 }
+                acceptDesktopSession(token, expiry: expiry)
             } else {
                 if op.arguments.first == "backup" { _ = try JSONDecoder().decode(BackupReceipt.self, from: data) }
                 if op.unregisterBackgroundService {
@@ -2450,6 +2406,8 @@ struct SSHKeyDefinition:Codable,Equatable,Identifiable,Sendable {
     var approver = SSHApproverDefinition(kind:"local-presence", keys:nil, threshold:nil)
     var session_budget = SSHSessionBudget(max_signatures:100,max_seconds:600)
     var id:String{credential_id}
+    /// A key generated in the App starts with no host; git signing is allowed by default (agent-call §8.1).
+    static func generated(credentialID:String,publicKey:String)->Self {.init(name:"ssh-"+UUID().uuidString.lowercased().prefix(8),credential_id:credentialID,user_public_key:publicKey,hosts:[],git_signing:"allow")}
     var publicKeyText:String {
         guard let bytes=Data(base64Encoded:user_public_key),bytes.count>=4 else{return user_public_key}
         let length=bytes.prefix(4).reduce(0){($0<<8)|Int($1)}

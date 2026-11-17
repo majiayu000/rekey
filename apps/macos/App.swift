@@ -484,6 +484,7 @@ struct RootView: View {
                 if let activity = model.activity {
                     Text("UTC 当日 · 截至 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary)
                     if activity.complete {
+                        if !activity.reauthorization.connections.isEmpty { reauthorization(activity.reauthorization.connections) }
                         HStack(spacing: 28) {
                             activityMetric("执行准入", activity.totals.admitted)
                             activityMetric("执行拒绝", activity.totals.denied)
@@ -533,6 +534,20 @@ struct RootView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
             Text(String(value)).font(.system(size: 22, weight: .semibold, design: .rounded))
+        }
+    }
+    // Provider refusals only (agent-call §7.4). The browser authorization still asks for fresh presence.
+    private func reauthorization(_ connections: [String]) -> some View {
+        SectionCard(title: "需重新授权", icon: "exclamationmark.triangle") {
+            Text("提供方已撤销授权或拒绝刷新。这些连接的调用会返回 NEEDS_REAUTH，直到在浏览器中重新授权；网络或服务端错误不会显示在这里。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            ForEach(connections, id: \.self) { name in
+                HStack {
+                    Text(name).font(.system(size: 13, weight: .medium))
+                    Spacer()
+                    Button("在浏览器重新授权") { model.onboardingRoute = .oauth(name) }.disabled(model.busy || !model.desktopReady)
+                }
+            }
         }
     }
     private var auditPage: some View {
