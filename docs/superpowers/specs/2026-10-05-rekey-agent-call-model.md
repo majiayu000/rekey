@@ -350,6 +350,7 @@ rekey scan [paths...] [--staged] [--stdin]            # §9
 rekey import .env [--dry-run]                         # §7.3
 rekey connect claude-code|codex|cursor [--print]      # §6.5
 rekey ssh-agent status                                # §8.1
+rekey aws-credentials|kubectl-credentials|github-token <connection> [--no-wait] [--approval ID]  # §8.4
 ```
 
 - 调用类命令不需要任何令牌，也不需要 vault 密码。
@@ -581,6 +582,7 @@ vault 解锁后，§9 的扫描在 Authority 内逐次解密生效签名规则�
 - policy7 必需字段 `derived_credentials` 保存独立签名授权：`{name, credential_id, effect, max_ttl_seconds, target}`，与 HTTP/SSH 共用唯一名称。草案字段缺失保留，显式数组完整替换；普通 HTTP 的 T1 grade 不自动授权返回凭据。
 - target 只支持三种：AWS AssumeRole 的固定 role ARN/region/session policy；EKS 的固定 cluster ID/region；GitHub App 的固定 installation ID/repository IDs/permission map。Agent 不可覆盖目标、权限或 TTL。AWS 默认 900 秒、上限 3600；EKS 固定 900 秒；GitHub 安装令牌实际 1 小时。交付前检查实际期限与目标，审计只记公共权限摘要和实际到期时间。
 - `DERIVE_CREDENTIAL`（agent IPC 16）只收 connection 和可选 approval_request_id。CLI 将 daemon 已格式化的临时响应原样交给 AWS credential_process、kubectl ExecCredential v1 或显式 GitHub token 消费者；不接受根凭据输入。
+- **（2026-11-17 修订）T1 入口默认等待本机审批。** `credential_process` 与 exec plugin 的固定命令行传不了 `--approval`，因此 `rekey aws-credentials`、`rekey kubectl-credentials`、`rekey github-token` 与 `rekey call` 语义相同：`DERIVE_CREDENTIAL` 返回带 challenge 的 `APPROVAL_REQUIRED` 时，经 `AWAIT_APPROVAL` 最长等待 120 秒；只有状态为 approved 才用同一 approval ID 重试一次。拒绝（cancelled）、过期、已消费或等待超时都返回原 `APPROVAL_REQUIRED`，不再签发；重试仍被拒绝时直接返回该错误，不再等待第二次。`--no-wait` 保留立即返回；显式 `--approval ID` 直接用该批准签发。stdout 只有 credential_process JSON、ExecCredential 或令牌；进度与错误写 stderr：终端（人类输出）显示等待提示，管道与 `REKEY_OUTPUT=json` 仍只有一行 JSON 错误。不新增 opcode、持久字段或审批类型。
 - 上游依据：[AWS AssumeRole](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html)、[EKS get-token](https://github.com/aws/aws-cli/blob/develop/awscli/customizations/eks/get_token.py)、[GitHub installation tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)。
 
 GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-installation`）：只保存 client ID、installation ID 与标准 base64 的 RSA PKCS#1 DER 私钥；仓库 / 权限只在签名目标中保存。该源不能用于普通 HTTP 调用。AWS 根载荷为 `aws-static-v1`；EKS 只接受长期 access key，拒绝带 bootstrap session token 的源，避免将该 token 编码后交给 Agent。EKS token 实际期限为 15 分钟，`ExecCredential.expirationTimestamp` 按官方客户端提前 1 分钟刷新；审计记录实际期限。上游实际过期时间超过签名上限时拒绝，并提示检查本机时钟，不静默扩大 TTL。
@@ -626,7 +628,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 - 新增事件类型：
   - `call.dry_run`
   - `access_request.created` / `.resolved` / `.block_changed`（字段与上下文见 §7.2）
-  - `ssh.sign`（目标主机公钥指纹、用途）
+  - `ssh.sign`（目标主机公钥指纹、用途）。**（2026-11-17 修订）** 沿用现有 `reason_code` 字段，不改审计格式：`ssh-sign;use=<auth|git|unknown>;host_key=<SHA256:指纹|none>`。指纹是 session-bind 签名已验证的 host 公钥 wire blob 的 SHA-256，按 OpenSSH `SHA256:` 无填充 base64 书写，未登记 host 同样记录；未绑定或仅有未验证 hostbound 名称时为 `none`。用途来自签名载荷：用户认证为 auth，`SSHSIG` git namespace 为 git，其余为 unknown。同一签名的 `execution.started` / `execution.finished` 仍为 `ssh-sign`。
   - `credential.derived_issued`
   - `scan.performed`（命中数）
   - `oauth.authorized` / `.refreshed` / `.refresh_failed`
@@ -667,7 +669,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C9 | 防泄漏 | 暂存区含 canary（原始、base64、JSON 转义）时阻止提交；不返回匹配内容；部分匹配不报告；限速生效 |
 | C10 | SSH agent | 用 OpenSSH 客户端 `git push` 到测试仓库成功；未登记 host 进入审批；私钥无法导出；session-bind 缺失时按 approve |
 | C11 | OAuth | 合成 IdP（本地）完成 PKCE 授权与刷新；refresh 失败时返回 `NEEDS_REAUTH`；Agent 侧看不到任何 token |
-| C12 | T1 | AWS `credential_process` 返回的凭证有效期不超过设定值且附带 session policy（用模拟 STS）；未开启 T1 的 Connection 拒绝；审计标注 |
+| C12 | T1 | AWS `credential_process` 返回的凭证有效期不超过设定值且附带 session policy（用模拟 STS）；未开启 T1 的 Connection 拒绝；审计标注；approve 授权下固定命令行等待本机审批、批准后同 ID 只签发一次，拒绝或 `--no-wait` 不访问 STS（模拟 STS 与合成审批） |
 | C13 | `rekey connect` | 前后 diff 准确、备份、重复执行幂等（标记段替换）、不写入任何令牌或密钥 |
 | C14 | 插件 | 安装插件后 Claude Code 能列出 MCP 工具，skill 可用；未安装 rekey 时给出提示 |
 | C15 | 真实 Agent | Claude Code 和 Codex 在不经任何包装的情况下完成 U2–U5（合成上游，加一次真实 GitHub 测试仓库） |

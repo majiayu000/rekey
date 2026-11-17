@@ -442,7 +442,13 @@ fn t1_adapters_preserve_temporary_stdout_without_exposing_root_values_or_metadat
 fn t1_wrong_kind_and_approval_errors_never_release_values_or_replay_issuance() {
     for requires_approval in [false, true] {
         let f = Fixture::new();
-        let output = f.exchange(Channel::Agent, &["aws-credentials", "fixture"], None, move |header, metadata, body| {
+        // Waiting is the default; --no-wait keeps the single-exchange refusal.
+        let args: &[&str] = if requires_approval {
+            &["aws-credentials", "fixture", "--no-wait"]
+        } else {
+            &["aws-credentials", "fixture"]
+        };
+        let output = f.exchange(Channel::Agent, args, None, move |header, metadata, body| {
             assert_eq!(header.message_type, agent_msg::DERIVE_CREDENTIAL);
             assert_eq!(metadata, json!({"connection":"fixture"}));
             assert!(body.is_empty());

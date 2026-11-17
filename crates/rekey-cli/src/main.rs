@@ -24,14 +24,6 @@ struct StepUpArgs {
     presence: bool,
 }
 
-#[derive(Args)]
-struct DerivedCredentialArgs {
-    connection: String,
-    /// Use one explicitly approved derivation request; issuance is never automatically replayed.
-    #[arg(long)]
-    approval: Option<ApprovalRequestId>,
-}
-
 #[derive(Subcommand)]
 enum OAuthCommand {
     /// Open the App to confirm OAuth login and authorize in the browser.
@@ -153,11 +145,11 @@ enum OidcLoginCommand {
 #[derive(Subcommand)]
 enum Command {
     /// AWS credential_process JSON. T1: the Agent receives temporary credentials.
-    AwsCredentials(DerivedCredentialArgs),
+    AwsCredentials(commands::delegated::DerivedCredentialArgs),
     /// kubectl ExecCredential JSON. T1: the Agent receives a temporary token.
-    KubectlCredentials(DerivedCredentialArgs),
+    KubectlCredentials(commands::delegated::DerivedCredentialArgs),
     /// GitHub App installation token. T1: the Agent receives the temporary token.
-    GithubToken(DerivedCredentialArgs),
+    GithubToken(commands::delegated::DerivedCredentialArgs),
     /// Authorize OAuth through the App and browser; no tokens are returned.
     #[command(subcommand)]
     Oauth(OAuthCommand),
@@ -1241,20 +1233,17 @@ fn main() {
     let result = match cli.command {
         Command::AwsCredentials(args) => commands::delegated::derive(
             &agent_socket,
-            args.connection,
-            args.approval,
+            args,
             commands::delegated::DerivedFormat::Aws,
         ),
         Command::KubectlCredentials(args) => commands::delegated::derive(
             &agent_socket,
-            args.connection,
-            args.approval,
+            args,
             commands::delegated::DerivedFormat::Kubectl,
         ),
         Command::GithubToken(args) => commands::delegated::derive(
             &agent_socket,
-            args.connection,
-            args.approval,
+            args,
             commands::delegated::DerivedFormat::GitHub,
         ),
         Command::Oauth(OAuthCommand::Login {

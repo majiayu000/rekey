@@ -218,10 +218,12 @@ pub struct CredentialVersionMetadata {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn oauth_and_aws_source_kinds_bind_distinct_aad_codes() {
+    fn oauth_aws_mtls_and_pki_kinds_bind_frozen_aad_codes() {
         for (kind, wire, code) in [
             (CredentialKind::OAuthGrant, "oauth-grant", 14),
             (CredentialKind::AwsStatic, "aws-static", 15),
+            (CredentialKind::MtlsIdentity, "mtls-identity", 16),
+            (CredentialKind::PkiCaSigner, "pki-ca-signer", 17),
         ] {
             assert_eq!(kind.aad_code(), code);
             assert_eq!(CredentialKind::parse(wire).unwrap(), kind);

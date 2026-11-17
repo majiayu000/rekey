@@ -8,10 +8,18 @@ use rekey_domain::{
 };
 use rekey_vault::{
     AuthorityError,
-    command::{AuditDraft, SshKeyMode},
+    command::{AuditDraft, SshKeyMode, SshSignPurpose, SshSignStart},
     model::{AuthorizationEvidence, event_type, outcome},
 };
 use std::time::{Duration, Instant};
+
+fn start(draft: AuditDraft) -> SshSignStart {
+    SshSignStart {
+        draft,
+        purpose: SshSignPurpose::Unknown,
+        host_key_sha256: None,
+    }
+}
 
 fn started(credential: CredentialId) -> AuditDraft {
     AuditDraft {
@@ -121,16 +129,23 @@ async fn software_keys_sign_inside_authority_and_never_prepare_as_http_credentia
         ));
     }
     assert!(h.credential_list().await.unwrap().is_empty());
-    for (label, mode, kind) in [
+    // The verified host digest and use reach only ssh.sign, in a fixed grammar.
+    for (label, mode, kind, purpose, host, reason) in [
         (
             "synthetic-ed",
             SshKeyMode::Ed25519Software,
             CredentialKind::SshEd25519,
+            SshSignPurpose::Auth,
+            Some([5; 32]),
+            "ssh-sign;use=auth;host_key=SHA256:BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
         ),
         (
             "synthetic-p256",
             SshKeyMode::P256Software,
             CredentialKind::SshP256,
+            SshSignPurpose::Git,
+            None,
+            "ssh-sign;use=git;host_key=none",
         ),
     ] {
         let identity = h
@@ -176,7 +191,11 @@ async fn software_keys_sign_inside_authority_and_never_prepare_as_http_credentia
                 identity.credential.id,
                 identity.public_key.clone(),
                 b"synthetic sign input".to_vec(),
-                draft.clone(),
+                SshSignStart {
+                    draft: draft.clone(),
+                    purpose,
+                    host_key_sha256: host,
+                },
                 Vec::new(),
                 Instant::now() + Duration::from_secs(5),
             )
@@ -186,25 +205,29 @@ async fn software_keys_sign_inside_authority_and_never_prepare_as_http_credentia
         let db =
             rusqlite::Connection::open(rekey_vault::paths::vault_db(&fixture.state_dir)).unwrap();
         let mut query = db
-            .prepare("SELECT event_type FROM audit_events WHERE request_id=?1 ORDER BY sequence")
+            .prepare("SELECT event_type, reason_code FROM audit_events WHERE request_id=?1 ORDER BY sequence")
             .unwrap();
-        let events: Vec<String> = query
+        let events: Vec<(String, String)> = query
             .query_map([draft.request_id.unwrap().as_bytes().as_slice()], |r| {
-                r.get(0)
+                Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap()
             .map(Result::unwrap)
             .collect();
         assert_eq!(
             events,
-            vec!["execution.started", "ssh.sign", "execution.finished"]
+            vec![
+                ("execution.started".to_owned(), "ssh-sign".to_owned()),
+                ("ssh.sign".to_owned(), reason.to_owned()),
+                ("execution.finished".to_owned(), "ssh-sign".to_owned()),
+            ]
         );
         let wrong = h
             .ssh_sign(
                 identity.credential.id,
                 b"different public key".to_vec(),
                 b"synthetic sign input".to_vec(),
-                started(identity.credential.id),
+                start(started(identity.credential.id)),
                 Vec::new(),
                 Instant::now() + Duration::from_secs(5),
             )
@@ -236,7 +259,7 @@ async fn terminal_audit_failure_withholds_signature_and_faults_worker() {
             identity.credential.id,
             identity.public_key,
             b"synthetic input".to_vec(),
-            started(identity.credential.id),
+            start(started(identity.credential.id)),
             Vec::new(),
             Instant::now() + Duration::from_secs(5),
         )
