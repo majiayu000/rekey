@@ -1,6 +1,6 @@
 # 2026-11-17：设计与实现对照及补齐
 
-**结论：采用（以本 PR 两平台 CI 通过为条件）。** 0.5.0-alpha.1 源码线的软件部分已按当前生效设计补齐，可以进入所有者的真机与发布验收。81 条核验缺口中 75 条已修复，5 条部分完成（原因见“仍未完成”），1 条为所有者验收（C14 Claude 插件，所有者已排除）；集成时另发现并修复 2 个已有缺陷。尚有 1 项新的所有者决定（§7.3 第 5 点），它影响的是 App 的系统认证次数，正属于真机验收要观察的内容，不阻塞进入验收。
+**结论：采用。** 0.5.0-alpha.1 源码线的软件部分已按当前生效设计补齐，可以进入所有者的真机与发布验收；PR #96 在 `50d4dccb` 上两平台 CI 全部通过（见“验证”）。81 条核验缺口中 75 条已修复，5 条部分完成（原因见“仍未完成”），1 条为所有者验收（C14 Claude 插件，所有者已排除）；集成时另发现并修复 2 个已有缺陷。尚有 1 项新的所有者决定（§7.3 第 5 点），它影响的是 App 的系统认证次数，正属于真机验收要观察的内容，不阻塞进入验收。
 
 ## 决定与范围
 
@@ -78,6 +78,8 @@
 | `scripts/test-docker-ha.py`（控制器单测） | 18 项通过 |
 
 集成 agent 在合并后的 `9336fe1e` 上用同一 CI 命令跑过两次，都是 1,212 通过 / 0 失败 / 13 忽略；本轮 4 个新测试使总数变为 1,216。
+
+GitHub CI（PR #96，头 `50d4dccb`）：[security-gate](https://github.com/majiayu000/rekey/actions/runs/44158608691) 的 P0 macOS 127 组结果 1,227 通过 / 0 失败 / 13 忽略，P0 Ubuntu 127 组结果 1,231 通过 / 0 失败 / 10 忽略；两平台的 P0 验收、P0 崩溃恢复与 P-05 connector SDK 门槛通过，macOS 的 Connection App 合同与 `--startup-only` 启动合同通过。[性能基线](https://github.com/majiayu000/rekey/actions/runs/44158608594)实际运行 1 项（91.99 秒）并生成本次报告；[fuzz](https://github.com/majiayu000/rekey/actions/runs/44158608408) 9 个目标全部通过。
 
 集成 agent 在 `9336fe1e` 上另外完成、本轮代码改动不涉及的检查：`scripts/build-macos-ui.sh` 构建的 release App 包上，ConnectionContract、UI 合同（6 PASS + 3 CHECK，含真实 Swift/CLI/Broker 签署链）与 `--startup-only` 启动合同通过；`test-agent-quickstart.py`（含真实 CLI + daemon）12 项、`p5-connector-sdk.sh`、lab `child_wait` 2 项通过；新接入 security-gate 的 `p0-acceptance.sh` 与 `p0-crash-recovery.sh` 通过；9 个 fuzz 目标在 stable 下编译通过。未改动的 `p0-runtime-faults.sh` 与 `p0-durability.sh` 在本机失败，原因是已安装的 rekeyd 占用默认端口 7787（`SERVICE_PORT_IN_USE`），改用私有端口的副本通过；基线在本机同样失败。
 
