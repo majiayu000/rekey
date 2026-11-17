@@ -3,8 +3,11 @@ import LocalAuthentication
 import Security
 import CryptoKit
 
-// Call only from an explicit setup/sign action, off the UI thread. No method
-// exports private key bytes, removes a key, retries, or replaces installed trust.
+// Signing and key creation run only from an explicit setup/sign action, off the
+// UI thread. `available` also runs as the form preflight without any prompt: its
+// Keychain access is only the Secure Enclave key reference and public key, with
+// interactionNotAllowed. No method exports private key bytes, removes a key,
+// retries, or replaces installed trust.
 enum PolicySigning {
     private static let prefix = Data("RKPOLICY\0\u{01}".utf8)
 

@@ -68,9 +68,11 @@ secrets, real Broker/CLI, repeated new recovery points, and revocation AFTER the
 last replica then SIGKILL: restored state must retain that revocation. Verify
 fresh desktop management sessions, old-session rejection, repeat failover and owned cleanup.
 
+<a id="software-acceptance-on-the-current-integration-base"></a>
+## Software acceptance on the historical `fa734a5` base
 
-## Software acceptance on the current integration base
-
+Historical record: this drill ran on the PR #74 product base `fa734a5` and has
+not been rerun on the current head, so it does not establish current-head behavior.
 Image `rekey-ha-acceptance:20261009-fa734a5` was built from PR #74 product code,
 image config digest `sha256:b85ebaf46b7b6915a41a7824912fce4b9d20ae1c2118246ca5d174366a43e31c`.
 Eight controller contracts and real disposable Docker acceptance pass: encrypted

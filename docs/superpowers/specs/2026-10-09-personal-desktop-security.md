@@ -41,6 +41,16 @@ blocks another UI login until confirmed. Keychain is read only from an explicit
 system-authentication operation. OS notifications may reduce access only; activation
 never authenticates. Pending business operations are not retried or rolled back.
 
+Revision 2026-11-17 (owner decision): the Keychain rule above covers secret
+reads, such as reading the PresenceKey item; those happen only inside an
+explicit system-authentication operation. The policy-signer preflight
+(`PolicySigning.available`) is exempt. It runs when the add, policy-draft and
+OAuth forms open, and again before credentials are saved, `.env` entries are
+imported or a draft is signed. Its Keychain access, with `interactionNotAllowed`,
+only looks up the existing Secure Enclave key reference and its public key: no
+prompt and no Keychain secret read. It never signs, generates or replaces a key.
+The basic-mode software key is a state-directory file, not a Keychain item.
+
 Preserve current personal Connection forms (they supersede the old Action form).
 Extend the existing team unsigned-draft view with exact UTF-8 text editing and
 explicit new-draft generation for the current policy8 fields; imported text must

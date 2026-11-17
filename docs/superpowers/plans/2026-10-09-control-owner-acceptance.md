@@ -17,4 +17,4 @@ OpenSSH comparison: each row counts all 16 attempted Ed25519 git-namespace signa
 | Rekey | 4 | 0 / 16 | 9477 | 10173 |
 | Rekey | 16 | 0 / 16 | 19326 | 22061 |
 
-Reproduce: `cargo test -p rekey-broker --test ssh_agent real_openssh_concurrency_comparison_counts_every_failure -- --ignored --nocapture`. Hardware/device guarantees, full lab runtime and gateway replacement cleanup remain separate. Current-head CI/review and merge remain required before closing #70.
+Reproduce: `cargo test -p rekey-broker --test ssh_agent real_openssh_concurrency_comparison_counts_every_failure -- --ignored --nocapture`. Hardware/device guarantees, full lab runtime and gateway replacement cleanup remain separate. #70 was closed as completed on 2026-10-10 when PR #74 (`Closes #70`) merged as `9537cf27`, with the PR's CI checks passing on its head `7bcf686`. No later-head rerun of these measurements is recorded here.

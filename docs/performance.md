@@ -15,10 +15,12 @@ The ignored `performance_and_soak_baseline` integration test records:
 - Authority queue saturation from 512 simultaneous submissions against the
   production 128-entry queue, including accepted latency and explicit
   `AUTHORITY_BUSY` counts.
-- The 128-connection Broker budget: 119 Agent plus 7 Admin request handlers
-  held simultaneously, with one overload responder reserved inside each
-  channel's 120/8 budget. Concurrent additional connections on both sockets
-  must receive retryable `AUTHORITY_BUSY` instead of a silent close.
+- The 144-connection Broker budget: 119 Agent and 23 Admin connections held
+  simultaneously, with one overload responder reserved inside each channel's
+  120/24 budget. Concurrent additional connections on both sockets must receive
+  retryable `AUTHORITY_BUSY` instead of a silent close. The separate Admin
+  quotas inside that budget (seven short requests, 16 shared live SSH/Profile
+  owners; issue #70) are not exercised by this baseline.
 - The current local model has no capability session. This UDS baseline measures
   the actual IPC request-handler budget above; the historical four-per-session
   permit metric is retired with personal capability sessions.
