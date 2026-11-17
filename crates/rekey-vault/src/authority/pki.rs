@@ -28,6 +28,8 @@ use crate::error::AuthorityError;
 use crate::model::{PkiCertificateRecord, PkiCertificateState, PkiCrlRecord, event_type, outcome};
 use crate::secret::SecretInput;
 
+mod recovery;
+
 fn invalid() -> AuthorityError {
     rekey_domain::DomainError::InvalidActionDefinition("invalid client certificate request".into())
         .into()
@@ -360,8 +362,9 @@ impl Worker {
         let version = self.store.get_version(input.credential_id, input.version)?;
         let certificates = self.store.verified_certificates(&self.header);
         let certificates = self.fault_on_integrity(certificates)?;
-        // No issuer projection exists for a crashed reservation. Conservatively
-        // refuse a full CRL rather than silently omit a potentially signed leaf.
+        // No issuer projection exists for a reservation. Unlock from Locked
+        // finalizes unowned ones; until then refuse a full CRL rather than
+        // silently omit a potentially signed leaf.
         if certificates
             .iter()
             .any(|r| r.state == PkiCertificateState::Reserved)

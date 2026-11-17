@@ -418,4 +418,58 @@ impl SqliteRecordStore {
         attempt.bind_pki_digest(key, set.digest())?;
         commit_generation(tx, attempt)
     }
+
+    /// Recovery-only terminal delta: every reservation in the authenticated set
+    /// becomes Failed with its caller-built audit, in reservation order.
+    pub(crate) fn finalize_reservations(
+        &mut self,
+        certificates: &[([u8; 16], AuditEvent)],
+        crls: &[(u64, AuditEvent)],
+        finished_at_ms: i64,
+        key: &[u8; 32],
+        attempt: &mut GenerationAttempt<'_>,
+    ) -> Result<(), AuthorityError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let mut set = verified_set(&tx, &attempt.prior_pki_digest)?;
+        let reserved = |state: PkiCertificateState| state == PkiCertificateState::Reserved;
+        let serials = set.certificates.iter().filter(|r| reserved(r.state));
+        let numbers = set.crls.iter().filter(|r| reserved(r.state));
+        if !serials
+            .map(|r| r.serial)
+            .eq(certificates.iter().map(|c| c.0))
+            || !numbers.map(|r| r.number).eq(crls.iter().map(|c| c.0))
+        {
+            return Err(integrity());
+        }
+        let rows = set.certificates.iter_mut().filter(|r| reserved(r.state));
+        for (row, (_, audit)) in rows.zip(certificates) {
+            super::audit::insert(&tx, audit)?;
+            let changed = tx.execute("UPDATE pki_certificates SET state=2,finished_at_ms=?2 WHERE serial=?1 AND state=0", params![row.serial.as_slice(), finished_at_ms]).map_err(storage)?;
+            if changed != 1 {
+                return Err(integrity());
+            }
+            row.state = PkiCertificateState::Failed;
+            row.finished_at_ms = Some(finished_at_ms);
+        }
+        let rows = set.crls.iter_mut().filter(|r| reserved(r.state));
+        for (row, (_, audit)) in rows.zip(crls) {
+            super::audit::insert(&tx, audit)?;
+            let changed = tx
+                .execute(
+                    "UPDATE pki_crls SET state=2,finished_at_ms=?2 WHERE number=?1 AND state=0",
+                    params![row.number.to_be_bytes().as_slice(), finished_at_ms],
+                )
+                .map_err(storage)?;
+            if changed != 1 {
+                return Err(integrity());
+            }
+            row.state = PkiCertificateState::Failed;
+            row.finished_at_ms = Some(finished_at_ms);
+        }
+        attempt.bind_pki_digest(key, set.digest())?;
+        commit_generation(tx, attempt)
+    }
 }
