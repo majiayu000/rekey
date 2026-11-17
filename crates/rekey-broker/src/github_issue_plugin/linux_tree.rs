@@ -61,7 +61,12 @@ impl KillPluginTree {
         }
     }
     pub(super) async fn guardian_lost(&self) -> BrokerError {
-        let file = match self.ack.try_clone().and_then(AsyncFd::new) {
+        let file = match self.ack.try_clone().and_then(|fd| {
+            // SAFETY: the clone owns a distinct, valid descriptor for the
+            // nonblocking ack socket. AsyncFd owns it for this wait; nothing
+            // closes or replaces it before deregistration, including cancellation.
+            unsafe { AsyncFd::register(fd) }.map_err(io::Error::from)
+        }) {
             Ok(file) => file,
             Err(error) => return BrokerError::Io(error),
         };
