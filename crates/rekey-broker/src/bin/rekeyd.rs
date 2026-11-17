@@ -40,6 +40,16 @@ impl RekeydError {
             Self::Broker(_) => 5,
         }
     }
+
+    /// Stable string code beside the numeric exit code, so callers such as
+    /// the App read `error_code` from the failure event instead of its text.
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Usage(_) => "USAGE",
+            Self::Authority(err) => err.code(),
+            Self::Broker(err) => err.code(),
+        }
+    }
 }
 
 fn authority_exit_code(err: &AuthorityError) -> i32 {
@@ -584,13 +594,16 @@ fn main() {
     };
     if let Err(err) = result {
         let exit_code = err.exit_code();
+        let error_code = err.code();
         // An IO failure prints only "ipc unavailable"; the OS cause (address in
         // use, socket path too long) is what tells the user how to fix it.
         match &err {
             RekeydError::Broker(BrokerError::Io(cause)) => {
-                tracing::error!(event = "rekeyd.command_failed", code = exit_code, message = %err, %cause)
+                tracing::error!(event = "rekeyd.command_failed", code = exit_code, error_code, message = %err, %cause)
             }
-            _ => tracing::error!(event = "rekeyd.command_failed", code = exit_code, message = %err),
+            _ => {
+                tracing::error!(event = "rekeyd.command_failed", code = exit_code, error_code, message = %err)
+            }
         }
         std::process::exit(exit_code);
     }

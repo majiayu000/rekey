@@ -350,6 +350,8 @@ rekey ssh-agent status                                # §8.1
 **监听**
 - 固定 `127.0.0.1:<port>`，默认 `7787`，可配置，写入 `~/.config/rekey/service.json`。
 - 只监听 loopback。启动时如果端口已被占用，直接失败并在 App 中报警，不换端口。`rekeyd` 的失败输出为 `SERVICE_PORT_IN_USE`，并记录被占用的端口和修改 `service.json` 的提示；失败的启动不留下 Unix socket。
+- **启动失败记录（2026-11-17 修订）**：持有 serve 锁的启动尝试失败时，`rekeyd` 在该保险库的 state 目录原子写入 `startup-failure.json`（0600，小于 1 KiB）。字段固定为 `code`（稳定错误码）、`message`（IPC 安全的错误文本）、`next`（修复提示或 `null`）、`port`（仅 `SERVICE_PORT_IN_USE` 时为被占用端口，否则 `null`）和 `at_ms`。记录不含密钥、证明或路径，不属于 vault 格式，不进入备份，rekeyd 不回读；本机服务绑定完成即视为启动成功并删除记录。没有 vault 状态的空目录不写记录，以免挡住之后的 `init`；没拿到 serve 锁的实例（例如已有实例在运行）不写也不删；拿锁前的失败（目录权限、命令行参数、`service.json` 解析）不写。`rekeyd.command_failed` 日志在数值 `code`（退出码）之外带字符串 `error_code`。
+- **App 报警**：App 连接失败后启动服务（经 SMAppService，或由 App 启动随包服务）时，只读取这份记录，且只采用 `at_ms` 不早于本次启动尝试的记录，不读取 vault。`SERVICE_PORT_IN_USE` 显示被占用的端口、该目录 `service.json` 的完整路径和写入空闲端口的方法，提供“在 Finder 中显示”和“重试”；`UNSUPPORTED_VAULT_LAYOUT` / `UNSUPPORTED_FORMAT_VERSION` 只显示重建引导（v3 §9.3）；其他错误显示错误码和错误文本，可重试。SMAppService 不提供退出状态，App 启动后最多等约 5 秒，期间服务就绪或出现本次记录即结束；没有本次记录时保留原来的连接错误或进程退出输出。App 不修改 `service.json`，不换端口。
 
 **路由**
 - 路由格式为 `/c/<connection>/<path>`，规则判定与 §5 一致。
