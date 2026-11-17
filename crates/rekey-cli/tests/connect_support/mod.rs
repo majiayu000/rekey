@@ -201,7 +201,12 @@ pub fn confirm(command: Command) -> String {
     assert!(status.success(), "{text}");
     text
 }
+/// Backup or staging files that belong to `path` itself, not to its neighbours.
 pub fn siblings(path: &Path, role: &str) -> Vec<PathBuf> {
+    let prefix = format!(
+        ".{}.rekey-{role}-",
+        path.file_name().unwrap().to_string_lossy()
+    );
     fs::read_dir(path.parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -209,7 +214,7 @@ pub fn siblings(path: &Path, role: &str) -> Vec<PathBuf> {
             p.file_name()
                 .unwrap()
                 .to_string_lossy()
-                .contains(&format!(".rekey-{role}-"))
+                .starts_with(&prefix)
         })
         .collect()
 }
