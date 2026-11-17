@@ -634,6 +634,8 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C15 | 真实 Agent | Claude Code 和 Codex 在不经任何包装的情况下完成 U2–U5（合成上游，加一次真实 GitHub 测试仓库） |
 | C16 | 体验 | 已安装用户：添加 GitHub PAT 到 Claude Code 首次成功调用，总时长不超过 2 分钟，密码最多 1 次，Touch ID 最多 2 次 |
 
+C1 的默认构建回归是 `crates/rekey-broker/tests/c1_canary_sweep.rs`：同一个已激活的签名 Connection 以 canary 为凭据，遍历 CLI（发现、调用、`http`、dry-run、访问请求与等待、`scan`、`ssh-agent status`、`connect --print`、JSON 与面向人的错误）、MCP 工具（含错误与 JSON-RPC 解析错误）、本机服务路由（成功、拒绝、错误）与 SSH agent 身份列表，合成上游以原值、base64/base64url、hex、percent 与 JSON 转义反射 canary；任何输出及其 JSON/percent 解码结果都不得含这些形式。T1 临时值、OAuth、LLM 流式与 lab 接口不在这项测试内。
+
 现有 P0、fuzz、性能门槛全部保留；新增 fuzz 目标：规则路径匹配器、dotenv 解析器、SSH agent 协议解析器，另有完整值泄漏扫描 `secret_scan`；每个目标都提交只含合成数据的种子语料（`fuzz/corpus/<target>/`，见 [fuzzing](../../fuzzing.md)）。 性能夹具必须使用签名 Connection 和无令牌 CALL，保留生产 KDF、Authority 队列/IPC 容量、500 次审计、4 MiB 密封、备份干扰、锁定/关停和 soak；旧 capability 的每 Session 四 permit 指标随该模型作废，该 UDS 性能夹具测量实际 IPC 请求处理器容量。默认 CI 必须实际执行测试并生成本次报告，不能将 lab 条件下的零测试视为通过。
 
 ---
