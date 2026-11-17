@@ -29,6 +29,7 @@ mod connect;
 pub mod connections;
 pub mod delegated;
 pub mod hygiene;
+mod short_secret;
 pub mod ssh;
 mod status;
 pub use connect::{ConnectClient, connect};
@@ -625,13 +626,7 @@ pub fn credential_add(
         &body,
     )?;
     print_json::<CredentialMetadata>(&meta)?;
-    if secret.len() < 16 {
-        // A best-effort warning must not turn a completed mutation into failure.
-        let _ = writeln!(
-            std::io::stderr(),
-            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
-        );
-    }
+    short_secret::warn_if_short(&secret);
     Ok(())
 }
 
@@ -1137,13 +1132,7 @@ pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
         &body,
     )?;
     print_json::<CredentialMetadata>(&meta)?;
-    if secret.len() < 16 {
-        // A best-effort warning must not turn a completed mutation into failure.
-        let _ = writeln!(
-            std::io::stderr(),
-            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
-        );
-    }
+    short_secret::warn_if_short(&secret);
     Ok(())
 }
 

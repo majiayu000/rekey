@@ -454,6 +454,7 @@ fn save_credential(
         "Saved credential {label} ({}). If a later step fails, retry with --credential-id {} instead of entering the key again.",
         saved.id, saved.id
     );
+    super::short_secret::warn_if_short(secret);
     Ok(saved.id)
 }
 

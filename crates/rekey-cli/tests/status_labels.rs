@@ -1,5 +1,6 @@
-//! Process-level blackbox: `rekey status` reports `protection_level` apart
-//! from the `peer_security` service-identity label.
+//! Process-level blackbox for two public status contracts: `rekey status`
+//! reports `protection_level` apart from the `peer_security` identity label,
+//! and saving a credential shorter than 16 bytes warns without failing.
 //! Real `rekeyd` and `rekey`; secrets only via stdin. Build the workspace
 //! binaries first (`cargo build --workspace`).
 
@@ -65,6 +66,16 @@ fn status(state: &Path) -> serde_json::Value {
     serde_json::from_str(&output.stdout).unwrap()
 }
 
+fn warnings(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|line| line["warnings"].as_array().cloned())
+        .flatten()
+        .filter_map(|code| code.as_str().map(str::to_owned))
+        .collect()
+}
+
 struct Daemon(Child);
 
 impl Drop for Daemon {
@@ -75,7 +86,7 @@ impl Drop for Daemon {
 }
 
 #[test]
-fn status_level_is_separate_from_identity() {
+fn status_level_is_separate_from_identity_and_short_keys_warn() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let init = Command::new(rekeyd_bin())
@@ -141,6 +152,34 @@ fn status_level_is_separate_from_identity() {
     assert_eq!(unlocked["state"], "unlocked");
     assert_eq!(unlocked["protection_level"], "L1-dev");
     assert_eq!(unlocked["peer_security"], "unverified");
+
+    let add = |label: &str, secret: &str, human: bool| {
+        let output = run(
+            &state,
+            &["credential", "add", label, "--stdin-secrets"],
+            &format!("{PASSWORD}\n{secret}\n"),
+            human,
+        );
+        assert_eq!(output.status, 0, "{}", output.stderr);
+        assert!(!output.stdout.contains(secret) && !output.stderr.contains(secret));
+        let saved: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(saved["label"], label);
+        output
+    };
+    let short = add("short-key", "short-canary", false);
+    assert!(
+        warnings(&short.stderr).contains(&"SHORT_CREDENTIAL".to_owned()),
+        "{}",
+        short.stderr
+    );
+    let complete = add("complete-key", "complete-synthetic-canary-0001", false);
+    assert!(!warnings(&complete.stderr).contains(&"SHORT_CREDENTIAL".to_owned()));
+    let human = add("short-human", "tiny-canary", true);
+    assert!(
+        human.stderr.contains("shorter than 16 bytes"),
+        "{}",
+        human.stderr
+    );
 
     let lock = run(&state, &["lock"], "", false);
     assert_eq!(lock.status, 0, "{}", lock.stderr);
