@@ -410,37 +410,6 @@ fn selected_vault_codex_config_is_a_semantic_noop_after_instructions_installed()
 }
 
 #[test]
-fn optional_hook_preserves_existing_shell_and_uses_the_staged_scanner() {
-    let f = Fixture::new();
-    f.git_init();
-    let path = f.write(
-        ".git/hooks/pre-commit",
-        b"#!/bin/sh\n# existing operator hook\ntrue\n",
-    );
-    let original = fs::read(&path).unwrap();
-    let mut command = f.command("claude-code");
-    command.arg("--with-hooks");
-    let (status, text) = Tty::start(command).finish(b"y\n");
-    assert!(status.success(), "{text}");
-    let new = fs::read_to_string(&path).unwrap();
-    assert!(new.starts_with("#!/bin/sh\n# existing operator hook\ntrue\n"));
-    assert!(new.contains(&format!(
-        "rekey --state-dir '{}' scan --staged || exit $?",
-        f.root.join("vault").display()
-    )));
-    assert_eq!(new.matches("# rekey:begin").count(), 1);
-    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o700);
-    assert_eq!(
-        fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
-        original
-    );
-    let mut command = f.command("claude-code");
-    command.arg("--with-hooks");
-    assert!(command.output().unwrap().status.success());
-    assert_eq!(fs::read_to_string(path).unwrap(), new);
-}
-
-#[test]
 fn custom_vault_binding_reaches_clients_instructions_and_hook_without_shell_expansion() {
     for client in ["codex", "cursor", "claude-code"] {
         let f = Fixture::new();

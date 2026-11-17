@@ -30,7 +30,7 @@ pub mod connections;
 pub mod delegated;
 pub mod hygiene;
 pub mod ssh;
-pub use connect::{ConnectClient, connect};
+pub use connect::{ConnectArgs, HooksCommand, connect, hooks};
 #[cfg(feature = "lab")]
 mod run;
 #[cfg(feature = "lab")]

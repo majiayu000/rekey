@@ -1,6 +1,6 @@
 //! Project MCP configuration and marked instructions. No credentials are involved.
 use std::collections::{BTreeMap, HashSet};
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
@@ -11,7 +11,9 @@ use toml_edit::{Array, DocumentMut, Item, Table, value};
 use crate::client::CliError;
 
 mod edit;
-use edit::{Edit, MAX_CONFIG, marked};
+mod hooks;
+use edit::{Edit, marked, review};
+pub use hooks::{HooksCommand, hooks};
 
 const LOCAL_PATH_WARNING: &str =
     "Warning: this file will contain the absolute path of a non-default vault; do not commit it.";
@@ -21,6 +23,22 @@ pub enum ConnectClient {
     ClaudeCode,
     Codex,
     Cursor,
+}
+#[derive(clap::Args)]
+pub struct ConnectArgs {
+    client: ConnectClient,
+    #[arg(long)]
+    print: bool,
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Install the marked pre-commit secret scan (same as `rekey hooks install`).
+    #[arg(long)]
+    with_hooks: bool,
+    /// Configure SSH IdentityAgent for explicit --ssh-host targets.
+    #[arg(long, requires = "ssh_hosts")]
+    with_ssh: bool,
+    #[arg(long = "ssh-host", requires = "with_ssh")]
+    ssh_hosts: Vec<String>,
 }
 /// How generated files name the vault. The default `~/.rekey` stays implicit,
 /// so project files carry no local path; any other vault is bound explicitly.
@@ -50,6 +68,13 @@ impl Vault {
             rekey,
         })
     }
+}
+fn project_dir(project: Option<PathBuf>) -> Result<PathBuf, CliError> {
+    let project = match project {
+        Some(project) => project,
+        None => std::env::current_dir().map_err(|e| io_error("cannot resolve project", e))?,
+    };
+    std::path::absolute(project).map_err(|e| io_error("cannot resolve project", e))
 }
 impl ConnectClient {
     fn instruction_file(self) -> &'static str {
@@ -233,23 +258,13 @@ const INSTRUCTIONS: &str = "<!-- rekey:begin -->
 <!-- rekey:end -->
 ";
 
-pub fn connect(
-    client: ConnectClient,
-    print: bool,
-    project: Option<PathBuf>,
-    with_hooks: bool,
-    ssh_hosts: Vec<String>,
-    state_dir: &Path,
-) -> Result<(), CliError> {
+pub fn connect(args: ConnectArgs, state_dir: &Path) -> Result<(), CliError> {
+    let client = args.client;
     let vault = Vault::resolve(state_dir)?;
-    let (rekey, state) = (&vault.rekey, vault.custom.as_deref());
+    let state = vault.custom.as_deref();
     let warning = state.map(|_| LOCAL_PATH_WARNING);
-    let instruction_text = INSTRUCTIONS.replace("{rekey}", rekey);
-    let project_path = std::path::absolute(
-        project
-            .unwrap_or(std::env::current_dir().map_err(|e| io_error("cannot resolve project", e))?),
-    )
-    .map_err(|e| io_error("cannot resolve project", e))?;
+    let instruction_text = INSTRUCTIONS.replace("{rekey}", &vault.rekey);
+    let project_path = project_dir(args.project)?;
     let (subdir, filename) = client.location();
     let mut config = Edit::load(project_path.clone(), subdir, filename)?;
     if !matches!(client, ConnectClient::Codex)
@@ -268,7 +283,7 @@ pub fn connect(
     config.after =
         String::from_utf8(prepare(client, &[], "rekey-mcp", state)?.0).expect("generated UTF-8");
     config.warning = warning;
-    let mut instructions = Edit::load(project_path, None, client.instruction_file())?;
+    let mut instructions = Edit::load(project_path.clone(), None, client.instruction_file())?;
     instructions.updated = marked(
         instructions.bytes(),
         &instruction_text,
@@ -289,149 +304,54 @@ pub fn connect(
     instructions.after = instruction_text;
     instructions.warning = warning;
     let mut edits = vec![config, instructions];
-    if with_hooks {
-        let result = std::process::Command::new("git")
-            .args([
-                "-C",
-                edits[0]
-                    .root_path
-                    .to_str()
-                    .ok_or_else(|| invalid("project path must be UTF-8"))?,
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-path",
-                "hooks",
-            ])
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|_| invalid("cannot locate Git hooks directory"))?;
-        if !result.status.success() {
-            return Err(invalid("--with-hooks requires a Git repository"));
-        }
-        let path = std::str::from_utf8(&result.stdout)
-            .map_err(|_| invalid("Git hooks path must be UTF-8"))?
-            .trim_end_matches('\n');
-        let hooks = std::path::absolute(path)
-            .map_err(|e| io_error("cannot resolve Git hooks directory", e))?;
-        let hooks_parent = hooks
-            .parent()
-            .ok_or_else(|| invalid("Git hooks directory has no parent"))?
-            .to_owned();
-        let mut hook = if hooks.is_dir() {
-            Edit::load(hooks, None, "pre-commit")?
-        } else if hooks.file_name().and_then(|s| s.to_str()) == Some("hooks") {
-            Edit::load(hooks_parent, Some("hooks"), "pre-commit")?
-        } else {
-            return Err(invalid("custom Git hooks directories must already exist"));
-        };
-        let old = if hook.bytes().is_empty() {
-            b"#!/bin/sh\n".as_slice()
-        } else {
-            hook.bytes()
-        };
-        let block = format!("# rekey:begin\n{rekey} scan --staged || exit $?\n# rekey:end\n");
-        hook.updated = marked(old, &block, "# rekey:begin", "# rekey:end")?;
-        hook.before = "<existing hook retained outside Rekey markers>".into();
-        hook.after = block;
-        edits.push(hook);
+    if args.with_hooks {
+        edits.extend(hooks::install(&project_path, &vault)?);
     }
-    if !ssh_hosts.is_empty() {
-        if ssh_hosts.iter().any(|h| {
-            h.is_empty()
-                || !h
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
-        }) {
-            return Err(invalid(
-                "SSH host must be a concrete hostname, without wildcards or whitespace",
-            ));
-        }
-        let home = std::env::home_dir().ok_or_else(|| invalid("cannot resolve home directory"))?;
-        let mut ssh = Edit::load(home, Some(".ssh"), "config")?;
-        let socket = vault.path.join("ssh-agent.sock");
-        let socket = socket
-            .to_str()
-            .ok_or_else(|| invalid("SSH socket must be UTF-8"))?;
-        if socket.contains(['\n', '\r', '"']) {
-            return Err(invalid("SSH socket path cannot be quoted safely"));
-        }
-        let block = format!(
-            "# rekey:begin\nHost {}\n    IdentityAgent \"{}\"\n# rekey:end\n",
-            ssh_hosts.join(" "),
-            socket
-        );
-        let unmanaged = marked(ssh.bytes(), "", "# rekey:begin", "# rekey:end")?;
-        ssh.updated = block
-            .as_bytes()
-            .iter()
-            .chain(unmanaged.iter())
-            .copied()
-            .collect();
-        ssh.before = "<existing SSH configuration retained outside Rekey markers>".into();
-        ssh.after = block;
-        edits.push(ssh);
+    if args.with_ssh {
+        edits.push(ssh_config(&args.ssh_hosts, &vault.path)?);
     }
-    let mut output = io::stdout().lock();
-    for edit in &edits {
-        if edit.updated.len() > MAX_CONFIG {
-            return Err(invalid("updated configuration exceeds 1 MiB"));
-        }
-        writeln!(
-            output,
-            "Target: {}\n--- before\n- {}\n+++ after",
-            edit.path().display(),
-            edit.before
-        )
-        .map_err(|e| io_error("cannot write preview", e))?;
-        for line in edit.after.lines() {
-            writeln!(output, "+ {line}").map_err(|e| io_error("cannot write preview", e))?;
-        }
-        if let Some(warning) = edit.warning {
-            writeln!(output, "{warning}").map_err(|e| io_error("cannot write preview", e))?;
-        }
-    }
-    if print {
-        return Ok(());
-    }
-    if !edits.iter().any(Edit::changed) {
-        writeln!(output, "Already configured; no files changed.")
-            .map_err(|e| io_error("cannot write result", e))?;
-        return Ok(());
-    }
-    output
-        .flush()
-        .map_err(|e| io_error("cannot write preview", e))?;
-    if !io::stdin().is_terminal() {
+    review(
+        edits,
+        args.print,
+        "Apply Rekey configuration and instructions?",
+        "Rekey configured. Start your Agent normally; no token is required.",
+    )
+}
+
+/// The managed `Host` block at the top of ~/.ssh/config for explicit hosts.
+fn ssh_config(hosts: &[String], state_dir: &Path) -> Result<Edit, CliError> {
+    if hosts.iter().any(|h| {
+        h.is_empty()
+            || !h
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+    }) {
         return Err(invalid(
-            "TTY confirmation is required; use --print to preview without writing",
+            "SSH host must be a concrete hostname, without wildcards or whitespace",
         ));
     }
-    write!(
-        io::stderr(),
-        "Apply Rekey configuration and instructions? [y/N] "
-    )
-    .and_then(|()| io::stderr().flush())
-    .map_err(|e| io_error("cannot write confirmation", e))?;
-    let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .take(32)
-        .read_line(&mut answer)
-        .map_err(|e| io_error("cannot read confirmation", e))?;
-    if answer.len() == 32 || !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
-        return Ok(());
+    let home = std::env::home_dir().ok_or_else(|| invalid("cannot resolve home directory"))?;
+    let mut ssh = Edit::load(home, Some(".ssh"), "config")?;
+    let socket = state_dir.join("ssh-agent.sock");
+    let socket = socket
+        .to_str()
+        .ok_or_else(|| invalid("SSH socket must be UTF-8"))?;
+    if socket.contains(['\n', '\r', '"']) {
+        return Err(invalid("SSH socket path cannot be quoted safely"));
     }
-    for edit in &edits {
-        edit.verify()?;
-    }
-    for edit in edits.iter_mut().filter(|e| e.changed()) {
-        edit.apply()?;
-    }
-    writeln!(
-        output,
-        "Rekey configured. Start your Agent normally; no token is required."
-    )
-    .map_err(|e| io_error("cannot write result", e))
+    let block = format!(
+        "# rekey:begin\nHost {}\n    IdentityAgent \"{}\"\n# rekey:end\n",
+        hosts.join(" "),
+        socket
+    );
+    let unmanaged = marked(ssh.bytes(), "", "# rekey:begin", "# rekey:end")?;
+    ssh.updated = block
+        .as_bytes()
+        .iter()
+        .chain(unmanaged.iter())
+        .copied()
+        .collect();
+    ssh.before = "<existing SSH configuration retained outside Rekey markers>".into();
+    ssh.after = block;
+    Ok(ssh)
 }

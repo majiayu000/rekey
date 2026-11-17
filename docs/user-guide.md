@@ -175,10 +175,11 @@ CLI 只让 daemon 预览变量名、预设提示和未支持的行，不读取�
 ```bash
 rekey scan --staged
 rekey scan /absolute/path/project/file
-rekey --state-dir /absolute/path/rekey-dev connect claude-code --with-hooks
+rekey hooks install --print
+rekey hooks install
 ```
 
-扫描使用保险库中完整秘密及支持的变体，结果仅含位置，不回显匹配内容。`--with-hooks` 安装受管 pre-commit 检查。扫描失败不等于文件安全；保险库锁定、超限或限速时应先处理错误。它不是对所有可能编码和历史提交的完整泄漏证明。
+扫描使用保险库中完整秘密及支持的变体，结果仅含位置，不回显匹配内容。`rekey hooks install`（与 `connect --with-hooks` 相同）安装受管 pre-commit 检查：先预览，确认后写入，并备份原钩子。已有钩子不会被覆盖：sh、bash、zsh 等 shell 钩子在第一行之后插入扫描，即使原钩子以 `exit` 或 `exec` 结束，扫描也先执行；Python 等其他钩子原样改名为同目录的 `pre-commit.rekey-chained`，由 Rekey 的包装脚本在扫描通过后以相同参数和输入运行。`rekey hooks uninstall` 恢复原钩子。扫描失败不等于文件安全；保险库锁定、超限或限速时应先处理错误。它不是对所有可能编码和历史提交的完整泄漏证明。
 
 ## SSH 与 Git
 

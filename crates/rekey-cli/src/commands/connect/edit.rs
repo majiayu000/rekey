@@ -2,7 +2,7 @@
 //! exact private backups, exclusive staging and atomic publication.
 use std::ffi::{CStr, CString};
 use std::fs::{File, Metadata, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -87,7 +87,8 @@ fn parent(project: &File, subdir: Option<&str>) -> Result<Option<File>, CliError
 #[derive(PartialEq)]
 pub(super) struct Snapshot {
     identity: (u64, u64),
-    bytes: Vec<u8>,
+    pub(super) mode: u32,
+    pub(super) bytes: Vec<u8>,
 }
 fn read(dir: Option<&File>, target: &CStr) -> Result<Option<Snapshot>, CliError> {
     let Some(dir) = dir else { return Ok(None) };
@@ -119,6 +120,7 @@ fn read(dir: Option<&File>, target: &CStr) -> Result<Option<Snapshot>, CliError>
     }
     Ok(Some(Snapshot {
         identity: identity(&meta),
+        mode: meta.mode() & 0o777,
         bytes,
     }))
 }
@@ -243,6 +245,13 @@ pub(super) struct Edit {
     parent: Option<File>,
     pub(super) original: Option<Snapshot>,
     pub(super) updated: Vec<u8>,
+    /// Permission bits to publish with and to compare (Git hooks). None keeps
+    /// 0600 and ignores the current mode.
+    pub(super) mode: Option<u32>,
+    /// Delete the target instead of writing `updated`.
+    pub(super) remove: bool,
+    /// Atomically rename this verified sibling over the target instead of writing.
+    pub(super) restore: Option<(&'static str, Snapshot)>,
     pub(super) before: String,
     pub(super) after: String,
     /// Shown after the preview, e.g. when a project file names a local path.
@@ -265,6 +274,9 @@ impl Edit {
             parent,
             original,
             updated: Vec::new(),
+            mode: None,
+            remove: false,
+            restore: None,
             before: String::new(),
             after: String::new(),
             warning: None,
@@ -274,9 +286,15 @@ impl Edit {
         self.original.as_ref().map_or(&[], |s| &s.bytes)
     }
     pub(super) fn changed(&self) -> bool {
-        self.original
-            .as_ref()
-            .is_none_or(|s| s.bytes != self.updated)
+        match &self.original {
+            None => !self.remove,
+            Some(old) => {
+                self.remove
+                    || self.restore.is_some()
+                    || old.bytes != self.updated
+                    || self.mode.is_some_and(|mode| old.mode != mode)
+            }
+        }
     }
     pub(super) fn path(&self) -> PathBuf {
         self.subdir
@@ -291,10 +309,38 @@ impl Edit {
             self.parent.as_ref(),
             &name(self.filename.as_ref())?,
             &self.original,
-        )
+        )?;
+        if let Some((sibling, snapshot)) = &self.restore
+            && read(self.parent.as_ref(), &name(sibling.as_ref())?)?.as_ref() != Some(snapshot)
+        {
+            return Err(invalid(
+                "configuration changed after preview; nothing was replaced",
+            ));
+        }
+        Ok(())
     }
     pub(super) fn apply(&mut self) -> Result<(), CliError> {
         self.verify()?;
+        if self.remove || self.restore.is_some() {
+            let dir = self
+                .parent
+                .as_ref()
+                .ok_or_else(|| invalid("hooks directory disappeared"))?;
+            let target = name(self.filename.as_ref())?;
+            let result = match &self.restore {
+                Some((sibling, _)) => publish(dir, &name(sibling.as_ref())?, &target, true),
+                None if unsafe { libc::unlinkat(dir.as_raw_fd(), target.as_ptr(), 0) } != 0 => {
+                    Err(io::Error::last_os_error())
+                }
+                None => dir.sync_all(),
+            };
+            return result.map_err(|e| {
+                io_error(
+                    "hook removal or directory sync failed; inspect the hooks directory",
+                    e,
+                )
+            });
+        }
         if self.parent.is_none() {
             let part = name(
                 self.subdir
@@ -330,11 +376,11 @@ impl Edit {
             file.write_all(&self.updated)
                 .and_then(|()| file.sync_all())
                 .map_err(|e| io_error("cannot sync new configuration", e))?;
-            if self.filename == "pre-commit"
-                && unsafe { libc::fchmod(file.as_raw_fd(), 0o700) } != 0
+            if let Some(mode) = self.mode
+                && unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0
             {
                 return Err(io_error(
-                    "cannot make pre-commit executable",
+                    "cannot set the hook file mode",
                     io::Error::last_os_error(),
                 ));
             }
@@ -357,6 +403,69 @@ impl Edit {
         result?;
         report
     }
+}
+
+/// Preview every edit, then apply them only after an explicit terminal "yes".
+pub(super) fn review(
+    mut edits: Vec<Edit>,
+    print: bool,
+    question: &str,
+    done: &str,
+) -> Result<(), CliError> {
+    let mut output = io::stdout().lock();
+    for edit in &edits {
+        if edit.updated.len() > MAX_CONFIG {
+            return Err(invalid("updated configuration exceeds 1 MiB"));
+        }
+        writeln!(
+            output,
+            "Target: {}\n--- before\n- {}\n+++ after",
+            edit.path().display(),
+            edit.before
+        )
+        .map_err(|e| io_error("cannot write preview", e))?;
+        for line in edit.after.lines() {
+            writeln!(output, "+ {line}").map_err(|e| io_error("cannot write preview", e))?;
+        }
+        if let Some(warning) = edit.warning {
+            writeln!(output, "{warning}").map_err(|e| io_error("cannot write preview", e))?;
+        }
+    }
+    if print {
+        return Ok(());
+    }
+    if !edits.iter().any(Edit::changed) {
+        writeln!(output, "Already configured; no files changed.")
+            .map_err(|e| io_error("cannot write result", e))?;
+        return Ok(());
+    }
+    output
+        .flush()
+        .map_err(|e| io_error("cannot write preview", e))?;
+    if !io::stdin().is_terminal() {
+        return Err(invalid(
+            "TTY confirmation is required; use --print to preview without writing",
+        ));
+    }
+    write!(io::stderr(), "{question} [y/N] ")
+        .and_then(|()| io::stderr().flush())
+        .map_err(|e| io_error("cannot write confirmation", e))?;
+    let mut answer = String::new();
+    io::stdin()
+        .lock()
+        .take(32)
+        .read_line(&mut answer)
+        .map_err(|e| io_error("cannot read confirmation", e))?;
+    if answer.len() == 32 || !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+        return Ok(());
+    }
+    for edit in &edits {
+        edit.verify()?;
+    }
+    for edit in edits.iter_mut().filter(|e| e.changed()) {
+        edit.apply()?;
+    }
+    writeln!(output, "{done}").map_err(|e| io_error("cannot write result", e))
 }
 
 #[cfg(test)]
