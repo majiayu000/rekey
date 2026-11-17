@@ -30,7 +30,9 @@ pub mod connections;
 pub mod delegated;
 pub mod hygiene;
 pub mod ssh;
+mod status;
 pub use connect::{ConnectClient, connect};
+pub use status::status;
 #[cfg(feature = "lab")]
 mod run;
 #[cfg(feature = "lab")]
@@ -560,28 +562,6 @@ pub fn lock(state_dir: &Path, forget_remembered: bool) -> Result<(), CliError> {
     )?;
     print_json::<LockResponse>(&meta)?;
     Ok(())
-}
-
-pub fn status(state_dir: &Path, passive: bool) -> Result<(), CliError> {
-    let message = if passive {
-        admin_msg::PASSIVE_STATUS
-    } else {
-        admin_msg::STATUS
-    };
-    let mut client = admin(state_dir)?;
-    let (meta, _) = client.call(message, b"{}", &[])?;
-    #[derive(Serialize)]
-    struct LocalStatus {
-        #[serde(flatten)]
-        daemon: ipc::StatusResponse,
-        peer_security: crate::client::PeerSecurity,
-    }
-    let daemon = serde_json::from_slice(&meta)
-        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
-    write_json(&LocalStatus {
-        daemon,
-        peer_security: client.peer_security(),
-    })
 }
 
 pub fn shutdown(state_dir: &Path, kind: ProofKind, password_stdin: bool) -> Result<(), CliError> {

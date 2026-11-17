@@ -203,6 +203,8 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 
 现有 G1 对应 L1-dev，现有 G2（Linux reference）对应有界拓扑中的隔离保证。V1/V2 与受保护锚设备验收完成前，当前开发构建即使已校验服务签名，也只显示已确认的 L1-dev 下限；Locked 且无会话时显示 L0，未知/故障状态不宣称等级。L2 必须依据实际启动与隔离验收，不能由 Profile 中的隔离声明自动推断。
 
+`rekey status` 按上一段规则输出独立的 `protection_level`：`L0`、`L1-dev`，其他或未知状态为 `null`。签名身份是单独的 `peer_security` 标签，只取 `verified_signature` 或 `unverified`，不再借用等级名称（2026-11-17 修订，原来未校验时输出 `L1-dev`）。App 解码同一个 `protection_level` 显示等级，不认识的值不显示等级，签名身份另行显示。
+
 ### 3.4 不变量（每条都对应 §10 的攻击测试）
 
 - **I1**：Agent 接口（agent.sock、网关、MCP）没有任何返回凭据明文的操作。
