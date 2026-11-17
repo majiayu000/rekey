@@ -3,6 +3,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -113,6 +114,14 @@ impl Tty {
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave));
+        // A terminal user's Ctrl-C, even when the harness itself ignores SIGINT
+        // (a background job in a script). `signal` is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
         let child = command.spawn().unwrap();
         let mut tty = Self {
             _guard: guard,
@@ -159,6 +168,10 @@ impl Tty {
     }
     fn finish(mut self, answer: &[u8]) -> (ExitStatus, String) {
         self.master.write_all(answer).unwrap();
+        self.exit()
+    }
+    /// Waits, within the liveness bound, for the child to exit and drains its output.
+    fn exit(mut self) -> (ExitStatus, String) {
         let started = Instant::now();
         let limit = test_timeout(PTY_LIVENESS);
         loop {
@@ -234,12 +247,13 @@ fn nontty_cancel_and_eof_leave_missing_directory_untouched() {
 #[test]
 fn sigint_before_confirmation_creates_nothing() {
     let f = Fixture::new();
-    let mut tty = Tty::start(f.command("codex"));
+    let tty = Tty::start(f.command("codex"));
     assert_eq!(
         unsafe { libc::kill(tty.child.id() as i32, libc::SIGINT) },
         0
     );
-    assert!(!tty.child.wait().unwrap().success());
+    let (status, text) = tty.exit();
+    assert!(!status.success(), "{text}");
     assert_eq!(fs::read_dir(f.project()).unwrap().count(), 0);
 }
 #[test]
