@@ -81,7 +81,7 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
 
-同一程序还用合成 CLI 检查四种设备信号各自锁定界面（关闭设置后都不锁）、迟到的 resume / remember / login 令牌被撤销、忙碌时收到的接入页面在空闲后按原检查打开，签名预检先于保存密钥（Secure Enclave 匹配用注入的公钥），以及 `.env` 导入审阅沿用已签署策略的有效期、按 SDK 读取的变量名生成 base URL 变量、不准备无法代理或非密钥的项，并把将被替换的已有 `OPENAI_BASE_URL` 行列为“已替换”；不读取钥匙串，也不使用 Secure Enclave。
+同一程序还用合成 CLI 检查四种设备信号各自锁定界面（关闭设置后都不锁）、迟到的 resume / remember / login 令牌被撤销、忙碌时收到的接入页面在空闲后按原检查打开，签名预检先于保存密钥（Secure Enclave 匹配用注入的公钥；预检与保存之间打开新接入页面时不保存），以及 `.env` 导入审阅沿用已签署策略的有效期、按 SDK 读取的变量名生成 base URL 变量、不准备无法代理或非密钥的项，并把将被替换的已有 `OPENAI_BASE_URL` 行列为“已替换”；不读取钥匙串，也不使用 Secure Enclave。
 
 自动连接回归检查复用同一个测试程序和随包 CLI，不访问用户保险库：
 

@@ -38,7 +38,8 @@ Software signing does not claim hardware isolation. The daemon still requires
 fresh A2 proof for activation; an A1 desktop session cannot authorize it. The App
 runs this preflight, then reads the preset and the signed base, and saves the key
 last in one model step, so a missing or mismatched signer or a duplicate
-connection name saves nothing.
+connection name saves nothing. A waiting handoff can open a new flow between
+those reads; the step then saves nothing and asks for the new page to be filled.
 
 The password recheck interval (including 30 days) only controls the existing
 system-authentication grant. Reviewed activation still requires fresh presence,
@@ -58,7 +59,8 @@ zero master-password entries, targeting one system-authentication prompt (up to
 two if the OS separately protects the signing key). Hardware prompt counts need
 device evidence. Synthetic App contracts cover the busy-time handoff, the
 preflight-before-save order (including the Secure Enclave match through an
-injected public key) and the CLI handoff decision (stdin secrets, a custom
+injected public key, and a handoff applied between the preflight and the save)
+and the CLI handoff decision (stdin secrets, a custom
 workspace or a missing App keep basic mode); they do not touch Keychain or
 Secure Enclave. Stop if this requires trust replacement, format changes, or a
 general authentication service; those are outside this correction.

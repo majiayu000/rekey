@@ -91,16 +91,19 @@ extension AppModel {
 
     /// One onboarding step for an API key. The signer preflight, the preset and the signed
     /// base come first and the key is saved last, so a missing or mismatched signer, a
-    /// refused preset or a duplicate connection name saves nothing.
+    /// refused preset or a duplicate connection name saves nothing. `busy` ends after each
+    /// read, so a waiting handoff may open a new flow in between; this step then saves nothing.
     func prepareKeyConnection(_ key: OnboardingKey, name: String, preset: String, origin: String = "", header: String = "", prefix: String = "",
                               models: [String] = [],
                               hardwarePublicKey: @escaping @Sendable (UUID) throws -> Data? = { try PolicySigning.existingPublicKey(vaultID: $0) })
         async throws -> (mode: PolicySigning.Mode, credential: Credential, connection: ConnectionDefinition) {
+        let revision = nativeFlowRevision
         let mode = try await checkPolicySigner(hardwarePublicKey: hardwarePublicKey)
         let custom = preset == "generic-header"
         let definition = try await loadPreset(preset, origin: origin, header: custom ? header : "", prefix: custom ? prefix : "")
         let base = try await loadConnectionEditor()
         guard !base.connections.contains(where: { $0.name == name }) else { throw UIError(message: "已有同名连接，请在授权页编辑现有规则。") }
+        guard revision == nativeFlowRevision else { throw UIError(message: "接入页面已改变，未保存密钥，请在新页面重新填写。") }
         let credential: Credential
         switch key {
         case .existing(let saved): credential = saved

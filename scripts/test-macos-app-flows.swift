@@ -3,8 +3,8 @@ import AppKit
 import CryptoKit
 
 // Synthetic App flow contracts: device signals, late desktop tokens, a CLI handoff that
-// arrives while the App is busy, the signer preflight before an onboarding key is saved,
-// and the .env import review. A Python stand-in replaces the CLI; no vault, Keychain or
+// arrives while the App is busy, the signer preflight before an onboarding key is saved
+// (also when a handoff opens a new flow between its steps), and the .env import review. A Python stand-in replaces the CLI; no vault, Keychain or
 // Secure Enclave is used.
 extension ConnectionUIContract {
     @MainActor
@@ -13,8 +13,9 @@ extension ConnectionUIContract {
         try await lateDesktopTokens()
         try await pendingHandoff()
         try await signerPreflight()
+        try await handoffBetweenSteps()
         try await envImportReview()
-        print("PASS: four device signals lock (none when disabled), late resume/remember/login tokens are revoked, a busy-time handoff is applied once idle, the signer preflight precedes the key save, and the .env import review keeps the signed expiry and SDK base-URL variables and reports a replaced base-URL line.")
+        print("PASS: four device signals lock (none when disabled), late resume/remember/login tokens are revoked, a busy-time handoff is applied once idle, the signer preflight precedes the key save, a handoff applied between the steps saves no key, and the .env import review keeps the signed expiry and SDK base-URL variables and reports a replaced base-URL line.")
     }
 
     /// `delay-<name>` holds that command after it touches `<name>-started`; desktop-lock
@@ -45,7 +46,7 @@ extension ConnectionUIContract {
             with open(root/'locks.jsonl','a') as log:log.write(json.dumps({'token':lines[0],'forget':'--forget-remembered' in args})+'\\n')
             print(json.dumps({'locked':True}))
         elif args[:2]==['policy','status']:
-            sys.stdout.write((root/'policy.json').read_text())
+            gate('policy');sys.stdout.write((root/'policy.json').read_text())
         elif args[:2]==['connection','preset']:
             print(json.dumps({'name':args[2],'origin':'https://api.example.invalid','auth':{'header_name':'authorization','prefix':'Bearer '},'rules':[{'id':'00000000-0000-4000-8000-0000000000aa','methods':'read','path':'/**','effect':'allow'}],'allowed_headers':[],'fixed_headers':{},'allowed_response_headers':[],'query_allowlist':None,'operations':[]}))
         elif args[:2]==['connection','list']:
@@ -260,6 +261,36 @@ extension ConnectionUIContract {
         try await refused("a duplicate connection name", .new(label: "again", secret: "synthetic-key-9876543210"), hardware: { _ in key })
         let reused = try await model.prepareKeyConnection(.existing(prepared.credential), name: "glm-second", preset: "glm", models: ["glm-synthetic"], hardwarePublicKey: { _ in key })
         try require(reused.credential.id == prepared.credential.id && adds() == ["synthetic"], "a duplicate name or a reused key saves nothing new")
+    }
+
+    // unified-experiments (desktop correction): `busy` ends after each read of the onboarding
+    // step, so a waiting handoff can open a new flow before the save; the old step saves nothing.
+    @MainActor
+    static func handoffBetweenSteps() async throws {
+        let (root, executable) = try flowFixture()
+        let previousHome = ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"]
+        setenv("CFFIXED_USER_HOME", root.path, 1)
+        var settings = DesktopSecuritySettings(); settings.idle = .disabled
+        let (model, client, preferences, suite) = try flowModel(root, executable, settings, home: root.appendingPathComponent(".rekey").path)
+        defer {
+            if let previousHome { setenv("CFFIXED_USER_HOME", previousHome, 1) } else { unsetenv("CFFIXED_USER_HOME") }
+            preferences.removePersistentDomain(forName: suite); cleanup(root)
+        }
+        let key = try installTrust(root)
+        model.policy = try client.decode(PolicyStatus.self, ["policy", "status"])
+        await flowLogin(model, client)
+        try require(model.desktopReady && BackgroundService.usesDefaultState(model.stateDirectory), "synthetic desktop session in the default workspace")
+        try hold(root, "policy")
+        let step = Task { try await model.prepareKeyConnection(.new(label: "synthetic", secret: "synthetic-key-0123456789"), name: "glm-work", preset: "glm",
+                                                               models: ["glm-synthetic"], hardwarePublicKey: { _ in key }) }
+        try await eventually("the signer preflight starts") { FileManager.default.fileExists(atPath: root.appendingPathComponent("policy-started").path) }
+        model.openOnboarding(URL(string: "rekey://add/anthropic?name=other")!)
+        try require(model.pendingOnboarding != nil, "the handoff waits while the preflight runs")
+        try release(root, "policy")
+        let saved = try? await step.value
+        var other = OnboardingAddRequest(provider: "anthropic"); other.name = "other"
+        try require(saved == nil && model.onboardingRoute == .add(other) && !FileManager.default.fileExists(atPath: root.appendingPathComponent("adds.log").path)
+                    && model.credentials.isEmpty, "a handoff applied between the steps saves no key for the old form")
     }
 
     /// Installs a synthetic Secure Enclave trust in the fixture and returns its public key.
