@@ -369,6 +369,7 @@ rekey ssh-agent status                                # §8.1
 
 **其他行为**
 - 流式 SSE、遮蔽、预算、错误透传沿用执行器；SDK 的 `x-stainless-*` 与 Node fetch 的 `Accept-Language` / `Sec-Fetch-Mode` 作为传输元数据剥除，不转发或参与授权。入站 `Accept-Encoding` 同样剥除，不能改变出站固定的 `accept-encoding: identity`；上游返回压缩响应时本服务回 502 `RESPONSE_BLOCKED`，不转发其正文或响应头（§5.1）。Git smart HTTP 可用 `git -c http.extraHeader="Authorization: Bearer rekey" ...` 携带同一公开标记。
+- **请求正文编码（2026-11-17 修订，0.5 开发线）**：`Pragma` 也作为传输元数据剥除。请求 `Content-Encoding` 只接受 `identity`，以及 `github-git` Connection 的单个 `gzip`（git 会自动压缩超过 1 KiB 的 upload-pack 请求）：本服务在规则判定、审批与出站之前解码恰好一个 gzip 成员并校验其 CRC 与长度，解码后正文仍受该 Connection 的 `max_request_bytes` 约束，上游收到的是未压缩正文、不带 `content-encoding`。其他编码、其他 Connection 的压缩请求、重复的 `Content-Encoding`、格式错误或解码超限的正文返回 400（`INVALID_INPUT` / `INVALID_FRAME` / `REQUEST_TOO_LARGE`），不访问上游、不写审计。详见 §8.2。
 - 调用方识别见 §4.3。
 - 运行状态拒绝先于 Connection 查找，统一返回 503 和 §6.1 的错误 JSON：锁定为 `LOCKED`（不得因锁定清除了生效策略而报 `NOT_CONFIGURED`），容量超限为可重试的 `AUTHORITY_BUSY`，停机中为 `DRAINING`，终态审计失败后为不可重试的 `FAULTED`。403 只表示规则或请求形态被拒绝，使 SDK 不把暂时不可用当成权限错误。
 - 端口抢占风险：rekeyd 未运行时，同 uid 进程可以先占用端口，收到的只是占位符和请求正文，拿不到任何 Secret。这一点写入威胁模型。
@@ -524,6 +525,8 @@ OPENAI_API_KEY=rekey
 - HTTPS 方式的 git 操作不使用 credential helper（会泄漏 token，见 §0 明确不做）。
 - 建议改用 SSH。确实需要 HTTPS 时，可以配置 `url.<base>.insteadOf` 指向本机服务的 git smart-HTTP 转发：`/c/<github-connection>/...`，由 Rekey 注入 token。
 - git smart-HTTP 的 `info/refs` 与 `git-upload-pack` 归为 read，`git-receive-pack` 归为 write。
+- **真实 git 客户端（2026-11-17 修订，0.5 开发线）**：`github-git` Preset 只允许 `content-type`、`accept` 与 `git-protocol` 三个调用方请求头，查询键只有 `service`。本机服务对 git 默认发出的头按以下方式处理：`Authorization: Bearer rekey`（`http.extraHeader`）是公开标记；`User-Agent`、`Accept`、`Accept-Encoding`、`Accept-Language`、`Pragma` 作为传输元数据剥除；`Git-Protocol: version=2` 是签名允许的头，原样转发，使 v2 的 ref-prefix 过滤生效（v0 会通告全部 ref，可能超过响应上限）；`Content-Encoding: gzip` 按 §6.3 解码一次。推送时 git 回退到 v0、不发送 `Git-Protocol`；请求正文超过 `http.postBuffer` 时 git 改用 chunked 传输，本服务照常按 1 MiB 默认上限计数，超限即拒绝，不宣称无限仓库传输。修订前签署的 `github-git` Connection 不含 `git-protocol`，git v2 请求会因未签名请求头在出站前被拒，需要重新签署，或临时以 `git -c protocol.version=0` 使用 v0。
+- 验收：真实 git 客户端经本机服务，对注入传输后的合成上游 `git http-backend` 完成 clone（含 gzip 的 upload-pack 请求）、未签名放行时被拒绝的 push、签名放行后的 push 与增量 fetch，并检查上游只收到 `accept-encoding: identity`、Basic 凭据与 upload-pack 上的 `git-protocol`，未收到入站认证头和传输元数据；不含 `git-protocol` 的旧签名 Connection 拒绝 v2、接受 v0。这是合成上游的软件证据，不代替真实 GitHub 仓库验收。
 
 ### 8.3 防泄漏用的真实值
 

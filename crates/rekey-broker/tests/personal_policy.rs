@@ -4,6 +4,8 @@ mod common;
 mod gateway;
 #[path = "personal_policy/gateway_edges.rs"]
 mod gateway_edges;
+#[path = "personal_policy/git_smart_http.rs"]
+mod git_smart_http;
 #[path = "personal_policy/upstream_encoding.rs"]
 mod upstream_encoding;
 
