@@ -127,22 +127,14 @@ impl BrokerCtx {
             .iter()
             .find(|o| o.name == meta.operation)
             .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-        let example = discovery::example_args(connection, operation);
-        let decision = discovery::decide(
-            active.snapshot(),
-            connection,
-            operation,
-            &example,
-            caller,
-            now,
-        );
+        let decision = discovery::decide(active.snapshot(), connection, operation, caller, now);
         Ok(ipc::DescribeResponse {
             matched_rule: discovery::matched_rule(
                 connection,
                 caller,
                 decision.as_ref().and_then(|d| d.rule_id),
             ),
-            example_args: Some(example),
+            example_args: Some(discovery::example_args(connection, operation)),
             decision,
             connection: connection.name.clone(),
             operation: with_model_enum(operation.clone(), connection),

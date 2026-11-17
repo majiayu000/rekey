@@ -91,11 +91,12 @@ pub struct DescribeResponse {
     pub llm: Option<ConnectionLlmLimits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_expires_at_ms: Option<i64>,
-    /// Required arguments satisfying the schema and signed bindings. The
-    /// values are placeholders, never an authorization.
+    /// Required arguments as schema placeholders, never an authorization and
+    /// never a signed binding value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub example_args: Option<BTreeMap<String, serde_json::Value>>,
-    /// The decision for a call with `example_args`.
+    /// The decision for a call with `example_args`; a bound path parameter
+    /// is judged with its signed binding, which is not published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<OperationDecision>,
     /// The signed rule that decision matched; absent when none matched.

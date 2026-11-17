@@ -44,8 +44,8 @@ impl Fixture {
         }
         if preset == "github-git" {
             connection.bindings = [
-                ("owner".to_owned(), vec!["example".to_owned()]),
-                ("repo".to_owned(), vec!["project.git".to_owned()]),
+                ("owner".to_owned(), vec!["bound-owner-7f3a".to_owned()]),
+                ("repo".to_owned(), vec!["bound-repo-7f3a.git".to_owned()]),
             ]
             .into_iter()
             .collect();
@@ -270,15 +270,23 @@ async fn discovery_reports_each_operation_decision_example_and_matched_rule() {
     assert_eq!(described["decision"]["effect"], "approve");
     assert_eq!(described["matched_rule"]["path"], "/**");
     assert_eq!(described["matched_rule"]["effect"], "approve");
-    let described = body(
-        &f.agent(agent_msg::DESCRIBE, json!({"operation":"git.info_refs"}))
-            .await,
-    );
+    let described = f
+        .agent(agent_msg::DESCRIBE, json!({"operation":"git.info_refs"}))
+        .await;
+    let described_text = String::from_utf8(described.body.clone()).unwrap();
+    let described = body(&described);
+    // Signed bindings stay private (§6.4): schema placeholders are published,
+    // while the decision is still judged within the bound repository.
     assert_eq!(
         described["example_args"],
-        json!({"owner":"example","repo":"project.git"})
+        json!({"owner":"OWNER","repo":"REPO.git"})
     );
+    assert!(!described_text.contains("7f3a"), "{described_text}");
     assert_eq!(described["decision"]["effect"], "allow");
+    assert_eq!(
+        described["matched_rule"]["path"],
+        "/{owner}/{repo}/info/refs"
+    );
     let described = body(
         &f.agent(agent_msg::DESCRIBE, json!({"operation":"openai.chat"}))
             .await,
@@ -318,6 +326,7 @@ async fn discovery_reports_each_operation_decision_example_and_matched_rule() {
     let text =
         String::from_utf8(f.agent(agent_msg::LIST_CAPABILITIES, json!({})).await.body).unwrap();
     assert!(!text.contains("discovery-synthetic"));
+    assert!(!text.contains("7f3a"), "{text}");
     assert!(f.broker.fake.take_requests().is_empty());
     f.broker.shutdown().await;
 }

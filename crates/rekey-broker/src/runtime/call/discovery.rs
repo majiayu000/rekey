@@ -13,8 +13,9 @@ use rekey_policy::connections::evaluate_connection;
 use rekey_policy::{PolicyError, ValidatedSnapshot};
 use serde_json::Value;
 
-/// Required arguments that satisfy the schema and the signed bindings. The
-/// values are placeholders for the caller to replace, never an authorization.
+/// Required arguments as schema placeholders for the caller to replace, never
+/// an authorization. Never a signed binding value (§6.4); the signed model
+/// allow-list is already public in `llm`.
 pub(super) fn example_args(
     connection: &Connection,
     operation: &PresetOperation,
@@ -42,33 +43,16 @@ pub(super) fn example_args(
         .into_iter()
         .filter_map(|name| {
             let schema = properties?.get(name)?;
-            Some((
-                name.to_owned(),
-                example_value(connection, operation, name, schema),
-            ))
+            Some((name.to_owned(), example_value(connection, name, schema)))
         })
         .collect()
 }
 
-fn example_value(
-    connection: &Connection,
-    operation: &PresetOperation,
-    name: &str,
-    schema: &Value,
-) -> Value {
+fn example_value(connection: &Connection, name: &str, schema: &Value) -> Value {
     if name == "model"
         && let Some(model) = connection.llm.as_ref().and_then(|l| l.models.iter().next())
     {
         return model.as_str().into();
-    }
-    let segment = format!("{{{name}}}");
-    if operation.path.split('/').any(|part| part == segment)
-        && let Some(bound) = connection
-            .bindings
-            .get(name)
-            .and_then(|values| values.iter().find(|value| *value != "*"))
-    {
-        return bound.as_str().into();
     }
     if let Some(first) = schema
         .get("enum")
@@ -86,13 +70,55 @@ fn example_value(
         Some("boolean") => false.into(),
         Some("array") => Value::Array(Vec::new()),
         Some("object") => Value::Object(Default::default()),
-        _ => name.to_ascii_uppercase().into(),
+        _ => string_placeholder(name, schema).into(),
     }
 }
 
-/// The decision for a call with `args`, judged exactly like that call.
+/// `NAME`, plus the escaped literal suffix a schema pattern ends with, such
+/// as the `.git` that github-git requires of `repo`.
+fn string_placeholder(name: &str, schema: &Value) -> String {
+    let placeholder = name.to_ascii_uppercase();
+    let suffix = schema
+        .get("pattern")
+        .and_then(Value::as_str)
+        .and_then(|pattern| pattern.strip_suffix('$'))
+        .and_then(|pattern| pattern.rsplit_once("\\."))
+        .map(|(_, tail)| tail)
+        .filter(|tail| !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_alphanumeric()));
+    match suffix {
+        Some(tail) => format!("{placeholder}.{tail}"),
+        None => placeholder,
+    }
+}
+
+/// The decision for a call with the operation's example, judged exactly like
+/// that call. A path parameter with a signed binding is judged, internally
+/// only, with its first non-`*` bound value, so the decision reflects the
+/// signed rule while the published example keeps its placeholder (§6.2).
 /// `None` when the example cannot be judged, so it would not be representative.
 pub(super) fn decide(
+    snapshot: &ValidatedSnapshot,
+    connection: &Connection,
+    operation: &PresetOperation,
+    caller: &str,
+    now: Timestamp,
+) -> Option<OperationDecision> {
+    let mut args = example_args(connection, operation);
+    for (name, value) in &mut args {
+        let segment = format!("{{{name}}}");
+        if operation.path.split('/').any(|part| part == segment)
+            && let Some(bound) = connection
+                .bindings
+                .get(name)
+                .and_then(|values| values.iter().find(|value| *value != "*"))
+        {
+            *value = bound.as_str().into();
+        }
+    }
+    judge(snapshot, connection, operation, &args, caller, now)
+}
+
+fn judge(
     snapshot: &ValidatedSnapshot,
     connection: &Connection,
     operation: &PresetOperation,
@@ -149,10 +175,7 @@ pub(super) fn decisions(
     connection
         .operations
         .iter()
-        .filter_map(|operation| {
-            let args = example_args(connection, operation);
-            decide(snapshot, connection, operation, &args, caller, now)
-        })
+        .filter_map(|operation| decide(snapshot, connection, operation, caller, now))
         .collect()
 }
 
@@ -195,8 +218,9 @@ pub(super) fn with_credential_placeholder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rekey_domain::connection::{BUILTIN_PRESETS, ConnectionLlmLimits};
+    use rekey_domain::connection::{BUILTIN_PRESETS, ConnectionLlmLimits, OAuthBinding};
     use rekey_domain::ids::CredentialId;
+    use rekey_policy::presets::{oauth_provider, oauth_required_scopes};
 
     fn connection(preset: &str) -> Option<Connection> {
         let mut connection = rekey_policy::presets::builtin_preset(preset)
@@ -212,54 +236,129 @@ mod tests {
         }
         if preset == "github-git" {
             connection.bindings = [
-                ("owner".to_owned(), vec!["example".to_owned()]),
-                ("repo".to_owned(), vec!["project.git".to_owned()]),
+                ("owner".to_owned(), vec!["bound-owner".to_owned()]),
+                ("repo".to_owned(), vec!["bound-repo.git".to_owned()]),
             ]
             .into_iter()
             .collect();
         }
+        // OAuth presets validate only with a signed scope ceiling.
+        if let Some(provider) = oauth_provider(preset) {
+            let scopes = connection
+                .operations
+                .iter()
+                .flat_map(|o| oauth_required_scopes(preset, &o.name).unwrap())
+                .collect();
+            connection.oauth = Some(OAuthBinding {
+                provider,
+                client_id: "synthetic-client".into(),
+                scopes,
+            });
+        }
         Some(connection)
+    }
+
+    fn snapshot(connection: &Connection) -> ValidatedSnapshot {
+        rekey_policy::parse_and_validate_snapshot(
+            &serde_json::to_vec(&serde_json::json!({"format_version":8,"version":1,"expires_at_ms":10000,"connections":[connection],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]})).unwrap(),
+            Timestamp::from_unix_ms(1),
+        )
+        .unwrap_or_else(|error| panic!("{}: {error:?}", connection.preset))
     }
 
     #[test]
     fn every_builtin_operation_example_is_judged_like_a_call() {
+        let now = Timestamp::from_unix_ms(2);
         let mut judged = 0;
         for preset in BUILTIN_PRESETS {
             let Some(connection) = connection(preset) else {
                 continue;
             };
-            let snapshot = rekey_policy::parse_and_validate_snapshot(
-                &serde_json::to_vec(&serde_json::json!({"format_version":8,"version":1,"expires_at_ms":10000,"connections":[connection],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]})).unwrap(),
-                Timestamp::from_unix_ms(1),
-            );
-            let Ok(snapshot) = snapshot else {
-                // OAuth presets need a signed OAuth binding to validate.
-                assert!(
-                    rekey_policy::presets::oauth_provider(preset).is_some(),
-                    "{preset}"
-                );
-                continue;
-            };
-            let listed = decisions(&snapshot, &connection, "codex", Timestamp::from_unix_ms(2));
+            let snapshot = snapshot(&connection);
+            let listed = decisions(&snapshot, &connection, "codex", now);
             assert_eq!(listed.len(), connection.operations.len(), "{preset}");
-            for decision in listed {
+            for (operation, decision) in connection.operations.iter().zip(listed) {
                 assert!(
                     decision.effect != RuleEffect::Deny || decision.rule_id.is_some(),
                     "{preset}: {decision:?}"
+                );
+                // The published example itself satisfies the schema.
+                let example = example_args(&connection, operation);
+                assert!(
+                    judge(&snapshot, &connection, operation, &example, "codex", now).is_some(),
+                    "{preset}: {example:?}"
                 );
                 judged += 1;
             }
         }
         assert!(judged > 30, "{judged}");
-        let mut git = connection("github-git").unwrap();
-        git.bindings
-            .insert("owner".into(), vec!["*".into(), "example".into()]);
-        let args = example_args(&git, &git.operations[0]);
+    }
+
+    #[test]
+    fn bound_path_parameters_are_judged_but_never_published() {
+        let now = Timestamp::from_unix_ms(2);
+        let git = connection("github-git").unwrap();
+        let snapshot = snapshot(&git);
+        let info_refs = &git.operations[0];
+        let example = example_args(&git, info_refs);
         assert_eq!(
-            args["owner"], "example",
-            "a wildcard is never an example value"
+            serde_json::to_value(&example).unwrap(),
+            serde_json::json!({"owner":"OWNER","repo":"REPO.git"}),
+            "schema placeholders, never the signed binding"
         );
-        assert_eq!(args["repo"], "project.git");
+        let rule = git.rules.iter().find(|r| r.path == info_refs.path).unwrap();
+        let decision = decide(&snapshot, &git, info_refs, "codex", now).unwrap();
+        assert_eq!(
+            (decision.effect, decision.rule_id),
+            (RuleEffect::Allow, Some(rule.id))
+        );
+        // The placeholder alone matches no bound rule.
+        let unbound = judge(&snapshot, &git, info_refs, &example, "codex", now).unwrap();
+        assert_eq!((unbound.effect, unbound.rule_id), (RuleEffect::Deny, None));
+        // A wildcard is never the judged value: `*` is not a path segment.
+        let mut wildcard = git.clone();
+        wildcard
+            .bindings
+            .insert("owner".into(), vec!["*".into(), "bound-owner".into()]);
+        let decision = decide(&snapshot, &wildcard, info_refs, "codex", now).unwrap();
+        assert_eq!(decision.effect, RuleEffect::Allow);
+    }
+
+    #[test]
+    fn operations_outside_the_signed_oauth_scopes_are_denied_without_a_rule() {
+        let now = Timestamp::from_unix_ms(2);
+        for (preset, scopes) in [
+            (
+                "google-drive",
+                ["https://www.googleapis.com/auth/drive.readonly"],
+            ),
+            ("github-oauth", ["offline_access"]),
+        ] {
+            let mut narrowed = connection(preset).unwrap();
+            narrowed.oauth.as_mut().unwrap().scopes = scopes.map(str::to_owned).into();
+            let granted = narrowed.oauth.clone().unwrap().scopes;
+            let snapshot = snapshot(&narrowed);
+            let listed = decisions(&snapshot, &narrowed, "codex", now);
+            assert_eq!(listed.len(), narrowed.operations.len(), "{preset}");
+            let mut denied = 0;
+            for (operation, decision) in narrowed.operations.iter().zip(&listed) {
+                let callable = oauth_required_scopes(preset, &operation.name)
+                    .unwrap()
+                    .is_subset(&granted);
+                if callable {
+                    assert!(decision.rule_id.is_some(), "{preset}: {decision:?}");
+                } else {
+                    assert_eq!(
+                        (decision.effect, decision.rule_id),
+                        (RuleEffect::Deny, None),
+                        "{preset}: {decision:?}"
+                    );
+                    assert_eq!(decision.method_class, class(operation), "{decision:?}");
+                    denied += 1;
+                }
+            }
+            assert!(denied > 0, "{preset}");
+        }
     }
 
     #[test]

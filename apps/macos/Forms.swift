@@ -1178,7 +1178,7 @@ struct AccessRequestsPanel:View {
                         Text(request.reason).textSelection(.enabled).font(.system(size:12)).padding(8).background(sage.opacity(0.3),in:RoundedRectangle(cornerRadius:6))
                         Text("有效期至："+displayDate(request.expires_at_ms)).font(.caption).foregroundStyle(.secondary)
                         HStack {
-                            Button("添加连接"){let provider=request.provider ?? "generic-bearer";model.addPreset=(ConnectionPreset.apiKeyPresets+OAuthSetup.presets).contains(provider) ? provider:"generic-bearer";model.showAddCredential=true}
+                            Button("添加连接"){model.addPreset=request.suggestedPreset;model.showAddCredential=true}
                             Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}
                             Button("规则已激活，完成请求"){Task{await model.resolveAccess(request,granted:true)}}
                             Button("拒绝",role:.destructive){Task{await model.resolveAccess(request,granted:false)}}

@@ -883,7 +883,7 @@ struct ActivitySnapshot {
                 case .notApplicable: break
                 }
             }
-            guard counts.admitted != 0 || counts.denied != 0 || counts.approvals != 0 || counts.measuredTokens != 0 || counts.estimatedTokens != 0 || event.request_context?.connection != nil else { continue }
+            guard !event.event_type.hasPrefix("access_request."), counts.admitted != 0 || counts.denied != 0 || counts.approvals != 0 || counts.measuredTokens != 0 || counts.estimatedTokens != 0 || event.request_context?.connection != nil else { continue } // Access requests are not calls (§7.2, §10).
             let group=event.request_context?.group
             var row = next.groups[group] ?? ActivityRow(context:group)
             if event.request_context?.connection != nil {
@@ -2294,8 +2294,8 @@ struct ConnectionList: Decodable, Sendable {
     }
 }
 struct AccessRequestItem:Decodable,Identifiable,Sendable {
-    let request_id:String;let caller:String;let provider:String?;let connection:String?;let operation:String?;let reason:String;let created_at_ms:Int64;let expires_at_ms:Int64;let status:String
-    var id:String {request_id}
+    let request_id:String;let caller:String;let provider:String?;let connection:String?;let operation:String?;let reason:String;let created_at_ms:Int64;let expires_at_ms:Int64;let status:String;let presets:[String]?
+    var id:String {request_id};var suggestedPreset:String {let known=ConnectionPreset.apiKeyPresets+OAuthSetup.presets;return known.first{(presets ?? []).contains($0)} ?? provider.flatMap{known.contains($0) ? $0:nil} ?? "generic-bearer"} // §7.2: first candidate in App order.
 }
 struct AccessInbox:Decodable,Sendable {let requests:[AccessRequestItem];let blocked_callers:[String]}
 /// A static notification: identifiers only, never request text, providers or secrets.
