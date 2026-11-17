@@ -1,5 +1,7 @@
 //! Real signed Connections + MCP stdio + Broker/Authority/SQLite.
 //! Upstream transport alone is synthetic; no local token or Profile is minted.
+#[path = "mcp_stdio/access.rs"]
+mod access;
 mod common;
 
 use std::collections::VecDeque;

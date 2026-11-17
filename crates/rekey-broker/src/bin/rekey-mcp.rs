@@ -61,13 +61,13 @@ fn generic_tools() -> Vec<Value> {
         ),
         descriptor(
             "describe",
-            "Describe a named operation's parameters and applicable rules.",
-            json!({"operation":{"type":"string"}}),
+            "Describe a named operation's parameters, example arguments, rules and the rule its example matches. Pass connection when several Connections share the operation name.",
+            json!({"operation":{"type":"string"},"connection":{"type":"string"}}),
             &["operation"],
         ),
         descriptor(
             "call",
-            "Call a named operation under signed rules. After approval, repeat the original request with approval_request_id; never retry a completed or indeterminate write.",
+            "Call a named operation under signed rules; pass connection when several Connections share the operation name. After approval, repeat the original request with approval_request_id; never retry a completed or indeterminate write.",
             json!({"operation":{"type":"string"},"connection":{"type":"string"},"args":{"type":"object"},"body":{},"dry_run":{"type":"boolean"},"approval_request_id":{"type":"string","format":"uuid"}}),
             &["operation", "args"],
         ),
@@ -79,7 +79,7 @@ fn generic_tools() -> Vec<Value> {
         ),
         descriptor(
             "request_access",
-            "Ask the user to add a Connection or permission in the App. Specify either provider or connection. Do not ask the user for a key. Wait for the returned request ID with await_access.",
+            "Ask the user to add a Connection or permission in the App. Specify either provider (a preset name or family, such as github for github-pat or github-oauth) or connection, and a full operation name if needed. Do not ask the user for a key. Wait for the returned request ID with await_access.",
             json!({"provider":{"type":"string"},"connection":{"type":"string"},"operation":{"type":"string"},"reason":{"type":"string","maxLength":500}}),
             &["reason"],
         ),

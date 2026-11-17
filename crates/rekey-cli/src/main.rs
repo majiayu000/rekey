@@ -167,7 +167,7 @@ enum Command {
         json: bool,
     },
     /// Describe a named operation and its rules; never returns keys.
-    Describe { operation: String },
+    Describe(commands::agent::DescribeArgs),
     /// Call a named operation with --name value parameters; never returns keys.
     Call {
         operation: String,
@@ -195,13 +195,7 @@ enum Command {
         approval: Option<ApprovalRequestId>,
     },
     /// Ask the user to add a Connection or permission; do not collect keys.
-    Request {
-        provider: String,
-        #[arg(long = "op")]
-        operation: Option<String>,
-        #[arg(long)]
-        reason: String,
-    },
+    Request(commands::agent::AccessRequestArgs),
     /// Wait for an access request to be granted or rejected.
     Await {
         request_id: RequestId,
@@ -1278,7 +1272,7 @@ fn main() {
             onboarding_inapplicable,
         ),
         Command::List { json } => commands::agent::list(&agent_socket, json),
-        Command::Describe { operation } => commands::agent::describe(&agent_socket, operation),
+        Command::Describe(args) => commands::agent::describe(&agent_socket, args),
         Command::Call {
             operation,
             arguments,
@@ -1307,11 +1301,7 @@ fn main() {
             no_wait,
             approval,
         ),
-        Command::Request {
-            provider,
-            operation,
-            reason,
-        } => commands::agent::request(&agent_socket, provider, operation, reason),
+        Command::Request(args) => commands::agent::request(&agent_socket, args),
         Command::Await {
             request_id,
             timeout,

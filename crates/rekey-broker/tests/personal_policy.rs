@@ -1,4 +1,6 @@
 //! Synthetic software P-256 fixtures; these tests make no hardware-trust claim.
+#[path = "personal_policy/approvals.rs"]
+mod approvals;
 mod common;
 #[path = "personal_policy/gateway.rs"]
 mod gateway;

@@ -594,7 +594,9 @@ fn map_error(error: BrokerError) -> (u16, BrokerError) {
 }
 fn error_response(status: u16, id: RequestId, error: BrokerError) -> Response<GatewayBody> {
     let envelope = match error {
-        BrokerError::ApprovalRequired(approval) => ErrorEnvelope::approval_required(id, approval),
+        BrokerError::ApprovalRequired(approval) => {
+            ErrorEnvelope::http_approval_required(id, approval)
+        }
         other => ErrorEnvelope {
             request_id: id,
             code: crate::ipc::agent::local_agent_code(&other).to_owned(),

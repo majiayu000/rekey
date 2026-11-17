@@ -204,7 +204,7 @@ fn connection_and_access_lists_are_public_admin_projections() {
         (
             vec!["access", "list"],
             admin_msg::ACCESS_RESOLVE,
-            json!({"requests":[],"blocked_callers":[]}),
+            json!({"requests":[{"request_id":"00112233-4455-4677-8899-aabbccddeeff","caller":"codex","provider":"github","connection":null,"operation":"github.list_issues","reason":"Read issues","created_at_ms":1,"expires_at_ms":600001,"status":"PENDING","presets":["github-oauth","github-pat"]}],"blocked_callers":[]}),
         ),
     ] {
         let f = Fixture::new();

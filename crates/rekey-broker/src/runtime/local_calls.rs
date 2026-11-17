@@ -11,11 +11,14 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::error::BrokerError;
 use crate::lifecycle::ConnectionExecutionPermit;
 
+mod access;
+mod policy;
+
 #[derive(Default)]
 pub(crate) struct LocalCalls {
     windows:
         Mutex<BTreeMap<(String, String, rekey_domain::ids::PolicyRuleId, String), WindowApproval>>,
-    access: Mutex<BTreeMap<rekey_domain::ids::RequestId, AccessRequest>>,
+    access: Mutex<BTreeMap<rekey_domain::ids::RequestId, access::AccessRequest>>,
     blocked: Mutex<BTreeSet<String>>,
     rates: Mutex<BTreeMap<String, (Instant, u32)>>,
     approvals: Mutex<BTreeMap<ApprovalRequestId, LocalCallApproval>>,
@@ -112,6 +115,14 @@ impl LocalCalls {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
         self.changed.notify_waiters();
+    }
+    /// A newly activated policy version ends every time window (§5.5), even
+    /// when its rules are unchanged; pending approvals stay policy-bound.
+    pub(crate) fn clear_windows(&self) {
+        self.windows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
     pub(crate) fn register(
         &self,
@@ -284,11 +295,17 @@ impl LocalCalls {
             .get_mut(&id)
             .ok_or(BrokerError::Denied("approval-request-unknown"))?;
         entry.refresh(now_ms);
-        if entry.caller != caller
-            || entry.challenge.parameter_sha256 != parameter_hash
-            || entry.challenge.policy_sha256 != policy_hash
-            || entry.state != LocalApprovalState::Approved
-        {
+        let same = entry.caller == caller
+            && entry.challenge.parameter_sha256 == parameter_hash
+            && entry.challenge.policy_sha256 == policy_hash;
+        // A resend before the user decides keeps waiting on the same challenge.
+        if same && entry.state == LocalApprovalState::Pending {
+            return Err(BrokerError::ApprovalRequired(ipc::ApprovalRequired {
+                challenge_id: id,
+                expires_at_ms: entry.challenge.max_expires_at_ms,
+            }));
+        }
+        if !same || entry.state != LocalApprovalState::Approved {
             return Err(BrokerError::Denied("approval-request-mismatch"));
         }
         if entry.reserved {
@@ -580,6 +597,54 @@ pub(crate) mod tests {
             "old rollback must not erase current window usage"
         );
     }
+
+    #[test]
+    fn pending_resend_keeps_its_challenge_and_new_policy_versions_end_windows() {
+        use rekey_domain::audit::RequestAuditContext;
+        use rekey_domain::connection::{ConnectionRequestAuditContext, MethodClass};
+        let calls = Arc::new(LocalCalls::default());
+        let mut approval = approved(&calls);
+        let id = approval.challenge.approval_request_id;
+        calls.approvals.lock().unwrap().get_mut(&id).unwrap().state = LocalApprovalState::Pending;
+        match reserve(&calls, &approval) {
+            Err(BrokerError::ApprovalRequired(required)) => assert_eq!(required.challenge_id, id),
+            _ => panic!("a pending resend keeps waiting on its challenge"),
+        }
+        approval.caller = "another-caller".into();
+        assert_eq!(
+            reserve(&calls, &approval).err().unwrap().code(),
+            "REQUEST_DENIED",
+            "owner binding is never relaxed"
+        );
+        let rule = approval.challenge.policy_rule_id;
+        approval.request_context = Some(RequestAuditContext::Connection(
+            ConnectionRequestAuditContext {
+                connection: "fixture".into(),
+                caller: approval.caller.clone(),
+                method_class: MethodClass::Write,
+                normalized_path: "/".into(),
+                rule_id: Some(rule),
+            },
+        ));
+        let now = crate::now_ts().unwrap().as_unix_ms();
+        let grant = || {
+            calls
+                .grant_window(&approval, ApprovalId::new_random(), 1800, now + 3_600_000)
+                .unwrap()
+        };
+        grant();
+        let policy = approval.challenge.policy_sha256.clone();
+        let lookup =
+            |policy: &str, rule| calls.window(policy, "fixture", Some(rule), "another-caller", now);
+        assert!(lookup(&policy, rule).is_some());
+        assert!(lookup(&policy, PolicyRuleId::new_random()).is_none());
+        calls.clear_windows();
+        assert!(lookup(&policy, rule).is_none());
+        // A lookup under any other policy digest also ends older windows.
+        grant();
+        assert!(lookup(&"44".repeat(32), rule).is_none());
+        assert!(lookup(&policy, rule).is_none());
+    }
 }
 
 impl ConnectionAdmission {
@@ -590,204 +655,6 @@ impl ConnectionAdmission {
         self.rate.committed = true;
         self.permit.started();
         self.permit
-    }
-}
-
-#[derive(Clone, serde::Serialize)]
-pub(crate) struct AccessRequest {
-    pub(crate) request_id: rekey_domain::ids::RequestId,
-    pub(crate) caller: String,
-    pub(crate) provider: Option<String>,
-    pub(crate) connection: Option<String>,
-    pub(crate) operation: Option<String>,
-    pub(crate) reason: String,
-    pub(crate) created_at_ms: i64,
-    pub(crate) expires_at_ms: i64,
-    pub(crate) status: ipc::AccessRequestStatus,
-    #[serde(skip)]
-    deadline: Instant,
-}
-#[derive(serde::Serialize)]
-pub(crate) struct AccessList {
-    pub(crate) requests: Vec<AccessRequest>,
-    pub(crate) blocked_callers: Vec<String>,
-}
-impl AccessRequest {
-    fn refresh(&mut self, now: i64) {
-        if self.status == ipc::AccessRequestStatus::Pending
-            && (Instant::now() >= self.deadline
-                || now < self.created_at_ms
-                || now >= self.expires_at_ms)
-        {
-            self.status = ipc::AccessRequestStatus::Expired;
-        }
-    }
-}
-impl LocalCalls {
-    pub(crate) fn create_access(
-        &self,
-        caller: &str,
-        request: ipc::RequestAccessMeta,
-    ) -> Result<ipc::RequestAccessResponse, BrokerError> {
-        if request.reason.is_empty()
-            || request.reason.chars().count() > 500
-            || request.provider.is_some() == request.connection.is_some()
-            || request
-                .provider
-                .as_ref()
-                .or(request.connection.as_ref())
-                .is_none_or(|v| v.is_empty() || v.len() > 128 || v.chars().any(char::is_control))
-            || request
-                .operation
-                .as_ref()
-                .is_some_and(|v| v.is_empty() || v.len() > 128 || v.chars().any(char::is_control))
-        {
-            return Err(ipc::FrameError::InvalidField.into());
-        }
-        if self
-            .blocked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(caller)
-        {
-            return Err(BrokerError::LocalCall(
-                "DENIED",
-                "access requests from this caller are blocked",
-                "Ask the user to review the caller block in Rekey.",
-            ));
-        }
-        self.admit_rate(&format!("access:{caller}"), 3, Duration::from_secs(60))
-            .map_err(|error| {
-                if matches!(error, BrokerError::LocalCall("BUDGET_EXCEEDED", _, _)) {
-                    BrokerError::LocalCall(
-                        "RATE_LIMITED",
-                        "access request limit reached",
-                        "Retry after the one-minute request window resets.",
-                    )
-                } else {
-                    error
-                }
-            })?;
-        let now = crate::now_ts()?.as_unix_ms();
-        let mut entries = self.access.lock().unwrap_or_else(|e| e.into_inner());
-        for entry in entries.values_mut() {
-            entry.refresh(now);
-        }
-        entries.retain(|_, a| Instant::now() < a.deadline);
-        if entries.len() >= ipc::APPROVAL_PENDING_MAX {
-            return Err(rekey_vault::AuthorityError::AuthorityBusy.into());
-        }
-        let id = crate::random_id(rekey_domain::ids::RequestId::from_random_bytes)?;
-        let expires_at_ms = now + 600_000;
-        entries.insert(
-            id,
-            AccessRequest {
-                request_id: id,
-                caller: caller.into(),
-                provider: request.provider,
-                connection: request.connection,
-                operation: request.operation,
-                reason: request.reason,
-                created_at_ms: now,
-                expires_at_ms,
-                status: ipc::AccessRequestStatus::Pending,
-                deadline: Instant::now() + Duration::from_secs(600),
-            },
-        );
-        self.changed.notify_waiters();
-        Ok(ipc::RequestAccessResponse {
-            request_id: id,
-            expires_at_ms,
-        })
-    }
-    pub(crate) fn access_list(&self) -> Result<AccessList, BrokerError> {
-        let now = crate::now_ts()?.as_unix_ms();
-        let mut entries = self.access.lock().unwrap_or_else(|e| e.into_inner());
-        for entry in entries.values_mut() {
-            entry.refresh(now);
-        }
-        Ok(AccessList {
-            requests: entries.values().cloned().collect(),
-            blocked_callers: self
-                .blocked
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .cloned()
-                .collect(),
-        })
-    }
-    pub(crate) fn access_get(
-        &self,
-        id: rekey_domain::ids::RequestId,
-    ) -> Result<AccessRequest, BrokerError> {
-        let mut entries = self.access.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = entries
-            .get_mut(&id)
-            .ok_or(BrokerError::Denied("access-request-unknown"))?;
-        entry.refresh(crate::now_ts()?.as_unix_ms());
-        Ok(entry.clone())
-    }
-    pub(crate) fn resolve_access(
-        &self,
-        id: rekey_domain::ids::RequestId,
-        granted: bool,
-    ) -> Result<ipc::AwaitAccessResponse, BrokerError> {
-        let mut entries = self.access.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = entries
-            .get_mut(&id)
-            .ok_or(BrokerError::Denied("access-request-unknown"))?;
-        entry.refresh(crate::now_ts()?.as_unix_ms());
-        if entry.status != ipc::AccessRequestStatus::Pending {
-            return Err(BrokerError::Denied("access-request-not-pending"));
-        }
-        entry.status = if granted {
-            ipc::AccessRequestStatus::Granted
-        } else {
-            ipc::AccessRequestStatus::Rejected
-        };
-        self.changed.notify_waiters();
-        Ok(ipc::AwaitAccessResponse {
-            status: entry.status,
-        })
-    }
-    pub(crate) fn block_caller(&self, caller: String, blocked: bool) {
-        let mut entries = self.blocked.lock().unwrap_or_else(|e| e.into_inner());
-        if blocked {
-            entries.insert(caller);
-        } else {
-            entries.remove(&caller);
-        }
-    }
-    pub(crate) async fn await_access(
-        &self,
-        id: rekey_domain::ids::RequestId,
-        caller: &str,
-        timeout_s: u16,
-    ) -> Result<ipc::AwaitAccessResponse, BrokerError> {
-        if timeout_s > 120 {
-            return Err(ipc::FrameError::InvalidField.into());
-        }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_s as u64);
-        loop {
-            let changed = self.changed.notified();
-            let entry = self.access_get(id)?;
-            if entry.caller != caller {
-                return Err(BrokerError::Denied("access-owner-mismatch"));
-            }
-            if entry.status != ipc::AccessRequestStatus::Pending
-                || tokio::time::Instant::now() >= deadline
-            {
-                return Ok(ipc::AwaitAccessResponse {
-                    status: entry.status,
-                });
-            }
-            let _ = tokio::time::timeout_at(
-                deadline.min(tokio::time::Instant::from_std(entry.deadline)),
-                changed,
-            )
-            .await;
-        }
     }
 }
 
@@ -858,7 +725,10 @@ impl LocalCalls {
         now: i64,
     ) -> Option<WindowApproval> {
         let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
-        windows.retain(|_, w| Instant::now() < w.deadline && now < w.expires_at_ms);
+        // A window of another policy digest can never match again (§5.5).
+        windows.retain(|key, w| {
+            key.0 == policy && Instant::now() < w.deadline && now < w.expires_at_ms
+        });
         windows
             .get(&(policy.into(), connection.into(), rule?, caller.into()))
             .cloned()

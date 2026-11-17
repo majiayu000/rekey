@@ -65,6 +65,27 @@ fn output_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)))
 }
+/// Fails instead of hanging when the CLI exits before it connects.
+fn accept(listener: &UnixListener) -> UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the CLI never connected"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+}
 #[test]
 fn list_and_named_call_are_token_free_and_parameter_flags_reach_the_daemon() {
     let output = exchange(&["list", "--json"], |listener| {
@@ -308,4 +329,139 @@ fn removed_personal_session_commands_and_excessive_waits_are_rejected() {
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
     }
+}
+#[test]
+fn connection_selectors_reach_the_daemon_outside_operation_parameters() {
+    let described = json!({"connection":"qwen-intl","operation":{"name":"qwen.chat","description":"POST chat","method":"POST","path":"/compatible-mode/v1/chat/completions","parameters":{"type":"object"}}});
+    let output = exchange(
+        &["describe", "qwen.chat", "--connection", "qwen-intl"],
+        move |listener| {
+            let mut stream = accept(&listener);
+            let (header, meta, body) = receive(&mut stream);
+            assert_eq!(header.message_type, agent_msg::DESCRIBE);
+            assert_eq!(
+                meta,
+                json!({"operation":"qwen.chat","connection":"qwen-intl"})
+            );
+            assert!(body.is_empty());
+            reply(
+                &mut stream,
+                header,
+                json!({}),
+                described.to_string().as_bytes(),
+                false,
+            );
+        },
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output_json(&output)["connection"], "qwen-intl");
+    let output = exchange(
+        &[
+            "call",
+            "qwen.chat",
+            "--connection",
+            "qwen-intl",
+            "--model",
+            "synthetic-model",
+            "--dry-run",
+        ],
+        |listener| {
+            let mut stream = accept(&listener);
+            let (header, meta, _) = receive(&mut stream);
+            assert_eq!(header.message_type, agent_msg::CALL);
+            assert_eq!(meta["connection"], "qwen-intl");
+            assert_eq!(meta["args"], json!({"model":"synthetic-model"}));
+            reply(
+                &mut stream,
+                header,
+                json!({}),
+                br#"{"effect":"allow","connection":"qwen-intl"}"#,
+                false,
+            );
+        },
+    );
+    assert!(output.status.success());
+    assert_eq!(output_json(&output)["connection"], "qwen-intl");
+    let output = exchange(
+        &[
+            "request",
+            "--connection",
+            "billing",
+            "--op",
+            "stripe.list_customers",
+            "--reason",
+            "Need billing data",
+        ],
+        |listener| {
+            let mut stream = accept(&listener);
+            let (header, meta, _) = receive(&mut stream);
+            assert_eq!(header.message_type, agent_msg::REQUEST_ACCESS);
+            assert_eq!(
+                meta,
+                json!({"provider":null,"connection":"billing","operation":"stripe.list_customers","reason":"Need billing data"})
+            );
+            reply(
+                &mut stream,
+                header,
+                json!({}),
+                br#"{"request_id":"00112233-4455-4677-8899-aabbccddeeff","expires_at_ms":1234}"#,
+                false,
+            );
+        },
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for args in [
+        vec!["request", "--reason", "Need access"],
+        vec![
+            "request",
+            "github",
+            "--connection",
+            "github",
+            "--reason",
+            "Need access",
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rekey"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+}
+#[test]
+fn text_list_shows_each_named_operation_decision() {
+    let output = exchange(&["list"], |listener| {
+        let mut stream = accept(&listener);
+        let (header, _, _) = receive(&mut stream);
+        let inventory = json!({"connections":[{
+            "connection":"github","preset":"github-pat","origin":"https://api.github.com","grade":"T0","read":"allow","write":"approve",
+            "operations":[{"name":"github.create_issue","description":"POST issue","method":"POST","path":"/repos/{owner}/{repo}/issues","parameters":{"type":"object"}}],
+            "decisions":[{"operation":"github.create_issue","method_class":"write","effect":"approve","rule_id":"00112233-4455-4677-8899-aabbccddeeff"}]
+        }],"derived_credentials":[],"service_url":null});
+        reply(
+            &mut stream,
+            header,
+            json!({}),
+            inventory.to_string().as_bytes(),
+            false,
+        );
+    });
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("  github.create_issue  write=Approve"),
+        "{text}"
+    );
 }
