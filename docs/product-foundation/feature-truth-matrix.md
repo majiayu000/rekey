@@ -1,22 +1,22 @@
 # Rekey 功能事实矩阵
 
-当前源码为 0.5.0-alpha.1 开发整合候选，vault27 / policy8；[整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)约束下述新增实验能力，统一头默认 workspace 1,032 项通过 / 0 失败 / 13 忽略；其余检查与边界见[整合记录](../superpowers/plans/2026-10-09-experiment-integration.md)。已发布 0.4.0-alpha.1 为 vault26 / policy7，以下 0.4 表保留原始证据。[当前 SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)与[实施记录](../superpowers/plans/2026-10-05-agent-call-implementation.md)为行为与验收来源。各项发布状态仍为 Pending，完成代码与软件检查不等同真实设备、Agent 或公开安装验收。
+当前源码为 0.5.0-alpha.1 开发整合候选，vault27 / policy8；[整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)约束下述新增实验能力，2026-11-17 设计补齐集成头（代码 `5c249ed8`）默认 workspace 1,216 项通过 / 0 失败 / 13 忽略，见[设计补齐记录](../evidence/2026-11-17-design-completion.md)；其余检查与边界见[整合记录](../superpowers/plans/2026-10-09-experiment-integration.md)。已发布 0.4.0-alpha.1 为 vault26 / policy7，以下 0.4 表保留原始证据。[当前 SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)与[实施记录](../superpowers/plans/2026-10-05-agent-call-implementation.md)为行为与验收来源。各项发布状态仍为 Pending，完成代码与软件检查不等同真实设备、Agent 或公开安装验收。
 
 2026-10-06 整合 `main` @ `0828fca` 的 SSE 安全回收、首次 HTTP handoff 和认证账本优化，同时保留下列 Connection 准入/审批合同。整合头的软件验证与性能复测另行记录；下方 0.3 数据及此前 0.4 历史规模 debug 测量不代表新头已通过或具有相同时延。
 
 | 能力 | 实现与证据入口 | 当前边界 |
 |---|---|---|
-| 无令牌 Connection | domain/connection、policy/connections、broker/executor/local；真实 IPC / HTTP / MCP tests | 调用方标注仅收紧；G1同用户模型 |
+| 无令牌 Connection | domain/connection、policy/connections、broker/executor/local；真实 IPC / HTTP / MCP tests；改名进程链的 caller 标注测试（personal_policy caller_labels） | 调用方标注仅收紧、从不授权：CLI/MCP/SSH 按 socket 对端、本机服务按 TCP 四元组反查同 uid 进程链（2026-11-17）；同用户模型，保护下限 L1-dev |
 | 默认读 / 写审批 / 危险写拒绝 | policy tests/connections、broker tests/personal_policy | Deny 不能被审批绕过；时间窗至多8h，锁定/策略变更清除 |
-| 基础模式密码审批与记住解锁 | CLI tests/local_approval、broker tests/connection_admission、vault authority/desktop tests | 新 CLI 票据只解锁；旧票据须显式重新签发或撤销才失去原权限。密码审批拒绝恢复密钥；App/Touch ID 实机验收另行进行 |
-| CLI / MCP / connect / 插件 | CLI tests/agent_call、connect、hygiene；broker tests/mcp_stdio | MCP、CLI说明与hook绑定所选vault；Claude本轮按用户要求不验，Codex结果见canonical验收报告 |
-| HTTP / LLM / SSE | runtime/gateway、executor/llm；personal_policy 及其 gateway 子模块、MCP stdio；[2026-11-14 验证与日用门槛](../evidence/2026-11-14-connection-http-readiness.md)、[2026-11-16 边界补测](../evidence/2026-11-16-connection-http-edges.md) | 默认 Connection 路径验证首块早于上游结束、终态审计先于 HTTP 完成；原始 socket 混淆请求、大小与读超时、终态审计失败后的拒绝已有回归。锁定 / 容量 / 停机 / 故障返回 503，规则拒绝返回 403。合成 transport 不代表真实供应商。Host/Origin/入站真实Key拒绝，持久预算按Connection共享 |
+| 基础模式密码审批与记住解锁 | CLI tests/local_approval、broker tests/connection_admission、vault authority/desktop tests | 新 CLI 票据只解锁；旧票据须显式重新签发或撤销才失去原权限。密码审批拒绝恢复密钥；密码批准或拒绝后审计页可正常读取（2026-11-17 修复，此前 `rekey audit list` 返回 STORAGE_INTEGRITY_FAILED）；`--remember` 在发送密码前只接受 1 秒至 30 天；App/Touch ID 实机验收另行进行 |
+| CLI / MCP / connect / 插件 | CLI tests/agent_call、connect、connect_hooks、connect_ssh、hygiene；broker tests/mcp_stdio | 默认 vault（~/.rekey）不写路径，非默认 vault 写入所选目录并在预览中提示勿提交；`rekey hooks install`/`uninstall` 与已有钩子串联；`--with-ssh` 段以 `Match all` 结束（2026-11-17）；Claude本轮按用户要求不验，Codex结果见canonical验收报告 |
+| HTTP / LLM / SSE | runtime/gateway、executor/llm；personal_policy 及其 gateway 子模块、MCP stdio；[2026-11-14 验证与日用门槛](../evidence/2026-11-14-connection-http-readiness.md)、[2026-11-16 边界补测](../evidence/2026-11-16-connection-http-edges.md) | 默认 Connection 路径验证首块早于上游结束、终态审计先于 HTTP 完成；原始 socket 混淆请求、大小与读超时、终态审计失败后的拒绝已有回归。锁定 / 容量 / 停机 / 故障返回 503，规则拒绝返回 403。合成 transport 不代表真实供应商。Host/Origin/入站真实Key拒绝，持久预算按Connection共享。所有上游请求强制 `accept-encoding: identity`，非 identity 编码或非 chunked 传输的响应在放出任何字节前拒绝（RESPONSE_BLOCKED，2026-11-17） |
 | Connection 准入与收尾 | lifecycle、execution_supervisor、audit、executor/local、runtime/local_calls；验收见 connection_admission tests | 合同为全局120 / 每Connection4，在途许可持有至终态审计完成；一次审批与小时额度只在 durable started 成功时消费；故障拒绝继续执行。软件回归不替代真实负载或设备验收 |
-| 访问请求 / 等待 / App | runtime/local_calls、macOS Model/Forms、ConnectionContract | 真实 Touch ID次数与C16仍待设备验收 |
-| dotenv / 精确 scan / hook | vault/hygiene、CLI hygiene tests | 0600备份与有界扫描；锁定hook默认告警放行 |
-| SSH agent / Git HTTP | broker/ssh_agent、SSH UDS tests、github-git preset | 软件SSH签名及真实OpenSSH git push通过；App/SE设备签名另行验收 |
-| OAuth 4 providers | broker/oauth、vault/authority/tokens、OAuth scopes presets | 专项合成测试通过；供应商grant/登录与账户权限另行验收 |
-| 显式 T1 | domain DerivedCredentialTarget、broker/derived、runtime/derived、delegated_credentials | Agent收到临时值；目标/权限/TTL签名固定；9项合成合同通过，真实云服务待验 |
+| 访问请求 / 等待 / App | runtime/local_calls、macOS Model/Forms、ConnectionContract；agent_discovery 与 mcp_stdio 的限速回归，local_calls 拒绝/屏蔽/10 分钟过期测试 | 同一调用方每分钟第 4 次请求返回 RATE_LIMITED（2026-11-17 修复，此前误为 BUDGET_EXCEEDED）；真实 Touch ID次数与C16仍待设备验收 |
+| dotenv / 精确 scan / hook | vault/hygiene；CLI tests/hygiene、scan_hook，scan_daemon（真实 rekeyd + `git commit` 钩子）；broker tests/scan_ipc | 0600备份与有界扫描；每系统用户每分钟共享 600 MiB 扫描额度，超额 RATE_LIMITED；钩子在 daemon 未运行、锁定、无有效策略或额度用完时告警放行，`--strict` 阻止；暂存扫描包含类型变化，跳过子模块指针（2026-11-17） |
+| SSH agent / Git HTTP | broker/ssh_agent、SSH UDS tests、ssh_agent_lifecycle、github-git preset、git_smart_http（真实 git 2.50.1 + http-backend） | 软件SSH签名及真实OpenSSH git push通过；Git 智能 HTTP v2 与 gzip 请求体只对 github-git 放行，此前签署的 github-git Connection 须重新签署（2026-11-17）；App/SE设备签名另行验收 |
+| OAuth 4 providers | broker/oauth、vault/authority/tokens、OAuth scopes presets | 专项合成测试通过；供应商拒绝刷新记为 `oauth-needs-reauth`，App 提示重新授权（2026-11-17）；供应商grant/登录与账户权限另行验收 |
+| 显式 T1 | domain DerivedCredentialTarget、broker/derived、runtime/derived、delegated_credentials；CLI t1_approval_wait、tests/t1_approval_cli | Agent收到临时值；需审批时 CLI 默认等待本机审批至多120秒，批准后用同一ID重试一次（2026-11-17）；目标/权限/TTL签名固定；9项合成合同通过，真实云服务待验 |
 | 人类凭据管理 | App保存/轮转、scripts/test-human-vault.py | 默认App/CLI不显示、复制或导出长期密钥；保存与轮转通过签名Connection扫描验证，逐次A2及审计故障仍验 |
 | run / Profile / 本机capability | Removed in default | 仅lab工作负载代码保留，不提供旧vault迁移 |
 | Seatbelt / netns / G2 | Lab reserve | 编译/脚本语法不宣称运行时或企业部署通过 |
@@ -137,12 +137,12 @@ Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified
 | Added capability | Current software evidence | Remaining boundary |
 |---|---|---|
 | Signed Connection mTLS | Four real TLS/owner-drain/reflection/policy tests; rotation pauses cover preparation, TLS construction, HTTP enqueue and body | Real provider/installed App deployment untested |
-| Admin CA / CSR / serial revocation / full CRL | 22 client-CSR contracts plus two CA import/rotation contracts, including tamper, restart, backup and root/DEK rotation | No Agent PKI admission; real CA deployment untested |
+| Admin CA / CSR / serial revocation / full CRL | 21 client-CSR contracts, 4 crash-recovery contracts (a reservation a crash leaves behind becomes Failed at unlock with one failure audit; revocation and the full CRL then work) and two CA import/rotation contracts, including tamper, restart, backup and root/DEK rotation | No Agent PKI admission; real CA deployment untested |
 | SSH external approvals and socket budgets | Eight broker native SSH regressions plus nine offline signer contracts | Real Secure Enclave/device and external approver deployment untested |
 | Collection integrity and allocation changes | Twelve action integrity tests, canonical JSON/SSE equivalence and split/reflection regressions | No combined-head performance improvement claimed |
 | Lab child exit watcher | macOS/Linux PR gate runs the two owned-child/control-channel regressions | Linux result requires that CI run |
 
-Published 0.4 and older installed App evidence do not establish unified-head hardware acceptance. Agent PKI admission remains pending. The single-host Docker recovery controller is integrated; its [recorded disposable acceptance](../superpowers/specs/2026-10-09-docker-ha-controller.md#software-acceptance-on-the-current-integration-base) used the earlier `fa734a5` product base and does not establish current-head deployment or multi-host HA. No candidate installation or public release was performed.
+Published 0.4 and older installed App evidence do not establish unified-head hardware acceptance. Agent PKI admission remains pending. The single-host Docker recovery controller is integrated; its [disposable live drill](../superpowers/specs/2026-10-09-docker-ha-controller.md#software-acceptance-on-the-current-integration-base) was rerun on 2026-11-17 against the design-completion head `5c249ed8` and passed (18 controller tests, five live checks, no leftover resources). It establishes one trusted-host software behavior only, not deployment or multi-host HA. No candidate installation or public release was performed.
 
 ## Basic-mode one-step add (0.5 development, 2026-10-21)
 
@@ -150,4 +150,4 @@ Published 0.4 and older installed App evidence do not establish unified-head har
 
 ## Personal desktop security extension (0.5 development)
 
-[Contract](../superpowers/specs/2026-10-09-personal-desktop-security.md): separate desktop privacy lock, configurable idle/device signals and explicit 1/7/30-day presence issuance. A1 stays at most seven days and is capped by the grant's wall and monotonic lifetime; Presence cannot issue grants. Real disposable IPC tests cover Agent continuity, token revocation, forgotten grants and expiry. Synthetic Swift tests cover stale login/cancellation, cleanup failure, settings persistence and exact team draft text. No installed App, actual sleep/screen-lock/Touch ID or stronger protection-level acceptance is claimed. The separately developed single-host Docker recovery controller is now integrated; controller contracts, the recorded earlier-base Docker drill, and real deployment acceptance remain distinct evidence.
+[Contract](../superpowers/specs/2026-10-09-personal-desktop-security.md): separate desktop privacy lock, configurable idle/device signals and explicit 1/7/30-day presence issuance. A1 stays at most seven days and is capped by the grant's wall and monotonic lifetime; Presence cannot issue grants. Real disposable IPC tests cover Agent continuity, token revocation, forgotten grants and expiry; in the default build, a privacy lock and a forgotten grant keep token-free Connection calls working (2026-11-17), while the remaining desktop_privacy cases run only with `--features lab`. `rekey unlock --remember` refuses lifetimes outside 1 s to 30 days before sending the password. Synthetic Swift tests cover stale login/cancellation, cleanup failure, settings persistence, exact team draft text, sleep/screen-lock/session-resign device signals and revocation of desktop tokens that arrive after a lock. No installed App, actual sleep/screen-lock/Touch ID or stronger protection-level acceptance is claimed. The separately developed single-host Docker recovery controller is now integrated; controller contracts, the 2026-11-17 current-head Docker drill, and real deployment acceptance remain distinct evidence.
