@@ -1,0 +1,8 @@
+# synthetic fixture, no real credentials
+OPENAI_API_KEY=sk-fuzz-placeholder
+export GH_TOKEN=ghp_fuzzplaceholder
+ANTHROPIC_API_KEY='sk-ant-fuzz-placeholder' # comment
+STRIPE_SECRET_KEY="sk_test_fuzz\tplaceholder"
+GEMINI_MODEL=plain-setting
+
+AWS_ACCESS_KEY_ID = AKIAFUZZPLACEHOLDER

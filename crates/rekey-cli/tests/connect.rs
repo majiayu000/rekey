@@ -44,12 +44,13 @@ fn nontty_cancel_and_eof_leave_missing_directory_untouched() {
 #[test]
 fn sigint_before_confirmation_creates_nothing() {
     let f = Fixture::new();
-    let mut tty = Tty::start(f.command("codex"));
+    let tty = Tty::start(f.command("codex"));
     assert_eq!(
         unsafe { libc::kill(tty.child.id() as i32, libc::SIGINT) },
         0
     );
-    assert!(!tty.child.wait().unwrap().success());
+    let (status, text) = tty.exit();
+    assert!(!status.success(), "{text}");
     assert_eq!(fs::read_dir(f.project()).unwrap().count(), 0);
 }
 #[test]

@@ -26,6 +26,13 @@ The CLI dependency tree must not contain `rusqlite`, `aes-gcm`, `argon2`,
 `reqwest`, `rekey-vault`, or `rekey-broker`. Run focused acceptance scripts for
 the affected surface; CI runs the complete security gate.
 
+Process-level fixtures should wait for the event itself (a prompt, a marker
+file, an exit or a reply) and keep a wall-clock bound only to turn a hang into
+a failure. Fixtures that read `REKEY_TEST_TIMEOUT_SCALE` (a positive integer,
+default 1) multiply that bound by it; on a slow or heavily loaded host run, for
+example, `REKEY_TEST_TIMEOUT_SCALE=4 cargo test --workspace -- --test-threads=1`.
+Product deadlines never scale, so a test that asserts a deadline keeps it.
+
 ## Commits and pull requests
 
 Every commit must carry a Developer Certificate of Origin sign-off:

@@ -5,6 +5,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -105,6 +106,23 @@ pub fn output_text(output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     )
 }
+/// Liveness bound for one PTY child wait. A passing run returns as soon as the
+/// prompt or exit arrives; the bound only turns a hang into a failure. Starting
+/// a freshly copied binary can take many seconds on a loaded host.
+const PTY_LIVENESS: Duration = Duration::from_secs(60);
+/// Wall-clock fixture bounds scale with `REKEY_TEST_TIMEOUT_SCALE` (a positive
+/// integer, default 1). Product deadlines are never scaled.
+fn test_timeout(base: Duration) -> Duration {
+    let scale = match std::env::var("REKEY_TEST_TIMEOUT_SCALE") {
+        Err(std::env::VarError::NotPresent) => 1,
+        value => value
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .expect("REKEY_TEST_TIMEOUT_SCALE must be a positive integer"),
+    };
+    base.checked_mul(scale).expect("scaled test timeout")
+}
 static PTY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub struct Tty {
     _guard: std::sync::MutexGuard<'static, ()>,
@@ -134,6 +152,14 @@ impl Tty {
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave));
+        // A terminal user's Ctrl-C, even when the harness itself ignores SIGINT
+        // (a background job in a script). `signal` is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
         let child = command.spawn().unwrap();
         let mut tty = Self {
             _guard: guard,
@@ -141,10 +167,12 @@ impl Tty {
             master,
             text: String::new(),
         };
-        let end = Instant::now() + Duration::from_secs(10);
+        let started = Instant::now();
+        let limit = test_timeout(PTY_LIVENESS);
         while !tty.text.contains("[y/N]") {
-            assert!(Instant::now() < end, "no prompt: {}", tty.text);
-            tty.read();
+            let waited = started.elapsed();
+            assert!(waited < limit, "no prompt after {waited:?}: {}", tty.text);
+            tty.read(100);
             assert!(
                 tty.child.try_wait().unwrap().is_none(),
                 "exited before prompt: {}",
@@ -153,35 +181,48 @@ impl Tty {
         }
         tty
     }
-    fn read(&mut self) {
+    /// Appends what the child wrote, waiting at most `wait_ms` for it; returns
+    /// the number of bytes read (0 on timeout or once the child side closed).
+    fn read(&mut self, wait_ms: i32) -> usize {
         let mut fd = libc::pollfd {
             fd: self.master.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
-        let result = unsafe { libc::poll(&mut fd, 1, 100) };
+        let result = unsafe { libc::poll(&mut fd, 1, wait_ms) };
         assert!(result >= 0);
-        if result > 0 {
-            let mut buffer = [0; 4096];
-            match self.master.read(&mut buffer) {
-                Ok(n) => self.text.push_str(&String::from_utf8_lossy(&buffer[..n])),
-                Err(e) if e.raw_os_error() == Some(libc::EIO) => {}
-                Err(e) => panic!("PTY read: {e}"),
+        if result == 0 {
+            return 0;
+        }
+        let mut buffer = [0; 4096];
+        match self.master.read(&mut buffer) {
+            Ok(n) => {
+                self.text.push_str(&String::from_utf8_lossy(&buffer[..n]));
+                n
             }
+            Err(e) if e.raw_os_error() == Some(libc::EIO) => 0,
+            Err(e) => panic!("PTY read: {e}"),
         }
     }
     pub fn finish(mut self, answer: &[u8]) -> (ExitStatus, String) {
         self.master.write_all(answer).unwrap();
-        let end = Instant::now() + Duration::from_secs(10);
+        self.exit()
+    }
+    /// Waits, within the liveness bound, for the child to exit and drains its output.
+    pub fn exit(mut self) -> (ExitStatus, String) {
+        let started = Instant::now();
+        let limit = test_timeout(PTY_LIVENESS);
         loop {
-            self.read();
+            self.read(100);
             if let Some(status) = self.child.try_wait().unwrap() {
-                self.read();
+                // A loaded host can run the child to exit between two polls.
+                while self.read(0) > 0 {}
                 return (status, std::mem::take(&mut self.text));
             }
+            let waited = started.elapsed();
             assert!(
-                Instant::now() < end,
-                "command did not finish: {}",
+                waited < limit,
+                "command did not finish after {waited:?}: {}",
                 self.text
             );
         }

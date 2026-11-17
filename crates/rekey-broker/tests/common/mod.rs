@@ -30,6 +30,20 @@ pub const TEST_PARAMS: Argon2Params = Argon2Params {
 pub(crate) mod policy;
 pub use policy::activate_test_policy;
 
+/// Wall-clock fixture bounds scale with `REKEY_TEST_TIMEOUT_SCALE` (a positive
+/// integer, default 1) on slow or loaded hosts. Product deadlines never scale.
+pub fn test_timeout(base: Duration) -> Duration {
+    let scale = match std::env::var("REKEY_TEST_TIMEOUT_SCALE") {
+        Err(std::env::VarError::NotPresent) => 1,
+        value => value
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .expect("REKEY_TEST_TIMEOUT_SCALE must be a positive integer"),
+    };
+    base.checked_mul(scale).expect("scaled test timeout")
+}
+
 pub struct TestBroker {
     pub dir: tempfile::TempDir,
     pub state_dir: PathBuf,
