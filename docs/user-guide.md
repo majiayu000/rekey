@@ -145,7 +145,7 @@ curl -H 'Authorization: Bearer rekey' \
   'http://127.0.0.1:7787/c/github/repos/OWNER/REPO/issues'
 ```
 
-服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。
+服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。Rekey 只向上游请求未压缩的响应，SDK 自带的 `Accept-Encoding` 不会转发；上游仍返回压缩正文时按 502 `RESPONSE_BLOCKED` 拒绝，不转交任何内容。
 
 写操作需要审批时返回 403 `APPROVAL_REQUIRED`，审批 ID 在 `approval.challenge_id`。这个审批属于发起 HTTP 请求的程序，`rekey approval await` 和 MCP `await_approval` 等不到它。用户在 App 收件箱（基础模式下用 `rekey approval approve`）批准后，把完全相同的请求（方法、路径、查询、请求头、正文都不变）再发一次，并加上请求头 `x-rekey-approval-challenge: <challenge_id>`：
 
@@ -204,7 +204,14 @@ rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host g
 
 macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定（新生成密钥的 git 签名默认允许）。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
 
-Git smart HTTP 使用独立 `github-git` 预设，固定 `https://github.com`、owner 和完整 `repo.git`。`info/refs` 与 `git-upload-pack` 为读，`git-receive-pack` 为写；PAT 在 daemon 内转换为固定 Basic 认证。通过本机 HTTP 使用时也要配置公开请求标记，例如只对该 URL 设置 Git 的 `http.extraHeader=Authorization: Bearer rekey`。默认请求正文上限为 1 MiB，不宣称无限仓库传输。
+Git smart HTTP 使用独立 `github-git` 预设，固定 `https://github.com`、owner 和完整 `repo.git`。`info/refs` 与 `git-upload-pack` 为读，`git-receive-pack` 为写（默认需要审批）；PAT 在 daemon 内转换为固定 Basic 认证。通过本机 HTTP 使用时，把该仓库的地址改写到本机服务，并只对本机服务地址配置公开请求标记（`github-git` 换成你签署的连接名，端口见 `service.json`）：
+
+```bash
+git config --global url."http://127.0.0.1:7787/c/github-git/OWNER/REPO.git".insteadOf "https://github.com/OWNER/REPO.git"
+git config --global http."http://127.0.0.1:7787/c/github-git/".extraHeader "Authorization: Bearer rekey"
+```
+
+之后照常对 `https://github.com/OWNER/REPO.git`（带 `.git`）执行 `git clone`、`git fetch`、`git push`；连接只放行签名的 owner / repo，其他 GitHub 仓库不受影响。git 默认发出的 `User-Agent`、`Accept`、`Accept-Language`、`Pragma` 由本机服务剥除；`Git-Protocol`（协议 v2）是 `github-git` 签名允许的头，原样转发；git 自动压缩的请求正文（`Content-Encoding: gzip`）在判定前解码一次，上游收到未压缩正文。默认请求正文上限为 1 MiB（按解码后计），超过会被拒绝，不宣称无限仓库传输，大推送请改用 SSH。2026-11-17 之前签署的 `github-git` 连接不允许 `Git-Protocol`，git 会被拒绝：重新签署该连接，或临时用 `git -c protocol.version=0`。
 
 ## OAuth 与临时凭据
 

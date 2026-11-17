@@ -31,6 +31,8 @@ rekey-policy = { workspace = true }
 rekey-vault = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2"
+# Pure-Rust inflate for Git smart HTTP gzip request bodies (bounded decode).
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 aws-lc-rs = "1.18"
 libc = "0.2"
 memchr = "2.8"

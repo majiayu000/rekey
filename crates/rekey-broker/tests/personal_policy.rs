@@ -10,8 +10,12 @@ mod env_import;
 mod gateway;
 #[path = "personal_policy/gateway_edges.rs"]
 mod gateway_edges;
+#[path = "personal_policy/git_smart_http.rs"]
+mod git_smart_http;
 #[path = "common/renamed_agent.rs"]
 mod renamed_agent;
+#[path = "personal_policy/upstream_encoding.rs"]
+mod upstream_encoding;
 
 use std::path::PathBuf;
 use std::sync::Arc;

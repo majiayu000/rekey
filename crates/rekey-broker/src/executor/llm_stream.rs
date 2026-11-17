@@ -1120,13 +1120,11 @@ pub(super) async fn run(
                 return Err(invalid());
             }
         }
-        if name.eq_ignore_ascii_case("content-encoding")
-            && !value.trim().eq_ignore_ascii_case("identity")
-        {
-            return Err(invalid());
-        }
     }
-    if headers_contain_secret(&response.headers, &needles) {
+    // A coded stream cannot be sealed: the same refusal as a reflected secret.
+    if !super::http::response_is_identity(&response.headers)
+        || headers_contain_secret(&response.headers, &needles)
+    {
         return Err(BrokerError::ResponseSecurityViolation);
     }
     if response.status != 200 || mime != 1 {
@@ -2274,11 +2272,10 @@ mod tests {
             ]
             .into();
             let (tx, mut rx) = mpsc::channel(4096);
-            assert!(
-                run(res, vec![], 65536, &tx, ProfileLlmProtocol::OpenAiChat)
-                    .await
-                    .is_err()
-            );
+            assert!(matches!(
+                run(res, vec![], 65536, &tx, ProfileLlmProtocol::OpenAiChat).await,
+                Err(BrokerError::ResponseSecurityViolation)
+            ));
             assert!(drain(&mut rx).is_empty());
         }
         let (tx, _rx) = mpsc::channel(4096);

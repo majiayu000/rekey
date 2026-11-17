@@ -34,6 +34,8 @@ use crate::error::BrokerError;
 use crate::execution_supervisor::HttpExecution;
 use crate::executor::text_stream::TextStreamEvent;
 
+mod coding;
+
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTIONS: usize = 120;
@@ -365,9 +367,6 @@ async fn handle_request(
         || parts.uri.authority().is_some()
         || (parts.headers.contains_key("content-length")
             && parts.headers.contains_key("transfer-encoding"))
-        || single(&parts.headers, "content-encoding")
-            .map_err(|e| (400, e))?
-            .is_some_and(|value| value != "identity")
     {
         return Err((400, bad_input()));
     }
@@ -458,6 +457,8 @@ async fn handle_request(
                 | "accept"
                 | "accept-encoding"
                 | "accept-language"
+                | "content-encoding"
+                | "pragma"
                 | "sec-fetch-mode"
                 | "x-rekey-approval-challenge"
         ) || name.as_str().starts_with("x-stainless-")
@@ -496,6 +497,7 @@ async fn handle_request(
         }
         bytes.extend_from_slice(&data);
     }
+    let bytes = coding::decoded_body(&parts.headers, &declaration.preset, bytes, limit)?;
     if parts.method == hyper::Method::GET && !bytes.is_empty() {
         return Err((400, bad_input()));
     }

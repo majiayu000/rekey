@@ -480,87 +480,9 @@ fn stripe_read_only(preset: &mut Preset) -> Result<(), PolicyError> {
     Ok(())
 }
 
-fn github_git_preset() -> Result<Preset, PolicyError> {
-    let mut preset = generic_preset(
-        HttpsOrigin::parse("https://github.com").map_err(|_| PolicyError::Invalid)?,
-        "authorization",
-        "Basic ",
-    )?;
-    preset.name = "github-git".into();
-    let slug =
-        json!({"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$","maxLength":100});
-    let args = json!({"owner":slug,"repo":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\\.git$","maxLength":100}});
-    preset.operations = vec![
-        operation(
-            "git.info_refs",
-            FixedMethod::Get,
-            "/{owner}/{repo}/info/refs",
-            args.clone(),
-            &["owner", "repo"],
-            None,
-        ),
-        operation(
-            "git.upload_pack",
-            FixedMethod::Post,
-            "/{owner}/{repo}/git-upload-pack",
-            args.clone(),
-            &["owner", "repo"],
-            Some(ReadSemantics::Fixed),
-        ),
-        operation(
-            "git.receive_pack",
-            FixedMethod::Post,
-            "/{owner}/{repo}/git-receive-pack",
-            args,
-            &["owner", "repo"],
-            None,
-        ),
-    ];
-    preset.rules = preset
-        .operations
-        .iter()
-        .enumerate()
-        .map(|(i, op)| {
-            rule(
-                "github-git",
-                i,
-                MethodSelector::Methods(vec![op.method]),
-                &op.path,
-                if op.name == "git.receive_pack" {
-                    RuleEffect::Approve
-                } else {
-                    RuleEffect::Allow
-                },
-            )
-        })
-        .collect();
-    preset.query_allowlist = Some(["service".to_owned()].into_iter().collect());
-    Ok(preset)
-}
-
-pub(crate) fn validate_git_connection(
-    connection: &rekey_domain::connection::Connection,
-) -> Result<(), PolicyError> {
-    if connection.preset != "github-git" {
-        return Ok(());
-    }
-    let preset = github_git_preset()?;
-    if connection.origin != preset.origin
-        || connection.auth != preset.auth.into()
-        || connection.operations != preset.operations
-        || ["owner", "repo"].iter().any(|key| {
-            connection.bindings.get(*key).is_none_or(|values| {
-                values.is_empty()
-                    || values
-                        .iter()
-                        .any(|value| value == "*" || *key == "repo" && !value.ends_with(".git"))
-            })
-        })
-    {
-        return Err(PolicyError::Invalid);
-    }
-    Ok(())
-}
+mod git;
+use git::github_git_preset;
+pub(crate) use git::validate_git_connection;
 
 pub fn oauth_provider(preset: &str) -> Option<rekey_domain::connection::OAuthProvider> {
     use rekey_domain::connection::OAuthProvider;

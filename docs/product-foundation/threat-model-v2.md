@@ -153,8 +153,11 @@ done快照与SDK有序text投影共用有界遮蔽上下文，包括Anthropic交
 累计 wire 和 retained 限额仍生效，真实 needle 前缀和编码标记仍可能保留到限额。
 已有 4MiB fixture 通过不代表任意元数据流都可接受。
 完成帧必须等EOF与durable结算后释放；取消/断开仍由Supervisor终态记账。
+每个上游请求固定accept-encoding: identity（mTLS同）；响应带非identity的content-encoding或chunked
+以外的transfer-encoding时，在任何正文或响应头交给调用方前按RESPONSE_SECURITY_VIOLATION拒绝并记
+indeterminate，不解压，因此遮蔽只作用于未压缩的原始字节；内部固定格式解析（OAuth token、T1、source）遇压缩正文即解析失败。
 支持的raw/base64/base64url/hex/percent/JSON表示有限，嵌入base64完整对齐保证要求
-秘密至少16字节；短Key给固定警告。无法保证任意变换/压缩/加密/侧信道均被识别。
+秘密至少16字节；短Key给固定警告。无法保证正文内的任意变换、应用层压缩、加密或侧信道均被识别。
 
 ## 平台、发布与残余风险
 

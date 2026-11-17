@@ -73,6 +73,28 @@ async fn raw_socket_ambiguous_headers_and_paths_never_reach_upstream() {
             route.into(),
             400,
         ),
+        // DNS rebinding keeps the real port behind an attacker name that
+        // resolves to loopback. Another case, no port or another port is not
+        // this service either: Host is compared byte for byte.
+        (
+            normal.replace("127.0.0.1", "rebind.example"),
+            route.into(),
+            400,
+        ),
+        (normal.replace("127.0.0.1", "LOCALHOST"), route.into(), 400),
+        (
+            normal.replace(&format!("127.0.0.1:{port}"), "127.0.0.1"),
+            route.into(),
+            400,
+        ),
+        (
+            normal.replace(
+                &format!("127.0.0.1:{port}"),
+                &format!("localhost:{}", port ^ 1),
+            ),
+            route.into(),
+            400,
+        ),
         (
             format!("{normal}Host: localhost:{port}\r\n"),
             route.into(),
