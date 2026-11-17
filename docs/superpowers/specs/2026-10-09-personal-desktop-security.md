@@ -62,10 +62,13 @@ tests; actual signed-device acceptance remains separate.
 
 Eighteen Worker desktop contracts pass, including failed replacement, invalid
 lifetime preservation, same-ticket monotonic caps, the seven-day A1 maximum,
-audit-trigger failure and wall-clock expiry. Four real lab IPC cases pass,
+audit-trigger failure and wall-clock expiry. Five real lab IPC cases pass,
 including execution with an existing Agent capability after privacy lock; the
-default build runs the three personal IPC cases. Lab policy test fixtures now
-include the required policy8 derived_credentials collection.
+default build runs the four personal IPC cases. Revision 2026-11-17: one of
+them activates a signed Connection, then runs DESKTOP_LOCK with
+forget_remembered false and true, and a tokenless agent.sock CALL still reaches
+the fake upstream each time. Lab policy test fixtures now include the required
+policy8 derived_credentials collection.
 
 Synthetic Swift contracts pass idle/device/disabled choices, immediate cache
 clearing, stale login revocation, authentication cancellation, visible failed

@@ -196,6 +196,7 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        #[cfg(feature = "lab")]
         agent_msg::PROFILE_INVENTORY => {
             if !frame.body.is_empty() {
                 return Err(BrokerError::Frame(ipc::FrameError::InvalidField));

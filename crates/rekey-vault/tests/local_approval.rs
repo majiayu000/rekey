@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use rekey_domain::ids::{
     ActionId, ApprovalId, ApprovalRequestId, PolicyRuleId, PrincipalId, RequestId, SessionId,
 };
-use rekey_vault::command::AuditDraft;
+use rekey_vault::command::{AuditDraft, UnlockProof};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::model::{ApprovalEvidence, AuthorizationEvidence, event_type, outcome};
 use rekey_vault::secret::SecretInput;
@@ -202,6 +202,59 @@ async fn missing_wrong_a1_old_presence_and_locked_or_faulted_never_authorize() {
             .await,
         Err(AuthorityError::Faulted)
     ));
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn wrong_password_approvals_share_the_unlock_backoff() {
+    let vault = common::init_test_vault();
+    let mut config = common::test_config(&vault.state_dir);
+    // Wide enough that the rate-limited checks below cannot outlive it.
+    config.unlock_backoff_base = Duration::from_secs(3);
+    let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
+    handle.unlock(common::password_proof()).await.unwrap();
+    let password_draft = || {
+        let mut event = draft(true);
+        event.reason_code = "local-password".into();
+        event
+    };
+    let approve = |proof| {
+        let (deadline, wall) = deadlines();
+        handle.authorize_local_approval_with(proof, password_draft(), deadline, wall)
+    };
+    let wrong = || UnlockProof::Password(SecretInput::from_slice(b"wrong-approval-password"));
+    for _ in 0..3 {
+        assert!(matches!(
+            approve(wrong()).await,
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+    }
+    // Refused before verification, even with the right password, and shared
+    // with the A2 shutdown proof.
+    assert!(matches!(
+        approve(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    assert!(matches!(
+        handle.verify_shutdown_proof(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    assert_eq!(count(&db, event_type::APPROVAL_APPROVED), 0);
+    assert_eq!(count(&db, event_type::VAULT_UNLOCK_FAILED), 3);
+    assert_eq!(handle.status().await.unwrap().state, "unlocked");
+    tokio::time::sleep(Duration::from_millis(3_200)).await;
+    approve(common::password_proof()).await.unwrap();
+    let reason: String = db
+        .query_row(
+            "SELECT reason_code FROM audit_events WHERE event_type=?1",
+            [event_type::APPROVAL_APPROVED],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "local-password");
+    handle.lock("backoff-test").await.unwrap();
     handle.shutdown(None).await.unwrap();
     join.join().unwrap();
 }

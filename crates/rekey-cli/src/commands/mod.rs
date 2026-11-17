@@ -44,6 +44,7 @@ mod templates;
 pub use templates::{template_catalog, template_install};
 
 mod password_lifecycle;
+mod remember;
 pub use password_lifecycle::{key_rotate_dek, key_rotate_vrk, password_change, recovery_rotate};
 mod github_admin;
 pub use github_admin::{credential_apply_github_webhook, credential_rotate_github_app};
@@ -442,7 +443,8 @@ pub fn unlock(
     password_stdin: bool,
     remember: Option<&str>,
 ) -> Result<(), CliError> {
-    let lifetime_ms = remember.map(parse_ttl_ms).transpose()?;
+    // Bounded before any password is read or sent; the vault stays locked.
+    let lifetime_ms = remember.map(remember::lifetime_ms).transpose()?;
     let prompt = if recovery {
         "Recovery key: "
     } else {
@@ -457,60 +459,8 @@ pub fn unlock(
     let (meta, _) = admin(state_dir)?.call(message, b"{}", &secret)?;
     print_json::<ipc::UnlockResponse>(&meta)?;
     if let Some(lifetime_ms) = lifetime_ms {
-        remember_unlock(state_dir, recovery, &secret, lifetime_ms)?;
+        remember::save(state_dir, recovery, &secret, lifetime_ms)?;
     }
-    Ok(())
-}
-
-fn remember_unlock(
-    state_dir: &Path,
-    recovery: bool,
-    secret: &[u8],
-    lifetime_ms: i64,
-) -> Result<(), CliError> {
-    let kind = proof_kind(recovery);
-    let body = proof_body(kind, secret);
-    // The file is same-user readable: request an unlock-only ticket that the
-    // daemon never accepts as a presence proof (approvals, reveal, step-up).
-    let metadata = serde_json::to_vec(&ipc::DesktopRememberMeta {
-        lifetime_ms,
-        unlock_only: true,
-    })
-    .map_err(|_| CliError::local("INVALID_FRAME", "invalid remember request"))?;
-    let (meta, key) = admin(state_dir)?.call(admin_msg::DESKTOP_REMEMBER, &metadata, &body)?;
-    let key = Zeroizing::new(key);
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Expiry {
-        expires_at_ms: i64,
-    }
-    let expires_at_ms = serde_json::from_slice::<Expiry>(&meta)
-        .map_err(|_| CliError::local("INVALID_FRAME", "invalid remember expiry"))?
-        .expires_at_ms;
-    // Write beside the vault, owner-only, then rename so rekeyd never reads a partial key.
-    let path = state_dir.join(REMEMBERED_UNLOCK_FILE);
-    let staging = state_dir.join(format!(".{REMEMBERED_UNLOCK_FILE}.tmp"));
-    let _ = std::fs::remove_file(&staging);
-    let write = || -> std::io::Result<()> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&staging)?;
-        file.write_all(&key)?;
-        file.sync_all()?;
-        std::fs::rename(&staging, &path)
-    };
-    write().map_err(|error| {
-        let _ = std::fs::remove_file(&staging);
-        CliError::local("IO", format!("cannot save remembered unlock: {error}"))
-    })?;
-    let days = lifetime_ms / (24 * 60 * 60 * 1000);
-    eprintln!(
-        "Remembered for {days} day(s) (until unix ms {expires_at_ms}): rekeyd unlocks itself after restarts. Basic mode: {} is a 0600 file readable by this user, not Secure Enclave. Forget it with `rekey lock --forget-remembered`.",
-        path.display()
-    );
     Ok(())
 }
 

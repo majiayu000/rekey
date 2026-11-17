@@ -217,6 +217,107 @@ async fn short_grant_clamps_existing_desktop_session() {
     b.shutdown().await;
 }
 
+/// One tokenless Connection read over agent.sock; the fake upstream must see it.
+async fn call_connection(b: &common::TestBroker, sent: usize) {
+    b.fake
+        .push_response(Ok(rekey_broker::upstream::UpstreamResponse {
+            status: 200,
+            headers: vec![("content-type".into(), "application/json".into())].into(),
+            body: br#"{"ok":true}"#.to_vec().into(),
+        }));
+    common::call(
+        &b.agent_sock(),
+        Channel::Agent,
+        rekey_domain::ipc::agent_msg::CALL,
+        br#"{"connection":"continuity","method":"GET","path":"/repos/acme/one"}"#,
+        &[],
+    )
+    .await
+    .ok();
+    let requests = b.fake.requests.lock().unwrap();
+    assert_eq!(requests.len(), sent);
+    let last = requests.last().unwrap();
+    assert_eq!(
+        (last.host.as_str(), last.method.as_str(), last.path.as_str()),
+        ("api.github.com", "GET", "/repos/acme/one")
+    );
+}
+
+#[tokio::test]
+async fn privacy_lock_and_forgotten_grant_keep_tokenless_connection_calls() {
+    use rekey_domain::connection::{MethodClass, MethodSelector, RuleEffect};
+    let b = common::start_broker().await;
+    common::unlock(&b).await;
+    let credential =
+        common::add_credential(&b, "desktop-continuity", b"SYNTHETIC-CONTINUITY-TOKEN").await;
+    let mut connection = rekey_policy::presets::builtin_preset("github-pat")
+        .unwrap()
+        .connection("continuity".into(), credential.parse().unwrap());
+    for rule in &mut connection.rules {
+        rule.id = rekey_domain::ids::PolicyRuleId::new_random();
+        if matches!(rule.methods, MethodSelector::Class(MethodClass::Read)) {
+            rule.effect = RuleEffect::Allow;
+        }
+    }
+    common::policy::activate_snapshot(
+        &b,
+        json!({"format_version":8,"version":1,"expires_at_ms":4_102_444_800_000_i64,
+            "approvers":[],"workload_identities":[],"profiles":[],"bindings":[],"rules":[],
+            "connections":[connection],"ssh_keys":[],"derived_credentials":[]}),
+    )
+    .await;
+    let proof = common::proof_body(common::PASSWORD);
+    let login = admin(&b, admin_msg::DESKTOP_LOGIN, json!({}), &proof).await;
+    login.ok();
+    admin(
+        &b,
+        admin_msg::DESKTOP_LOCK,
+        json!({"forget_remembered":false}),
+        &common::proof_body(&login.body),
+    )
+    .await
+    .ok();
+    call_connection(&b, 1).await;
+    let grant = admin(
+        &b,
+        admin_msg::DESKTOP_REMEMBER,
+        json!({"lifetime_ms":86_400_000}),
+        &proof,
+    )
+    .await;
+    grant.ok();
+    let resumed = admin(
+        &b,
+        admin_msg::DESKTOP_RESUME,
+        json!({}),
+        &common::proof_body(&grant.body),
+    )
+    .await;
+    resumed.ok();
+    admin(
+        &b,
+        admin_msg::DESKTOP_LOCK,
+        json!({"forget_remembered":true}),
+        &common::proof_body(&resumed.body),
+    )
+    .await
+    .ok();
+    call_connection(&b, 2).await;
+    let forgotten = admin(
+        &b,
+        admin_msg::DESKTOP_RESUME,
+        json!({}),
+        &common::proof_body(&grant.body),
+    )
+    .await;
+    assert_eq!(forgotten.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    assert_eq!(
+        admin(&b, admin_msg::STATUS, json!({}), &[]).await.ok()["state"],
+        "unlocked"
+    );
+    b.shutdown().await;
+}
+
 #[cfg(feature = "lab")]
 #[tokio::test]
 async fn privacy_lock_preserves_an_existing_agent_execution_capability() {

@@ -1,4 +1,5 @@
-//! Read-only, authenticated public projection of the live Profile session.
+//! Lab-only read-only, authenticated public projection of the live Profile
+//! session (agent opcode 8).
 use rekey_domain::action::{ActionTarget, FixedHttpAction};
 use rekey_domain::ipc::{
     FrameError, ProfileActionDefinition, ProfileInventoryResponse, RESPONSE_BODY_MAX_BYTES,
@@ -8,8 +9,8 @@ use rekey_policy::PolicyError;
 use rekey_vault::AuthorityError;
 use tokio::time::Instant;
 
-use super::BrokerCtx;
 use crate::error::BrokerError;
+use crate::runtime::BrokerCtx;
 
 pub(super) struct ProfileMaterial {
     pub profile: AgentProfile,
@@ -51,7 +52,7 @@ impl BrokerCtx {
                 })
             })
             .collect();
-        super::profile::validate_profiles(std::slice::from_ref(scope.profile()), &selected)?;
+        super::validate_profiles(std::slice::from_ref(scope.profile()), &selected)?;
         self.lifecycle.reject_if_not_running()?;
         if Instant::now() >= deadline {
             return Err(AuthorityError::AuthorityBusy.into());

@@ -275,6 +275,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   - 信任根仍是每个保险库唯一且不可替换：首次 `rekey add` 在未安装信任时安装软件密钥的信任根；已信任 App Secure Enclave 密钥的保险库拒绝软件签名（`TRUST_MISMATCH`），只能用 `--app` 或新建保险库。
   - 安装的信任算法沿用现有 P-256 标签 `secure-enclave-p256`（该标签只描述曲线与签名编码，`signed.rs` 已声明不证明硬件位置），不新增持久格式。命令行输出与指南必须如实说明“软件签名、基础模式”，不得把基础模式称为 Secure Enclave 或 L1 以上。
   - 基础模式可选“记住解锁”：`rekey unlock --remember <期限>`（≤30 天）复用既有记住此电脑授权（`DESKTOP_REMEMBER`），把解封密钥写入状态目录 0600 文件；rekeyd 启动时若文件有效即调用既有 resume 路径解锁，失效或被删除则保持锁定。这同样是软件保护，不是 Secure Enclave。
+  - **（2026-11-17 修订）期限先于密码校验。** `--remember` 只接受 1 秒至 30 天（含两端，即 `DESKTOP_REMEMBER` 的 1,000..=2,592,000,000 ms）。CLI 在读取或发送密码之前校验，越界返回 `USAGE`，不发送 `UNLOCK`，保险库保持锁定，也不写记住文件；Worker 仍按同一范围复核。
   - **（2026-10-22 修订）记住解锁只能解锁。** 该文件同用户进程可读，因此 CLI 以 `DESKTOP_REMEMBER {lifetime_ms, unlock_only: true}` 签发“仅解锁”票据：沿用 84 字节布局，magic 为 `RKDSU001`（App 票据仍为 `RKDSK001`），magic 属于 AEAD AAD，不能改写。由仅解锁票据恢复的 PresenceGrant 只用于 resume 解锁，**不能**作为任何 presence 证明（本机审批、明文查看、关机及其他 step-up）。`unlock_only` 缺省为 false，App 行为不变。修订前由 CLI 写下的 `RKDSK001` 文件不迁移、不重解释，仍具 presence 权限；基础模式用户须重新执行 `rekey unlock --remember` 或 `rekey lock --forget-remembered`。
   - LLM 预设必须签署非空的精确模型白名单与每日额度；CLI 交互时询问一次模型，`--stdin-secrets` 时必须给 `--model`，不猜测默认模型。
 - 团队模式沿用外部 Ed25519。
@@ -665,6 +666,8 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 
 **删除原则**：被取代的代码直接删除，不保留兼容开关（沿用"不向后兼容"）。删除行数必须写进每个里程碑的报告。
 
+**（2026-11-17 修订）默认构建不编入 Profile 会话。** 上表第一行属于 lab 储备的代码保留在 lab，不进默认构建：`ipc/owner.rs`、`ipc/admin/profile.rs`、`runtime/profile/{issue,inventory}.rs`、`session/profile.rs` 及其分派只在 `--features lab` 下编译，默认构建没有运行时开关。默认 daemon 对 admin 58 `PROFILE_GET`、59 `PROFILE_SESSION_CREATE`、12 `SESSION_CREATE`、13 `SESSION_REVOKE` 与 agent 8 `PROFILE_INVENTORY` 一律返回 `INVALID_FRAME`，锁定与解锁状态相同，在取得协调锁、访问 Authority 或写审计之前拒绝。签名 policy8 快照中的 `profiles` 仍按原规则在激活时校验，格式不变。admin 60 沿用历史常量名 `PROFILE_LIST`，自 0.4 起是默认的 Connection 列表（`rekey connection list` 与 App 使用），不是 Profile 接口，继续可用。
+
 ---
 
 ## 12. 验收矩阵
@@ -689,6 +692,8 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C16 | 体验 | 已安装用户：添加 GitHub PAT 到 Claude Code 首次成功调用，总时长不超过 2 分钟，密码最多 1 次，Touch ID 最多 2 次 |
 
 现有 P0、fuzz、性能门槛全部保留；新增 fuzz 目标：规则路径匹配器、dotenv 解析器、SSH agent 协议解析器。 性能夹具必须使用签名 Connection 和无令牌 CALL，保留生产 KDF、Authority 队列/IPC 容量、500 次审计、4 MiB 密封、备份干扰、锁定/关停和 soak；旧 capability 的每 Session 四 permit 指标随该模型作废，该 UDS 性能夹具测量实际 IPC 请求处理器容量。默认 CI 必须实际执行测试并生成本次报告，不能将 lab 条件下的零测试视为通过。
+
+（2026-11-17 修订）只依赖默认操作码或命令的用例不得放在 lab 门控文件里：真实 socket 上锁定与解锁两态的 A2 `SHUTDOWN` 证明、默认入口拒绝 lab 线协议入口及 §11 所列 Profile/会话操作码（`crates/rekey-broker/tests/default_admin_ipc.rs`），以及 `rollback-confirm` 与离线恢复的 CLI/IPC 端到端（`tests/rollback_cli.rs` 首个用例，按 stderr JSON 信封的 `code` 断言）由默认 `cargo test --workspace` 执行。需要 lab capability 会话的用例留在 lab。
 
 ---
 
