@@ -55,18 +55,26 @@ rekey --state-dir /absolute/path/rekey-dev status --passive
 在项目目录先预览，再确认写入：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-dev connect claude-code --print
-rekey --state-dir /absolute/path/rekey-dev connect claude-code
+rekey connect claude-code --print
+rekey connect claude-code
 ```
 
 支持 `claude-code`、`codex`、`cursor`。指定项目目录：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-dev connect codex --project /absolute/path/project --print
-rekey --state-dir /absolute/path/rekey-dev connect codex --project /absolute/path/project
+rekey connect codex --project /absolute/path/project --print
+rekey connect codex --project /absolute/path/project
 ```
 
-命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。MCP、受管 CLI 说明及扫描钩子均绑定本次选择的 vault 绝对目录；更换目录后重新执行 `connect`。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
+命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
+
+0.5 源码起，使用默认保险库（`~/.rekey`）时写入的文件不含本机路径：MCP 配置只有 `"command": "rekey-mcp"`，说明书里是普通的 `rekey` 命令，这两个文件可以随项目提交；扫描钩子同样使用普通的 `rekey`。使用其他目录时加 `--state-dir`：
+
+```bash
+rekey --state-dir /absolute/path/rekey-dev connect claude-code --print
+```
+
+这时 MCP 配置、说明书和扫描钩子都写入这个绝对目录，让 Agent 连到这一个保险库；预览会提示含本机绝对路径的文件不要提交。更换目录后重新执行 `connect`。已发布的 0.4 总是写入绝对目录。
 
 Claude Code 插件位于 [`plugins/rekey`](../plugins/rekey)，由仓库根目录的 marketplace 清单注册。先添加本地源码或解压后的发行目录，再安装：
 
@@ -188,7 +196,8 @@ CLI 只让 daemon 预览变量名、识别结果和未支持的行，不读取�
 ```bash
 rekey scan --staged
 rekey scan /absolute/path/project/file
-rekey --state-dir /absolute/path/rekey-dev connect claude-code --with-hooks
+rekey hooks install --print
+rekey hooks install
 ```
 
 扫描用保险库中的完整密钥及支持的编码变体（原始、base64、hex、percent、JSON 转义）做精确匹配，结果只有连接名、路径和行列，不回显匹配内容；部分片段不算命中。
@@ -196,7 +205,7 @@ rekey --state-dir /absolute/path/rekey-dev connect claude-code --with-hooks
 - **扫描范围**：生效签名规则中已启用的 Connection、SSH 密钥和临时凭据授权所引用的凭据。禁用的 Connection、只导入还没签署规则的凭据不参与。引用的凭据已吊销或不存在时跳过，并警告"签名规则引用的 N 个凭据不可用"，其余照常扫描。
 - **扫描哪些文件**：`--staged` 只读暂存区；不带参数时扫描当前仓库里 Git 跟踪的文件和未被 ignore 规则排除的新文件（`node_modules`、构建输出只有被 ignore 时才跳过）；显式给出的目录会递归扫描其中所有普通文件，包括 `.git` 和 `node_modules`，只跳过符号链接。单文件 10 MiB，单次 100 MiB。
 - **额度**：同一系统用户每分钟共享 600 MiB 的扫描额度，换调用方或改程序名不会重置；超出返回 `RATE_LIMITED`，并给出重置时间。
-- **pre-commit 钩子**：`--with-hooks` 安装受管 pre-commit 检查，钩子运行 `rekey --state-dir … scan --staged`。命中总是阻止提交，终端里每条命中显示"检测到 <连接> 的密钥出现在 <路径>:<行>；请改用 rekey call 或本机服务地址"。Rekey 未运行、保险库锁定、没有生效（或已过期）的签名规则、额度用完时，钩子打印警告并放行；超过 10 MiB 的暂存文件被跳过并警告，其余照常扫描。要在这些情况下也阻止提交，把钩子里的命令改成 `scan --staged --strict`。
+- **pre-commit 钩子**：`rekey hooks install`（与 `connect --with-hooks` 相同）安装受管 pre-commit 检查：先预览，确认后写入，并备份原钩子。钩子运行 `rekey scan --staged`（非默认保险库目录时带 `--state-dir`）。已有钩子不会被覆盖：sh、bash、zsh 等 shell 钩子在第一行之后插入扫描，即使原钩子以 `exit` 或 `exec` 结束，扫描也先执行；Python 等其他钩子原样改名为同目录的 `pre-commit.rekey-chained`，由 Rekey 的包装脚本在扫描通过后以相同参数和输入运行。`rekey hooks uninstall` 恢复原钩子。命中总是阻止提交，终端里每条命中显示"检测到 <连接> 的密钥出现在 <路径>:<行>；请改用 rekey call 或本机服务地址"。Rekey 未运行、保险库锁定、没有生效（或已过期）的签名规则、额度用完时，钩子打印警告并放行；超过 10 MiB 的暂存文件被跳过并警告，其余照常扫描。要在这些情况下也阻止提交，把钩子里的命令改成 `scan --staged --strict`。
 
 扫描失败或被跳过不等于文件安全；它也不是对所有可能编码和历史提交的完整泄漏证明。
 
@@ -252,6 +261,8 @@ rekey ssh-agent generate work-key
 rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host github.com --print
 rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host github.com
 ```
+
+`--with-ssh` 只为 `--ssh-host` 列出的具体主机（可重复，不接受通配符）在 `~/.ssh/config` 开头写入指向 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，并以 `Match all` 结束这一段，文件里原有的全局设置（如 `Include`、`IdentityFile`）照旧对所有主机生效。改动前同样预览、确认并备份；再次执行替换这一段。
 
 macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定（新生成密钥的 git 签名默认允许）。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
 

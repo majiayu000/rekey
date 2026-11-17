@@ -314,21 +314,10 @@ enum Command {
         password_stdin: bool,
     },
     /// Preview or install project MCP configuration.
-    Connect {
-        client: commands::ConnectClient,
-        #[arg(long)]
-        print: bool,
-        #[arg(long)]
-        project: Option<PathBuf>,
-        /// Install a marked pre-commit secret scan hook.
-        #[arg(long)]
-        with_hooks: bool,
-        /// Configure SSH IdentityAgent for explicit --ssh-host targets.
-        #[arg(long, requires = "ssh_hosts")]
-        with_ssh: bool,
-        #[arg(long = "ssh-host", requires = "with_ssh")]
-        ssh_hosts: Vec<String>,
-    },
+    Connect(commands::ConnectArgs),
+    /// Install or remove the pre-commit secret scan hook.
+    #[command(subcommand)]
+    Hooks(commands::HooksCommand),
     /// Run a command with a capability limited to the named signed Profile.
     #[cfg(feature = "lab")]
     Run {
@@ -1458,14 +1447,8 @@ fn main() {
             }
             commands::delegate_rekeyd(&state_dir, "restore", &args, password_stdin)
         }
-        Command::Connect {
-            client,
-            print,
-            project,
-            with_hooks,
-            with_ssh: _,
-            ssh_hosts,
-        } => commands::connect(client, print, project, with_hooks, ssh_hosts, &state_dir),
+        Command::Connect(args) => commands::connect(args, &state_dir),
+        Command::Hooks(command) => commands::hooks(command, &state_dir),
         #[cfg(feature = "lab")]
         Command::Run {
             profile,

@@ -32,7 +32,7 @@ pub mod hygiene;
 mod short_secret;
 pub mod ssh;
 mod status;
-pub use connect::{ConnectClient, connect};
+pub use connect::{ConnectArgs, HooksCommand, connect, hooks};
 pub use status::status;
 #[cfg(feature = "lab")]
 mod run;

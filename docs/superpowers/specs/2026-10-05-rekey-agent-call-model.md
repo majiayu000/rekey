@@ -349,6 +349,7 @@ rekey await <request_id> [--timeout 120]
 rekey scan [paths...] [--staged] [--stdin]            # §9
 rekey import .env [--dry-run]                         # §7.3
 rekey connect claude-code|codex|cursor [--print]      # §6.5
+rekey hooks install|uninstall [--project d] [--print] # §9.2
 rekey ssh-agent status                                # §8.1
 rekey aws-credentials|kubectl-credentials|github-token <connection> [--no-wait] [--approval ID]  # §8.4
 ```
@@ -422,7 +423,7 @@ OPENAI_API_KEY=rekey
   - `list_capabilities` 每个 Connection 增加可选 `llm`（签名的模型白名单、max_tokens 与每日额度），响应增加 `policy_expires_at_ms`。`describe(operation)` 增加该 Connection 的签名 `rules`、本调用方的 `caller_rules`（为空时省略）、`limits`、`llm` 与 `policy_expires_at_ms`。有 `llm` 时，具名操作参数 schema 中的 `model` 属性加上 `enum`（等于签名白名单）。这些都是公开的签名规则，不含 credential_id、密钥或绑定细节；（2026-11-17 修订）§6.2 新增的 `decisions`、`example_args`、`decision` 与 `matched_rule` 同样不含绑定值。
   - 审批 ID：`await_approval`/`cancel_approval` 的 `request_id` 参数取 `APPROVAL_REQUIRED` 错误中的 `approval.challenge_id`，不是错误信封顶层的 `request_id`（后者是本次帧的请求 ID）。`next` 文案、MCP 工具描述、插件 skill 与 `rekey connect` 写入的说明都必须这样写。
   - 上游拒绝原因：出站前因目标解析到非公网地址而拒绝时，返回公开错误码 `UPSTREAM_ADDRESS_BLOCKED`（CLI 退出码与 `UPSTREAM_ERROR` 相同），`next` 说明“目标域名解析到了非公网地址，常见原因是本机代理的 fake-IP DNS；Rekey 不会连接非公网地址”。错误中不回显解析到的 IP。其他出站拒绝原因仍为 `UPSTREAM_ERROR`。
-  - 插件 skill、`rekey connect` 说明中出现的 MCP 工具名与 `rekey` 子命令，必须由测试核对确实存在。
+  - 插件 skill、`rekey connect` 说明中出现的 MCP 工具名与 `rekey` 子命令，必须由测试核对确实存在。（2026-11-17）反引号中每个形如工具名的小写标识符都要核对，包括 `call`、`describe` 这类不含下划线的词；只有列出的参数名、字段名和占位 Key 可以例外，反引号中的 `rekey <子命令>` 由 CLI 测试核对。
 - `await_unlock(timeout_s≤120)`。
 
 **协议与返回**
@@ -432,27 +433,32 @@ OPENAI_API_KEY=rekey
 
 ### 6.5 `rekey connect`
 
-在项目目录或用户级写入以下内容，均需展示**改动前后的 diff**并确认，写入前自动备份；沿用 0.3 的 O_NOFOLLOW 和原子写入：
+在项目目录或用户级写入以下内容，均需展示**改动前后的 diff**并确认，写入前自动备份；沿用 0.3 的 O_NOFOLLOW 和原子写入。diff 不回显已有文件里的值，只标明已有字段或已有的 Rekey 标记段。
+
+**vault 绑定（2026-11-17 修订）**
+- 默认 vault（`~/.rekey`，显式写出同一路径也算）：生成的文件不含本机路径。MCP 配置只有 `command`，说明书和 pre-commit 钩子里的命令是不带 `--state-dir` 的 `rekey`；`rekey-mcp` 与 `rekey` 缺省都使用 `~/.rekey`。
+- 其他 vault（`--state-dir` 指向别的目录）：MCP 配置写 `args = ["--state-dir", "<绝对路径>"]`，说明书和钩子使用 `rekey --state-dir '<绝对路径>'`（shell 单引号转义），让 Agent 和扫描连到所选 vault 而不是默认 vault。预览对 MCP 配置、说明书，以及位于 Git 目录之外、可能被提交的钩子目录（例如 `core.hooksPath` 指向仓库内目录）中的钩子提示"文件将包含非默认 vault 的绝对路径，不要提交"。
+- 更换 vault 后重新执行 `connect`，原绑定整体替换。
 
 1. **MCP 配置**
    - Claude Code：`.mcp.json`；
    - Codex：`.codex/config.toml` 中的 `mcp_servers.rekey`；
    - Cursor：`.cursor/mcp.json`。
-   - 只写 `command`，不写 env，不写令牌。`command` 使用 `rekey-mcp` 的稳定路径，比如 Homebrew 或 pkg 安装的 `/usr/local/bin/rekey-mcp`，避免把开发机上的绝对路径提交进仓库。
-2. **Agent 说明书**：在 `AGENTS.md` 或 `CLAUDE.md` 中写入一个带标记的段落，再次执行时替换而不是追加：
+   - 不写 env，不写令牌。`command` 固定为 `rekey-mcp`，由客户端按 PATH 找到 Homebrew 或 pkg 安装的稳定位置（如 `/usr/local/bin/rekey-mcp`），不写开发机上的二进制绝对路径；`args` 只在非默认 vault 时出现（见上）。
+2. **Agent 说明书**：在 `AGENTS.md` 或 `CLAUDE.md` 中写入一个带标记的段落，再次执行时替换而不是追加。下例为默认 vault；非默认 vault 时其中的 `rekey` 带 `--state-dir`：
 
 ```markdown
 <!-- rekey:begin -->
 ## 使用密钥
 - 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `rekey list` / `rekey call`。
 - 不要向用户索要 API Key，不要读取或写入 .env 中的密钥，不要把密钥写进代码。
-- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时调用 `await_approval`。
+- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时用错误里的 `approval.challenge_id`（不是顶层 `request_id`）调用 `await_approval`，批准后带同一个 ID 重试原请求。
 - Agent 写的程序使用 `rekey list` 给出的本机服务地址和占位 Key `rekey`。
 <!-- rekey:end -->
 ```
 
-3. **git 钩子（可选）**：`--with-hooks` 安装 pre-commit 钩子（§9.2）。
-4. **SSH（可选）**：`--with-ssh` 在 `~/.ssh/config` 写入 `IdentityAgent` 指向 Rekey 的 SSH agent 套接字，只对选定的 host 生效（§8.1）。
+3. **git 钩子（可选）**：`--with-hooks` 安装 pre-commit 钩子，与 `rekey hooks install` 使用同一写入逻辑（§9.2）。
+4. **SSH（可选）**：`--with-ssh` 在 `~/.ssh/config` 写入 `IdentityAgent` 指向 Rekey 的 SSH agent 套接字，只对选定的 host 生效（§8.1）。（2026-11-17 修订）受管段写在文件开头，使所选 host 的 `IdentityAgent` 先被采用（OpenSSH 取第一次出现的值），并以 `Match all` 结束，原文件开头的全局指令（`Include`、`IdentityFile` 等）仍对所有 host 生效。`--ssh-host` 只接受具体主机名，拒绝通配符、否定、逗号和空白。再次执行替换标记段，标记段之外的内容逐字保留。
 
 ### 6.6 插件分发
 
@@ -551,7 +557,7 @@ OPENAI_API_KEY=rekey
 **不能区分的内容**
 - SSH agent 看不到 push 的是哪个分支。分支级保护应交给 GitHub 的分支保护规则，Rekey 不做任何宣称。
 
-**接入**：`rekey connect --with-ssh` 为选定的 host 写入 `IdentityAgent`。不修改全局 `SSH_AUTH_SOCK`，以免影响用户其他用途。
+**接入**：`rekey connect --with-ssh` 为选定的 host 写入 `IdentityAgent`。不修改全局 `SSH_AUTH_SOCK`，以免影响用户其他用途；受管段以 `Match all` 结束，其他 host 的配置不变（§6.5）。
 
 ### 8.2 HTTPS git（T0）
 
@@ -605,7 +611,14 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 
 ### 9.2 git pre-commit 钩子
 
-- `rekey connect --with-hooks` 或 `rekey hooks install` 写入 `.git/hooks/pre-commit`；已有钩子时改为串联，不覆盖。
+- `rekey connect --with-hooks` 或 `rekey hooks install` 写入 Git 实际使用的 pre-commit 钩子（`git rev-parse --git-path hooks`，含 `core.hooksPath`）；已有钩子时改为串联，不覆盖。与 §6.5 相同：先预览，TTY 确认，写前备份，O_NOFOLLOW 原子发布。
+- **串联方式（2026-11-17 修订）**：
+  - 没有钩子（或钩子为空、只有一行 `#!/bin/sh`）：写入 Rekey 管理的 `#!/bin/sh` 包装脚本。
+  - 可执行的 sh 系文本钩子（shebang 为 sh、bash、dash、ash、ksh、mksh 或 zsh，可经 `env`）：把标记段插在 shebang 之后。扫描先于原内容执行，原钩子以 `exit` 或 `exec` 结束也不会跳过扫描；`$0` 和文件位置不变，依赖 `$0` 的钩子管理器照常工作。
+  - 其他钩子（python 等其他解释器、二进制、没有可执行位）：原钩子原样移到同目录的 `pre-commit.rekey-chained`（保留权限位），pre-commit 换成包装脚本。扫描通过后包装脚本以相同参数和标准输入 `exec` 原钩子；原钩子不可执行时不运行，与 Git 忽略它的行为一致。`pre-commit.rekey-chained` 已存在且内容不同，或存在该文件却没有 Rekey 包装脚本时，拒绝写入。
+  - 扫描行是 `rekey scan --staged </dev/null || exit $?`（非默认 vault 带 `--state-dir`，见 §6.5）。扫描不读取钩子的标准输入；非零退出阻止提交。
+  - 旧版本追加在文件末尾的标记段，重新安装时移到 shebang 之后；若原钩子不是 sh 脚本，则去掉该段后改为串联。
+- 再次安装幂等。`rekey hooks uninstall` 撤销安装：插入的标记段被移除，原字节和权限恢复；串联的原钩子从 `pre-commit.rekey-chained` 原子改名回 pre-commit；Rekey 自己创建的钩子直接删除。
 - 钩子执行 `rekey scan --staged`，命中时总是阻止提交，终端模式下每条命中提示一行：
 
   > "检测到 github-personal 的密钥出现在 src/x.py:12；请改用 rekey call 或本机服务地址"
@@ -670,7 +683,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C10 | SSH agent | 用 OpenSSH 客户端 `git push` 到测试仓库成功；未登记 host 进入审批；私钥无法导出；session-bind 缺失时按 approve |
 | C11 | OAuth | 合成 IdP（本地）完成 PKCE 授权与刷新；refresh 失败时返回 `NEEDS_REAUTH`；Agent 侧看不到任何 token |
 | C12 | T1 | AWS `credential_process` 返回的凭证有效期不超过设定值且附带 session policy（用模拟 STS）；未开启 T1 的 Connection 拒绝；审计标注；approve 授权下固定命令行等待本机审批、批准后同 ID 只签发一次，拒绝或 `--no-wait` 不访问 STS（模拟 STS 与合成审批） |
-| C13 | `rekey connect` | 前后 diff 准确、备份、重复执行幂等（标记段替换）、不写入任何令牌或密钥 |
+| C13 | `rekey connect` | 前后 diff 准确、备份、重复执行幂等（标记段替换）、不写入任何令牌或密钥；默认 vault 不写本机绝对路径，非默认 vault 在预览中警告；已有 pre-commit 钩子以 exit/exec 结束或不是 sh 脚本时，串联后扫描仍先执行，卸载恢复原钩子；`--with-ssh` 只改变选定 host 的 `IdentityAgent`（2026-11-17） |
 | C14 | 插件 | 安装插件后 Claude Code 能列出 MCP 工具，skill 可用；未安装 rekey 时给出提示 |
 | C15 | 真实 Agent | Claude Code 和 Codex 在不经任何包装的情况下完成 U2–U5（合成上游，加一次真实 GitHub 测试仓库） |
 | C16 | 体验 | 已安装用户：添加 GitHub PAT 到 Claude Code 首次成功调用，总时长不超过 2 分钟，密码最多 1 次，Touch ID 最多 2 次 |
