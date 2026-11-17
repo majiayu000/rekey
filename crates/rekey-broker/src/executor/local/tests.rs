@@ -27,11 +27,11 @@ fn proof() -> UnlockProof {
     UnlockProof::Password(SecretInput::from_slice(PASSWORD))
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     _dir: tempfile::TempDir,
     state: std::path::PathBuf,
-    executor: Arc<ActionExecutor>,
-    fake: Arc<FakeUpstreamTransport>,
+    pub(super) executor: Arc<ActionExecutor>,
+    pub(super) fake: Arc<FakeUpstreamTransport>,
     executions: ExecutionSupervisorHandle,
     shutdown: watch::Sender<bool>,
     supervisor: tokio::task::JoinHandle<Result<(), BrokerError>>,
@@ -48,7 +48,7 @@ impl Fixture {
         Self::build(hourly, llm, count, false).await
     }
 
-    async fn build(hourly: u32, llm: bool, count: usize, oauth: bool) -> Self {
+    pub(super) async fn build(hourly: u32, llm: bool, count: usize, oauth: bool) -> Self {
         Self::build_preset(hourly, llm, count, oauth, "openai").await
     }
 
@@ -227,7 +227,7 @@ impl Fixture {
         }
     }
 
-    fn request(
+    pub(super) fn request(
         method: FixedMethod,
         path: &str,
         body: &[u8],
@@ -281,7 +281,7 @@ impl Fixture {
             .state
     }
 
-    fn db(&self) -> rusqlite::Connection {
+    pub(super) fn db(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(rekey_vault::paths::vault_db(&self.state)).unwrap()
     }
 
@@ -295,7 +295,7 @@ impl Fixture {
             .unwrap()
     }
 
-    async fn stop(self) {
+    pub(super) async fn stop(self) {
         self.shutdown.send_replace(true);
         self.supervisor.await.unwrap().unwrap();
         self.executor

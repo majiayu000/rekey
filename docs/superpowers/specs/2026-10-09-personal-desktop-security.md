@@ -36,7 +36,11 @@ Full lock retains the existing Authority drain and grant deletion.
 The UI starts/reopens private-locked even if the daemon is unlocked. Privacy lock
 clears forms, results and caches immediately, invalidates
 native completion revisions and requests server session revocation. Late login or
-resume tokens are revoked when they arrive. Failed cleanup remains visible and
+resume tokens are revoked when they arrive, including a login token whose guarded
+context changed while it was issued. A password login that also remembers system
+authentication opens the UI only after the new grant is saved; a lock or context
+change meanwhile revokes that login and, once the grant may have been issued,
+forgets it with the same token (DESKTOP_LOCK forget_remembered). Failed cleanup remains visible and
 blocks another UI login until confirmed. Keychain is read only from an explicit
 system-authentication operation. OS notifications may reduce access only; activation
 never authenticates. Pending business operations are not retried or rolled back.
@@ -72,7 +76,12 @@ signature, real Swift/CLI/Broker Connection/lifecycle/backup, automatic locked
 startup and the human-vault mutation/failure harness pass. The independent Rust
 signer accepts the generated empty policy8 draft. These use fresh synthetic
 state and software signing; actual device events, protected Keychain/Touch ID
-and installed App acceptance remain unverified.
+and installed App acceptance remain unverified. Follow-up contracts (2026-11-17)
+post the four device signals through injected notification centers (each locks;
+none locks when the setting is off) and hold a synthetic desktop-resume,
+desktop-remember or desktop-login until a lock or context change, then check that
+the late token is revoked (the remembered grant with forget_remembered) and the
+UI stays locked. Real OS sleep, screen lock and user switching are not automated.
 
 PR61 disposition: retain current personal Connection/onboarding, source adapter
 contracts and approval-notification implementation rather than its obsolete

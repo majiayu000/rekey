@@ -73,14 +73,19 @@ impl Worker {
         let mut labels = BTreeSet::new();
         let existing = self.credential_list()?;
         for selection in &request.selections {
+            let entry = parsed
+                .entries
+                .iter()
+                .find(|entry| entry.key == selection.key);
             if !keys.insert(&selection.key)
                 || !labels.insert(selection.label.as_str())
-                || !parsed
-                    .entries
-                    .iter()
-                    .any(|entry| entry.key == selection.key)
+                || entry.is_none()
             {
                 return Err(invalid("dotenv import key is unavailable or duplicated"));
+            }
+            // Agent-call 7.3: AWS keys, connection strings and passwords stay in the file.
+            if entry.is_some_and(crate::hygiene::env::unproxyable) {
+                return Err(invalid(crate::hygiene::env::UNPROXYABLE));
             }
             if existing
                 .iter()

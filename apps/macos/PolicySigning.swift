@@ -69,7 +69,7 @@ enum PolicySigning {
         }
     }
 
-    private static func existingPublicKey(vaultID: UUID) throws -> Data? {
+    static func existingPublicKey(vaultID: UUID) throws -> Data? {
         let context = LAContext()
         context.interactionNotAllowed = true
         defer { context.invalidate() }

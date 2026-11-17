@@ -29,8 +29,11 @@ mod connect;
 pub mod connections;
 pub mod delegated;
 pub mod hygiene;
+mod short_secret;
 pub mod ssh;
+mod status;
 pub use connect::{ConnectClient, connect};
+pub use status::status;
 #[cfg(feature = "lab")]
 mod run;
 #[cfg(feature = "lab")]
@@ -562,28 +565,6 @@ pub fn lock(state_dir: &Path, forget_remembered: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn status(state_dir: &Path, passive: bool) -> Result<(), CliError> {
-    let message = if passive {
-        admin_msg::PASSIVE_STATUS
-    } else {
-        admin_msg::STATUS
-    };
-    let mut client = admin(state_dir)?;
-    let (meta, _) = client.call(message, b"{}", &[])?;
-    #[derive(Serialize)]
-    struct LocalStatus {
-        #[serde(flatten)]
-        daemon: ipc::StatusResponse,
-        peer_security: crate::client::PeerSecurity,
-    }
-    let daemon = serde_json::from_slice(&meta)
-        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
-    write_json(&LocalStatus {
-        daemon,
-        peer_security: client.peer_security(),
-    })
-}
-
 pub fn shutdown(state_dir: &Path, kind: ProofKind, password_stdin: bool) -> Result<(), CliError> {
     let mut client = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?;
     let proof = read_step_up(kind, password_stdin)?;
@@ -645,13 +626,7 @@ pub fn credential_add(
         &body,
     )?;
     print_json::<CredentialMetadata>(&meta)?;
-    if secret.len() < 16 {
-        // A best-effort warning must not turn a completed mutation into failure.
-        let _ = writeln!(
-            std::io::stderr(),
-            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
-        );
-    }
+    short_secret::warn_if_short(&secret);
     Ok(())
 }
 
@@ -1157,13 +1132,7 @@ pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
         &body,
     )?;
     print_json::<CredentialMetadata>(&meta)?;
-    if secret.len() < 16 {
-        // A best-effort warning must not turn a completed mutation into failure.
-        let _ = writeln!(
-            std::io::stderr(),
-            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
-        );
-    }
+    short_secret::warn_if_short(&secret);
     Ok(())
 }
 

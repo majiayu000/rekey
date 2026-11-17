@@ -350,6 +350,8 @@ rekey ssh-agent status                                # §8.1
 **监听**
 - 固定 `127.0.0.1:<port>`，默认 `7787`，可配置，写入 `~/.config/rekey/service.json`。
 - 只监听 loopback。启动时如果端口已被占用，直接失败并在 App 中报警，不换端口。`rekeyd` 的失败输出为 `SERVICE_PORT_IN_USE`，并记录被占用的端口和修改 `service.json` 的提示；失败的启动不留下 Unix socket。
+- **启动失败记录（2026-11-17 修订）**：持有 serve 锁的启动尝试失败时，`rekeyd` 在该保险库的 state 目录原子写入 `startup-failure.json`（0600，小于 1 KiB）。字段固定为 `code`（稳定错误码）、`message`（IPC 安全的错误文本）、`next`（修复提示或 `null`）、`port`（仅 `SERVICE_PORT_IN_USE` 时为被占用端口，否则 `null`）和 `at_ms`。记录不含密钥、证明或路径，不属于 vault 格式，不进入备份，rekeyd 不回读；本机服务绑定完成即视为启动成功并删除记录。没有 vault 状态的空目录不写记录，以免挡住之后的 `init`；没拿到 serve 锁的实例（例如已有实例在运行）不写也不删；拿锁前的失败（目录权限、命令行参数、`service.json` 解析）不写。`rekeyd.command_failed` 日志在数值 `code`（退出码）之外带字符串 `error_code`。
+- **App 报警**：App 连接失败后启动服务（经 SMAppService，或由 App 启动随包服务）时，只读取这份记录，且只采用 `at_ms` 不早于本次启动尝试的记录，不读取 vault。`SERVICE_PORT_IN_USE` 显示被占用的端口、该目录 `service.json` 的完整路径和写入空闲端口的方法，提供“在 Finder 中显示”和“重试”；`UNSUPPORTED_VAULT_LAYOUT` / `UNSUPPORTED_FORMAT_VERSION` 只显示重建引导（v3 §9.3）；其他错误显示错误码和错误文本，可重试。SMAppService 不提供退出状态，App 启动后最多等约 5 秒，期间服务就绪或出现本次记录即结束；没有本次记录时保留原来的连接错误或进程退出输出。App 不修改 `service.json`，不换端口。
 
 **路由**
 - 路由格式为 `/c/<connection>/<path>`，规则判定与 §5 一致。
@@ -468,12 +470,13 @@ OPENAI_API_KEY=rekey
 
 1. **识别**
    - 解析 dotenv 格式。
-   - 按变量名和值的特征匹配 Preset，例如 `OPENAI_API_KEY`、`sk-`、`ghp_`、`github_pat_`、`AKIA`。识别不出的列为"未知"。
+   - 按变量名和值的特征匹配 Preset，例如 `OPENAI_API_KEY`、`sk-`、`ghp_`、`github_pat_`。`preset_hint` 只给 App 能加载的 Preset 名，GitHub 为 `github-pat`。
+   - 无法代理的项在 `unsupported_protocol` 中标出原因：`aws`（以 `AWS_` 开头、以 `_KEY`、`_TOKEN`、`_SECRET` 或 `_PAT` 结尾的变量名，`AWS_ACCESS_KEY_ID`，或 `AKIA` 开头的值；SigV4 逐请求签名，没有可注入的请求头）、`database`（`DATABASE_URL`、`*_DATABASE_URL`，或 `postgres://`、`postgresql://`、`mysql://`、`mariadb://`、`mongodb://`、`mongodb+srv://`、`redis://`、`rediss://`、`amqp://`、`amqps://` 连接串）、`password`（`PASSWORD`、`*_PASSWORD`、`*_PASSWD`、`*_PASS`、`*_PWD`）。先匹配 Preset，两类都不中的列为"未知"。daemon 拒绝导入或改写 `unsupported_protocol` 项，base URL 变量也不能覆盖它们。
    - CLI 只打印**变量名和识别结果，不打印值**。
-2. **确认（在 App 中）**：用户逐项选择导入、跳过或标记为非密钥。值由 daemon 直接读取文件，不经过 CLI 的标准输出。
-3. **导入**：每项建立 Secret 和 Connection（规则取 Preset 默认值）。
-4. **改写**：原文件备份为 `.env.rekey-backup`，权限 0600，并提示用户删除或确认已加入 `.gitignore`。新 `.env` 写入：
-   - LLM 和 HTTP 类：`<X>_BASE_URL=http://127.0.0.1:7787/c/<connection>/...` 和 `<X>_API_KEY=rekey`；
+2. **确认（在 App 中）**：用户逐项选择导入、跳过或标记为非密钥；无法代理的项只能跳过或标记为非密钥。跳过和非密钥的行都不导入；除非改写把它用作第 4 点的 base URL 变量，都原样保留。回执分开列出：无法代理的标"未迁移：协议不支持代理"，跳过的密钥仍以明文留在文件中，非密钥的只说明已保留，被改写替换的行列为"已替换为本机服务地址"。"非密钥"只是本次导入中的选择，不写入保险库。值由 daemon 直接读取文件，不经过 CLI 的标准输出。
+3. **导入**：每项建立 Secret 和 Connection（规则取 Preset 默认值）。签署的是完整策略快照，有效期默认沿用当前已签署策略的有效期（与策略编辑页一致），没有未过期的基线时默认 24 小时；因此导入默认不改变其余已签署 Connection 的有效期。
+4. **改写**：原文件备份为 `.env.rekey-backup`，权限 0600，并提示用户删除或确认已加入 `.gitignore`。改写回执带 `backup_git`，由 CLI 判断：备份所在目录或其上级有 `.git` 时运行 `git check-ignore --no-index`（不读取 index），结果为 `ignored` 或 `not-ignored`；不在仓库中为 `no-repository`；git 无法运行、拒绝该仓库或 5 秒内没有结果为 `unknown`。CLI 只运行 PATH 里第一个绝对路径目录下可执行的 `git`；macOS 上它是 `/usr/bin/git`（xcode-select 转发器）时，只有 `xcode-select -p` 选中的开发者目录里有 git 才运行，否则直接为 `unknown`，因为没有开发者工具时转发器会弹出安装对话框并以 1 退出，会被误读成 `not-ignored`。5 秒期限同时覆盖这两步。App 按此提示删除备份，或把它加入 `.gitignore`。新 `.env` 写入：
+   - LLM 和 HTTP 类：`<X>_BASE_URL=http://127.0.0.1:7787/c/<connection>/...` 和 `<X>_API_KEY=rekey`，地址用本机服务实际监听的端口和 Preset 的 SDK 路径后缀。App 的默认变量名去掉 `_API_KEY`、`_AUTH_TOKEN`、`_KEY` 或 `_TOKEN` 后缀再加 `_BASE_URL`（`OPENAI_API_KEY` → `OPENAI_BASE_URL`，`ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_BASE_URL`，即官方 SDK 读取的变量）；没有这些后缀，或该名字已是选中项、无法代理的项、未支持的行或另一项的变量时，用 `<变量名>_BASE_URL`。签署前可以修改。该名字已是文件中跳过或标为非密钥的行（常见的是已有的 `OPENAI_BASE_URL` 或 `ANTHROPIC_BASE_URL`）时，默认仍用它，因为 SDK 读的是它：改写原位替换这一行，原值只留在备份中。App 在审阅中逐行标出这种替换，回执列为"已替换为本机服务地址"，不列为跳过或非密钥；要保留原行就改用其他变量名。不合法或重复的变量名，以及导入的密钥、无法代理的项和未支持的行，都不能作 base URL 变量：daemon 拒绝改写，App 在签署前就不允许这样提交；
    - 无法代理的项，例如数据库密码：保留原值，并在报告中标注"未迁移：协议不支持代理"，不静默处理。
 5. 全程只做一次 step-up（A2）。
 
@@ -483,7 +486,7 @@ OPENAI_API_KEY=rekey
 - **首批 Preset**：Google Drive、Gmail、Calendar，GitHub OAuth App、Slack、Notion。Google 原生 client 与 GitHub OAuth App 使用随机 literal-loopback callback；Slack 使用用户已登记的固定 localhost callback；Notion 使用用户已登记的 HTTP loopback callback，若提供方拒绝该 callback 则提示配置错误，不能假装完成授权。
 - **client 凭据**：用户自行提供 client_id / client_secret（存为 Secret），0.4 不内置 Rekey 自有 client。Google 原生 client 的 secret 可选；GitHub OAuth App 和 Notion REST 的 secret 必需；Slack public PKCE client 不发送 secret，且只使用 user scopes。
 - **签名绑定**：HTTP Connection 增加 `oauth: {provider, client_id, scopes}`。client identity、所需 scope ceiling 与 HTTP 规则一起签名；未知路径不猜 scope。Notion 的 scopes 表示 Developer Portal capability 提示，并不作为 OAuth scope query 发送。
-- **token 处理**：refresh token 与 client secret 加密持久；Google/GitHub/Slack access token 仅在 daemon 内存缓存，到期刷新。GitHub 请求 `offline_access`；Slack 必须启用 rotation。Notion REST 没有文档化 expires_in，且 refresh_token 可为 null，因此其 access token 加密持久，并以实际响应决定是否具备刷新能力。旋转 refresh token 必须原子持久后继续使用。网络/5xx 错误保留 grant；refresh 已交接且结果未知时返回不可重试上游错误。provider 明确撤销或 invalid_grant 才返回 `NEEDS_REAUTH` 并通知用户重新授权。
+- **token 处理**：refresh token 与 client secret 加密持久；Google/GitHub/Slack access token 仅在 daemon 内存缓存，到期刷新。GitHub 请求 `offline_access`；Slack 必须启用 rotation。Notion REST 没有文档化 expires_in，且 refresh_token 可为 null，因此其 access token 加密持久，并以实际响应决定是否具备刷新能力。旋转 refresh token 必须原子持久后继续使用。网络/5xx 错误保留 grant；refresh 已交接且结果未知时返回不可重试上游错误。provider 明确撤销或 invalid_grant 才返回 `NEEDS_REAUTH` 并通知用户重新授权。该拒绝记为 `oauth.refresh_failed`，reason `oauth-needs-reauth`；网络、5xx、超时等其它刷新失败记为 `oauth-refresh-failed`，不提示重新授权。App 活动页读当日（UTC）审计快照：某连接所用凭据最新的 OAuth 记录是这种拒绝、其后没有同一凭据的 `oauth.authorized` / `.refreshed` 时，标出“需重新授权”并提供打开浏览器授权页的入口；刷新失败和浏览器授权失败不会清除这一提示。审计行和页面都不含 token 或 provider 响应。grant 里没有 refresh token 时（从未授权，或 Notion 无刷新能力）返回的 `NEEDS_REAUTH` 不写审计，App 不据此标记。
 - **scope 展示**：只从有限具名操作推导 scope，实际 granted scopes 必须满足已签名操作且不扩大 scope ceiling。Google 按 Drive/Gmail/Calendar 的读写 operation 分开；GitHub 私有仓库 OAuth `repo` 本身含写权限，UI 明示“上游权限较宽，由本机规则收紧”；Slack 首批只开放公共频道信息/历史与本人消息写入；Notion 提示 portal capability 和 page picker grants，不能宣称动态推导上游 scope。
 - **凭据 purpose**：`oauth-grant` AAD code 14、`aws-static` AAD code 15；常规 HTTP 凭据准备入口拒绝把其 JSON 载荷作为 token 注入，只能使用专用 OAuth/派生路径。
 - 上游依据：[Google native OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)、[GitHub OAuth App](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)、[Slack PKCE](https://docs.slack.dev/authentication/using-pkce/)、[Notion REST token](https://developers.notion.com/reference/create-a-token)。
@@ -511,7 +514,7 @@ OPENAI_API_KEY=rekey
 - 按目标 host 授权：依据 `session-bind` 提供的目标主机公钥，匹配用户登记的 `known_hosts` 条目。
   - 示例：`github.com` allow，`prod-bastion` approve，其他 deny。
   - 客户端不支持 `session-bind`（OpenSSH < 8.9）时，视为 unknown host，按 approve 处理。
-- git 的签名用途（`ssh-keygen -Y sign`、namespace `git`）单独设规则，默认 allow。
+- git 的签名用途（`ssh-keygen -Y sign`、namespace `git`）单独设规则，默认 allow。App 新建 SSH 授权时按此默认填入 allow，签署前可改为 approve 或 deny。
 
 **不能区分的内容**
 - SSH agent 看不到 push 的是哪个分支。分支级保护应交给 GitHub 的分支保护规则，Rekey 不做任何宣称。

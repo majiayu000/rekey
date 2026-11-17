@@ -1,9 +1,11 @@
 //! File contents travel only in bounded Agent frame bodies. Import is daemon-owned.
+use std::io::Read;
 #[cfg(target_os = "macos")]
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use rekey_domain::ipc::{self, Channel, ProofKind, ScanMeta, ScanResponse, agent_msg};
 use serde_json::json;
@@ -220,6 +222,7 @@ pub fn scan(
 struct EnvPreviewEntry {
     key: String,
     preset_hint: Option<String>,
+    unsupported_protocol: Option<String>,
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -265,6 +268,114 @@ struct EnvRewriteReceipt {
     backup: PathBuf,
 }
 
+/// Agent-call 7.3: the backup keeps the original values, so the receipt says
+/// whether git ignores it. Git runs only inside a repository, without reading
+/// the index, and is stopped after five seconds.
+fn backup_git(backup: &Path) -> &'static str {
+    let (Some(directory), Some(name)) = (backup.parent(), backup.file_name()) else {
+        return "unknown";
+    };
+    if !directory
+        .ancestors()
+        .any(|parent| parent.join(".git").symlink_metadata().is_ok())
+    {
+        return "no-repository";
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let path = std::env::var_os("PATH");
+    let Some(git) = git_program(path.as_deref(), || developer_dir(deadline)) else {
+        return "unknown";
+    };
+    // The "./" prefix keeps a name that starts with ':' from being read as
+    // pathspec magic; check-ignore refuses GIT_LITERAL_PATHSPECS.
+    let Ok(mut child) = Command::new(git)
+        .arg("-C")
+        .arg(directory)
+        .args(["check-ignore", "-q", "--no-index", "--"])
+        .arg(Path::new(".").join(name))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return "unknown";
+    };
+    match wait_until(&mut child, deadline).and_then(|status| status.code()) {
+        Some(0) => "ignored",
+        Some(1) => "not-ignored",
+        _ => "unknown",
+    }
+}
+
+/// The git `backup_git` runs, found on PATH here so that the check and the
+/// spawn agree; relative PATH entries are skipped. On macOS /usr/bin/git is an
+/// xcode-select shim: without developer tools it asks to install them and
+/// exits 1, which would read as not-ignored, so it runs only when the selected
+/// developer directory has a git to forward to.
+fn git_program(
+    path: Option<&std::ffi::OsStr>,
+    developer_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let program = std::env::split_paths(path?)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join("git"))
+        .find(|candidate| executable(candidate))?;
+    if cfg!(target_os = "macos") && program == Path::new("/usr/bin/git") {
+        let tools = developer_dir()?;
+        if !["usr/bin/git", "Contents/Developer/usr/bin/git"]
+            .iter()
+            .any(|git| executable(&tools.join(git)))
+        {
+            return None;
+        }
+    }
+    Some(program)
+}
+
+fn executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+/// `xcode-select -p` prints the selected developer directory (DEVELOPER_DIR
+/// first) without prompting, even when that directory does not exist.
+fn developer_dir(deadline: Instant) -> Option<PathBuf> {
+    let mut child = Command::new("/usr/bin/xcode-select")
+        .arg("-p")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let status = wait_until(&mut child, deadline)?;
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()?
+        .take(4096)
+        .read_to_end(&mut output)
+        .ok()?;
+    let directory = PathBuf::from(String::from_utf8(output).ok()?.trim_end());
+    (status.success() && directory.is_absolute()).then_some(directory)
+}
+
+/// Waits for `child` until `deadline`, then stops it.
+fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn import_mutation(
     state_dir: &Path,
     path: &Path,
@@ -303,7 +414,8 @@ fn import_mutation(
                 "import backup path must be absolute",
             ));
         }
-        super::write_json(&receipt)
+        let backup_git = backup_git(&receipt.backup);
+        super::write_json(&json!({"backup":receipt.backup,"backup_git":backup_git}))
     } else {
         let report: EnvImportReport = serde_json::from_slice(&body)
             .map_err(|_| CliError::local("INVALID_FRAME", "invalid import report"))?;
@@ -412,6 +524,47 @@ mod tests {
             import_url(Path::new("/tmp/project #1/.env")).unwrap(),
             "rekey://import?path=%2Ftmp%2Fproject%20%231%2F.env"
         );
+    }
+    #[test]
+    fn backup_git_runs_the_first_executable_git_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (plain, tool) = (dir.path().join("plain"), dir.path().join("tool"));
+        for directory in [&plain, &tool] {
+            std::fs::create_dir(directory).unwrap();
+            std::fs::write(directory.join("git"), b"#!/bin/sh\n").unwrap();
+        }
+        std::fs::set_permissions(tool.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Only /usr/bin/git consults the developer directory.
+        let unused = || -> Option<PathBuf> { panic!("developer directory read for another git") };
+        let path = std::env::join_paths([plain.as_path(), tool.as_path()]).unwrap();
+        assert_eq!(git_program(Some(&path), unused), Some(tool.join("git")));
+        let plain_only = std::env::join_paths([plain.as_path()]).unwrap();
+        assert_eq!(git_program(Some(&plain_only), unused), None);
+        assert_eq!(git_program(None, unused), None);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_git_shim_runs_only_when_the_developer_tools_have_git() {
+        let shim = std::ffi::OsStr::new("/usr/bin");
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(git_program(Some(shim), || None), None);
+        assert_eq!(
+            git_program(Some(shim), || Some(empty.path().to_path_buf())),
+            None
+        );
+        for layout in ["usr/bin", "Contents/Developer/usr/bin"] {
+            let tools = tempfile::tempdir().unwrap();
+            let bin = tools.path().join(layout);
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("git"), b"").unwrap();
+            std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            assert_eq!(
+                git_program(Some(shim), || Some(tools.path().to_path_buf())),
+                Some(PathBuf::from("/usr/bin/git")),
+                "{layout}"
+            );
+        }
     }
     #[test]
     fn scan_reader_rejects_symlinks_and_oversized_content() {

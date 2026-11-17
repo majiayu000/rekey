@@ -21,7 +21,11 @@ Decision: use the existing App review and system-authentication flow for interac
 `rekey add` on macOS when the App and default workspace are available. Explicit
 stdin and custom-workspace CLI usage retain the existing basic-mode path. Public
 connection options must survive the handoff; a launch receipt is not activation.
-No secret or management proof is included in a URL.
+No secret or management proof is included in a URL. When the App is busy as the
+handoff arrives (for example, still connecting at cold start), it keeps the latest
+valid route and applies it once idle with the same checks as a route that arrives
+idle (default workspace, no open sheet or result); a route that then fails them is
+reported, not retried, and a malformed URL is refused at once.
 
 The App checks signing availability before saving onboarding credentials. It uses
 the authenticated installed signer ID from `policy status` even before the first
@@ -31,7 +35,11 @@ the existing basic-mode software P-256 key through the bundled signer. It displa
 which protection applies, never generates a replacement or switches the trust,
 and fails before credential persistence when the key is unavailable or mismatched.
 Software signing does not claim hardware isolation. The daemon still requires
-fresh A2 proof for activation; an A1 desktop session cannot authorize it.
+fresh A2 proof for activation; an A1 desktop session cannot authorize it. The App
+runs this preflight, then reads the preset and the signed base, and saves the key
+last in one model step, so a missing or mismatched signer or a duplicate
+connection name saves nothing. A waiting handoff can open a new flow between
+those reads; the step then saves nothing and asks for the new page to be filled.
 
 The password recheck interval (including 30 days) only controls the existing
 system-authentication grant. Reviewed activation still requires fresh presence,
@@ -49,7 +57,12 @@ installed trust; cancellation never activates; CLI options round-trip without
 secrets. With a valid system-authentication grant, add/review/activate requires
 zero master-password entries, targeting one system-authentication prompt (up to
 two if the OS separately protects the signing key). Hardware prompt counts need
-device evidence. Stop if this requires trust replacement, format changes, or a
+device evidence. Synthetic App contracts cover the busy-time handoff, the
+preflight-before-save order (including the Secure Enclave match through an
+injected public key, and a handoff applied between the preflight and the save)
+and the CLI handoff decision (stdin secrets, a custom
+workspace or a missing App keep basic mode); they do not touch Keychain or
+Secure Enclave. Stop if this requires trust replacement, format changes, or a
 general authentication service; those are outside this correction.
 
 ## Verification

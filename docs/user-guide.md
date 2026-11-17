@@ -22,7 +22,7 @@ rekey setup
 rekey add glm
 ```
 
-`setup` 在 App 中创建新的个人保险库并保存恢复密钥。**当前 0.5 开发版**在 macOS 默认目录且已安装 App 时，`rekey add <预设>` 会打开 App：保存或选择已有凭据，审阅完整连接规则，再系统认证签署并激活。CLI 的打开回执只表示已发起跳转，是否成功以 App 的激活结果为准。连接名、凭据 ID、模型白名单和有效期都会带入表单；用户仍须审阅确认。
+`setup` 在 App 中创建新的个人保险库并保存恢复密钥。**当前 0.5 开发版**在 macOS 默认目录且已安装 App 时，`rekey add <预设>` 会打开 App：保存或选择已有凭据，审阅完整连接规则，再系统认证签署并激活。CLI 的打开回执只表示已发起跳转，是否成功以 App 的激活结果为准。App 刚启动、仍在连接服务时收到的接入页面，会在连接完成后按同样的检查打开；若它在你提交上一个接入表单的检查期间打开，上一个表单不保存密钥，请在新页面重新填写。连接名、凭据 ID、模型白名单和有效期都会带入表单；用户仍须审阅确认。
 
 App 提前检查已安装信任根对应的签名密钥。已有 Secure Enclave 密钥继续由硬件签名；已有基础模式 `policy-signer-p256.p8` 继续由随 App 安装的签名器使用，并明确显示软件保护等级。后者是当前用户 0600 文件，同用户进程可读。找不到匹配密钥时停止，不创建替代密钥或更换信任根。
 
@@ -128,7 +128,7 @@ App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查
 
 ## 本机 HTTP 与 SDK
 
-服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。每个保险库各用一个端口：端口已被另一个保险库或程序占用时，服务不会启动，`rekeyd` 报 `SERVICE_PORT_IN_USE` 并给出被占用的端口；在该保险库目录的 `service.json` 写入空闲端口（如 `{"port":7788}`，权限 0600）后重新启动，并相应修改 SDK 的 base URL。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
+服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。每个保险库各用一个端口：端口已被另一个保险库或程序占用时，服务不会启动，`rekeyd` 报 `SERVICE_PORT_IN_USE` 并给出被占用的端口，0.5 开发版 App 会弹出“本机服务端口已被占用”，显示端口和该保险库 `service.json` 的完整路径；在该保险库目录的 `service.json` 写入空闲端口（如 `{"port":7788}`，权限 0600）后点“重试”或重新启动，并相应修改 SDK 的 base URL。App 不会自己改端口。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
 
 ```bash
 curl -H 'Authorization: Bearer rekey' \
@@ -162,7 +162,7 @@ rekey import /absolute/path/project/.env --dry-run
 rekey import /absolute/path/project/.env
 ```
 
-CLI 只让 daemon 预览变量名、预设提示和未支持的行，不读取或显示变量值。第二条命令打开 App。用户选择后导入凭据，再审阅并签署 Connection；原文件默认不变。明确确认改写后，daemon 创建 mode-0600 备份、把选中的值替换成占位值并添加所需 base URL，再原子发布新文件。不要同时用编辑器或脚本修改该文件；元数据检查与 rename 之间不构成并发写入的原子比较交换。
+CLI 只让 daemon 预览变量名、识别结果和未支持的行，不读取或显示变量值。AWS 密钥、数据库或消息队列连接串和口令（如 `*_PASSWORD`）无法经本机服务代理：预览在 `unsupported_protocol` 中写明原因（`aws`、`database`、`password`），App 显示为“未迁移：协议不支持代理”；它们不能导入或改写，原值留在文件中。第二条命令打开 App：逐项选择导入、跳过或标记为非密钥，导入凭据后审阅并签署 Connection，策略有效期默认沿用当前已签署的策略；原文件默认不变。明确确认改写后，daemon 创建 mode-0600 备份、把选中的值替换成 `rekey` 占位值并写入 base URL（默认变量名去掉 `_API_KEY`、`_AUTH_TOKEN`、`_KEY` 或 `_TOKEN` 后缀，例如 `OPENAI_API_KEY` 对应 `OPENAI_BASE_URL`），再原子发布新文件。文件里已有这个变量时（例如兼容服务商常用的 `OPENAI_BASE_URL`），即使它选了跳过或非密钥，这一行也会被换成本机服务地址，原值只留在备份中；审阅页逐行标出，回执列为“已替换为本机服务地址”。要保留原行，请在审阅页改用其他变量名；若原地址指向兼容服务商，请确认所选预设与它一致。备份含原始密钥：回执会说明 git 是否忽略它，确认替换无误后请删除，或确认它已在 `.gitignore` 中。没装开发者工具（Command Line Tools 或 Xcode）的 Mac 上不运行系统自带的 git，以免弹出安装对话框，回执显示“未能确认 git 是否忽略它”。不要同时用编辑器或脚本修改该文件；元数据检查与 rename 之间不构成并发写入的原子比较交换。
 
 ```bash
 rekey scan --staged
@@ -181,7 +181,7 @@ rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host g
 rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host github.com
 ```
 
-macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
+macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定（新生成密钥的 git 签名默认允许）。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
 
 Git smart HTTP 使用独立 `github-git` 预设，固定 `https://github.com`、owner 和完整 `repo.git`。`info/refs` 与 `git-upload-pack` 为读，`git-receive-pack` 为写；PAT 在 daemon 内转换为固定 Basic 认证。通过本机 HTTP 使用时也要配置公开请求标记，例如只对该 URL 设置 Git 的 `http.extraHeader=Authorization: Bearer rekey`。默认请求正文上限为 1 MiB，不宣称无限仓库传输。
 
@@ -194,7 +194,7 @@ rekey add google-drive
 rekey oauth login CONNECTION
 ```
 
-支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。
+支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。提供方撤销授权或拒绝刷新（invalid_grant）时，调用返回 `NEEDS_REAUTH`，App 活动页显示“需重新授权”，可直接打开浏览器重新授权；网络或服务端错误保留授权，不显示此提示。该提示取自当日（UTC）的审计记录。
 
 临时凭据入口必须逐个签署开启，**Agent 进程会拿到短期有效的凭据**（安全模型里称为 T1，见[安全模型与术语](security/README.md#调用结果与临时凭据)）：
 
@@ -217,6 +217,20 @@ rekey shutdown
 
 锁定立即终止本机授权和审批窗口。关闭 App 不等于停止 daemon。`shutdown` 和备份等写操作需要新的逐次证明。备份、恢复、磁盘故障和格式升级的具体步骤见[运维手册](operations-runbook.md)。公开安装包、真实设备验收和发布状态见[候选发布说明](releases/v0.4.0-alpha.1.md)。
 
+### 0.5 开发候选：状态标签与启动失败
+
+`rekey status` 的 `protection_level` 是当前保护等级：锁定且没有会话为 `L0`，解锁为 `L1-dev`，未知或故障为 `null`。`peer_security` 只说明服务签名是否已校验（`verified_signature` / `unverified`），不是等级。
+
+服务启动失败时，`rekeyd` 在该保险库目录留下 `startup-failure.json`：错误码、修复提示、被占用的端口和时间，不含密钥，启动成功后自动删除。App 连接失败并尝试启动服务后只读取这份记录，按原因提示：
+
+- 端口被占用：按上文修改 `service.json` 后点“重试”。
+- `UNSUPPORTED_VAULT_LAYOUT` / `UNSUPPORTED_FORMAT_VERSION`：目录来自其他版本线（例如 0.4）。保留旧目录和备份，在左侧“个人工作区”选择一个新的空目录，创建保险库后重新添加密钥。App 不读取、迁移或覆盖旧库；恢复旧备份时给出同样的提示。
+- 其他错误：显示错误码，修正后重试。
+
+目录权限过宽等在服务拿到锁之前发生的失败不会留下记录。自定义目录的服务由 App 直接启动，App 显示服务退出时的原始输出；默认目录的服务作为登录项（SMAppService）启动，App 拿不到退出输出，只显示连接错误。两种情况都可以在终端运行 `rekeyd serve`（自定义目录加 `--state-dir <目录>`）查看原因。
+
+保存短于 16 字节的凭据时，CLI 和 App 会提示：结果遮蔽对这类密钥的嵌入编码检测有限，建议改用服务商提供的完整密钥。保存本身照常完成。
+
 ### 0.5 开发候选：管理界面锁定
 
-App 默认在电脑空闲五分钟或锁屏、休眠、切换用户时锁定管理界面；打开窗口仍需显式认证。设置可调整空闲阈值和 1/7/30 天系统认证期限，或要求每次输入密码。保存设置会撤销旧授权。界面锁定后 Agent 继续工作；“锁定整个保险库”才撤销 Agent 授权。若服务端会话撤销未确认，先用界面的重试完成撤销再解锁。此功能属于 0.5 源码候选，不代表已安装 App 已更新或真机系统认证已验收。
+App 默认在电脑空闲五分钟或锁屏、休眠、切换用户时锁定管理界面；打开窗口仍需显式认证。设置可调整空闲阈值和 1/7/30 天系统认证期限，或要求每次输入密码。保存设置会撤销旧授权。用密码解锁并启用系统认证时，界面在新授权保存后才打开；其间锁定会撤销这次登录和刚签发的授权。界面锁定后 Agent 继续工作；“锁定整个保险库”才撤销 Agent 授权。若服务端会话撤销未确认，先用界面的重试完成撤销再解锁。此功能属于 0.5 源码候选，不代表已安装 App 已更新或真机系统认证已验收。

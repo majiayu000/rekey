@@ -20,7 +20,11 @@ use crate::AuthorityError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvPreviewEntry {
     pub key: String,
+    /// A preset name the App can load, such as `github-pat`.
     pub preset_hint: Option<String>,
+    /// Why the local service cannot proxy this entry (`aws`, `database` or
+    /// `password`). Such an entry is never imported or rewritten.
+    pub unsupported_protocol: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvUnsupported {
@@ -193,7 +197,35 @@ fn parse_value(text: &str) -> Option<Zeroizing<Vec<u8>>> {
     Some(Zeroizing::new(value.as_bytes().to_vec()))
 }
 
-fn preset_hint(entry: &ParsedEntry) -> Option<String> {
+/// What a preview says about one entry, read from its name and value shape.
+enum Recognition {
+    Preset(&'static str),
+    /// Agent-call 7.3 "未迁移：协议不支持代理": kept in the file, never imported.
+    Unsupported(&'static str),
+    Unknown,
+}
+
+pub(crate) const UNPROXYABLE: &str =
+    "dotenv entry uses a protocol Rekey cannot proxy; it stays unchanged in the file";
+
+const DATABASE_SCHEMES: [&[u8]; 10] = [
+    b"postgres://",
+    b"postgresql://",
+    b"mysql://",
+    b"mariadb://",
+    b"mongodb://",
+    b"mongodb+srv://",
+    b"redis://",
+    b"rediss://",
+    b"amqp://",
+    b"amqps://",
+];
+
+pub(crate) fn unproxyable(entry: &ParsedEntry) -> bool {
+    matches!(recognize(entry), Recognition::Unsupported(_))
+}
+
+fn recognize(entry: &ParsedEntry) -> Recognition {
     let key = entry.key.as_str();
     let value = entry.value.as_slice();
     // Names alone only count when they look like a credential, so provider
@@ -219,29 +251,47 @@ fn preset_hint(entry: &ParsedEntry) -> Option<String> {
         "STRIPE_SECRET_KEY" | "STRIPE_API_KEY" | "STRIPE_RESTRICTED_KEY"
     ) && !value.starts_with(b"whsec_")
         && !value.starts_with(b"pk_");
+    // Presets win: an unproxyable verdict refuses the import, so it only
+    // applies when no preset matched.
     if let Some((_, preset)) = providers.iter().find(|(prefixes, _)| named(prefixes)) {
-        Some((*preset).to_owned())
+        Recognition::Preset(preset)
     } else if value.starts_with(b"sk-or-") {
-        Some("openrouter".to_owned())
+        Recognition::Preset("openrouter")
     } else if named(&["ANTHROPIC_"]) || value.starts_with(b"sk-ant-") {
-        Some("anthropic".to_owned())
+        Recognition::Preset("anthropic")
     } else if stripe_api_name
         || ["sk_live_", "sk_test_", "rk_live_", "rk_test_"]
             .iter()
             .any(|prefix| value.starts_with(prefix.as_bytes()))
     {
-        Some("stripe".to_owned())
+        Recognition::Preset("stripe")
     } else if named(&["OPENAI_"]) || value.starts_with(b"sk-") {
-        Some("openai".to_owned())
+        Recognition::Preset("openai")
     } else if named(&["GITHUB_", "GH_"])
         || value.starts_with(b"ghp_")
         || value.starts_with(b"github_pat_")
     {
-        Some("github".to_owned())
-    } else if named(&["AWS_"]) || value.starts_with(b"AKIA") {
-        Some("aws".to_owned())
+        Recognition::Preset("github-pat")
+    } else if named(&["AWS_"]) || key == "AWS_ACCESS_KEY_ID" || value.starts_with(b"AKIA") {
+        // SigV4 signs every request with the secret; no header can carry it.
+        Recognition::Unsupported("aws")
+    } else if key == "DATABASE_URL"
+        || key.ends_with("_DATABASE_URL")
+        || DATABASE_SCHEMES.iter().any(|scheme| {
+            value
+                .get(..scheme.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+        })
+    {
+        Recognition::Unsupported("database")
+    } else if key == "PASSWORD"
+        || ["_PASSWORD", "_PASSWD", "_PASS", "_PWD"]
+            .iter()
+            .any(|suffix| key.ends_with(suffix))
+    {
+        Recognition::Unsupported("password")
     } else {
-        None
+        Recognition::Unknown
     }
 }
 
@@ -255,9 +305,17 @@ fn preview(parsed: &ParsedEnv) -> EnvPreview {
         entries: parsed
             .entries
             .iter()
-            .map(|entry| EnvPreviewEntry {
-                key: entry.key.clone(),
-                preset_hint: preset_hint(entry),
+            .map(|entry| {
+                let (preset_hint, unsupported_protocol) = match recognize(entry) {
+                    Recognition::Preset(preset) => (Some(preset.to_owned()), None),
+                    Recognition::Unsupported(protocol) => (None, Some(protocol.to_owned())),
+                    Recognition::Unknown => (None, None),
+                };
+                EnvPreviewEntry {
+                    key: entry.key.clone(),
+                    preset_hint,
+                    unsupported_protocol,
+                }
             })
             .collect(),
         unsupported: parsed.unsupported.clone(),
@@ -361,13 +419,17 @@ pub fn rewrite_env(
         {
             return Err(invalid("invalid dotenv replacement"));
         }
-        if !parsed.entries.iter().any(|entry| entry.key == item.key)
+        let entry = parsed.entries.iter().find(|entry| entry.key == item.key);
+        if entry.is_none()
             || selected.insert(&item.key, item).is_some()
             || generated.insert(&item.base_url_variable, item).is_some()
         {
             return Err(invalid(
                 "dotenv replacement key is unavailable or duplicated",
             ));
+        }
+        if entry.is_some_and(unproxyable) {
+            return Err(invalid(UNPROXYABLE));
         }
     }
     if generated.keys().any(|key| selected.contains_key(key))
@@ -378,6 +440,14 @@ pub fn rewrite_env(
         })
     {
         return Err(invalid("dotenv base URL variable is ambiguous"));
+    }
+    // A base URL line must not replace a value that stays because it cannot be proxied.
+    if parsed
+        .entries
+        .iter()
+        .any(|entry| generated.contains_key(&entry.key) && unproxyable(entry))
+    {
+        return Err(invalid(UNPROXYABLE));
     }
     let mut rewritten = Zeroizing::new(Vec::with_capacity(parsed.raw.len()));
     let mut written_urls = BTreeSet::new();
@@ -519,7 +589,7 @@ mod preset_hint_tests {
                 None,
                 Some("qwen"),
                 Some("anthropic"),
-                Some("github"),
+                Some("github-pat"),
             ]
         );
     }

@@ -19,6 +19,8 @@ use crate::error::BrokerError;
 use crate::runtime::local_calls::{ConnectionAdmission, LocalCallApproval};
 
 #[cfg(test)]
+mod reauth_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) struct LocalExecuteRequest {

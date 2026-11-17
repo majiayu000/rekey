@@ -3,7 +3,6 @@
 //! secrets from the environment.
 
 use std::fs;
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
@@ -41,8 +40,10 @@ pub(crate) mod local_calls;
 pub(crate) mod profile;
 mod profile_inventory;
 mod shutdown;
+mod startup;
 #[cfg(feature = "lab")]
 mod workload;
+pub use startup::{STARTUP_FAILURE_FILE, serve};
 
 pub const MAX_AGENT_CONNECTIONS: usize = 120;
 pub const MAX_ADMIN_CONNECTIONS: usize = 24;
@@ -564,48 +565,6 @@ async fn wait_in_flight_until(ctx: &BrokerCtx, deadline: tokio::time::Instant) {
     }
 }
 
-struct ServeLock {
-    _file: fs::File,
-}
-
-fn acquire_serve_lock(state_dir: &std::path::Path) -> Result<ServeLock, AuthorityError> {
-    let path = paths::broker_lock(state_dir);
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(AuthorityError::storage)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-        .map_err(AuthorityError::storage)?;
-    // Match bootstrap: brief retry for transient macOS EAGAIN/WouldBlock on LOCK_NB.
-    const ATTEMPTS: u32 = 50;
-    const DELAY: Duration = Duration::from_millis(2);
-    let mut last_err = None;
-    for attempt in 0..ATTEMPTS {
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc == 0 {
-            return Ok(ServeLock { _file: file });
-        }
-        let err = std::io::Error::last_os_error();
-        match err.kind() {
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                if attempt + 1 < ATTEMPTS =>
-            {
-                last_err = Some(err);
-                std::thread::sleep(DELAY);
-            }
-            _ => return Err(AuthorityError::storage(err)),
-        }
-    }
-    Err(AuthorityError::storage(last_err.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "broker lock remained unavailable",
-        )
-    })))
-}
-
 fn set_group(path: &std::path::Path, gid: u32) -> Result<(), BrokerError> {
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         BrokerError::Io(std::io::Error::new(
@@ -888,7 +847,7 @@ fn read_remembered_key(path: &Path) -> Result<Option<zeroize::Zeroizing<Vec<u8>>
     Ok(Some(bytes))
 }
 
-pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
+async fn run_attempt(config: BrokerConfig, attempt: &startup::Attempt) -> Result<(), BrokerError> {
     verify_state_dir_permissions(&config.state_dir)?;
     #[cfg(feature = "lab")]
     let oidc_admin = config
@@ -897,7 +856,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         .map(crate::oidc_admin::Manager::load)
         .transpose()?;
     validate_agent_endpoint(&config)?;
-    let _lock = acquire_serve_lock(&config.state_dir)?;
+    attempt.lock(&config.state_dir)?;
     // Register fallible process resources before spawning any runtime owner;
     // an initialization error must not detach a live Authority or listener.
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -1007,7 +966,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
 
     ctx.gateway.attach(&ctx);
     ctx.executor.oauth.attach(&ctx);
-    if let Err(error) = ctx.start_local_service().await {
+    if let Err(error) = attempt.start(&ctx).await {
         ctx.publish_shutdown();
         let _ = execution_task.await;
         let _ = authority.shutdown(None).await;

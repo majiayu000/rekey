@@ -20,7 +20,8 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
     password = 'synthetic-add-vault-password'
     glm_key = 'synthetic-glm-key-canary-0001'
     openai_key = 'synthetic-openai-key-canary-0002'
-    secrets = [password, glm_key, openai_key]
+    short_key = 'short-canary'
+    secrets = [password, glm_key, openai_key, short_key]
     environment = {'HOME': root, 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'en_US.UTF-8'}
 
     def safe_output(output):
@@ -78,6 +79,7 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
                                capture_output=True, timeout=60, env=environment)
         safe_output(first.stdout + first.stderr)
         assert first.returncode == 0, first.stderr.decode()
+        assert b'SHORT_CREDENTIAL' not in first.stderr, 'a complete key needs no short-key warning'
         assert b'not Secure Enclave' in first.stdout + first.stderr
         assert b'glm.messages' in first.stdout
         key_file = state / 'policy-signer-p256.p8'
@@ -136,6 +138,12 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
         assert set(connections()) == {'glm', 'openai', 'glm-second', 'deepseek', 'stripe'}
         # Remembered unlock survives a daemon restart without a password.
         (state / 'moved-signer.p8').rename(key_file)  # restore the signer moved above
+        # A key under 16 bytes is still saved and signed, with the structured warning
+        # that reflected-secret sealing covers its embedded encodings only partly.
+        short = call(['add', 'generic-bearer', '--name', 'short-bearer', '--origin', 'https://example.com',
+                      '--stdin-secrets'], password + '\n' + short_key + '\n')
+        assert b'{"warnings":["SHORT_CREDENTIAL"]}' in short.stderr, short.stderr.decode()
+        assert connections()['short-bearer']['enabled']
         remembered = call(['unlock', '--password-stdin', '--remember', '7d'], password + '\n')
         assert b'not Secure Enclave' in remembered.stderr
         remember_file = state / 'remembered-unlock.key'
@@ -170,7 +178,7 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
         time.sleep(1)
         assert b'"locked"' in call(['status', '--passive']).stdout
         print('PASS: one-step add (trust install, save, sign, activate), trust reuse, duplicate/locked/'
-              'wrong-password/OAuth/generic/trust-mismatch refusals, credential reuse, Agent discovery, '
+              'wrong-password/OAuth/generic/trust-mismatch refusals, credential reuse, short-key warning, Agent discovery, '
               'remembered unlock across restart and its revocation. '
               'Software signer (basic mode), not Secure Enclave.')
     finally:
