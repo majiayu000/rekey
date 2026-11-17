@@ -155,7 +155,7 @@ curl -H 'Authorization: Bearer rekey' \
 
 **0.5 起**，服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。Rekey 只向上游请求未压缩的响应，SDK 自带的 `Accept-Encoding` 不会转发；上游仍返回压缩正文时按 502 `RESPONSE_BLOCKED` 拒绝，不转交任何内容。
 
-写操作需要审批时返回 403 `APPROVAL_REQUIRED`，审批 ID 在 `approval.challenge_id`。这个审批属于发起 HTTP 请求的程序，`rekey approval await` 和 MCP `await_approval` 等不到它。用户在 App 收件箱（基础模式下用 `rekey approval approve`）批准后，把完全相同的请求（方法、路径、查询、请求头、正文都不变）再发一次，并加上请求头 `x-rekey-approval-challenge: <challenge_id>`：
+写操作需要审批时返回 403 `APPROVAL_REQUIRED`，审批 ID 在 `approval.challenge_id`。这个审批属于发起 HTTP 请求的程序：只有调用方标注相同的 `rekey approval await` 或 MCP `await_approval`（例如同在 Claude Code 下运行）能等待它，其他程序等不到。用户在 App 收件箱（基础模式下用 `rekey approval approve`）批准后，把完全相同的请求（方法、路径、查询、请求头、正文都不变）再发一次，并加上请求头 `x-rekey-approval-challenge: <challenge_id>`：
 
 ```bash
 curl -X POST -H 'Authorization: Bearer rekey' -H 'Content-Type: application/json' \
@@ -203,7 +203,7 @@ rekey hooks install
 扫描用保险库中的完整密钥及支持的编码变体（原始、base64、hex、percent、JSON 转义）做精确匹配，结果只有连接名、路径和行列，不回显匹配内容；部分片段不算命中。
 
 - **扫描范围**：生效签名规则中已启用的 Connection、SSH 密钥和临时凭据授权所引用的凭据。禁用的 Connection、只导入还没签署规则的凭据不参与。引用的凭据已吊销或不存在时跳过，并警告"签名规则引用的 N 个凭据不可用"，其余照常扫描。
-- **扫描哪些文件**：`--staged` 只读暂存区；不带参数时扫描当前仓库里 Git 跟踪的文件和未被 ignore 规则排除的新文件（`node_modules`、构建输出只有被 ignore 时才跳过）；显式给出的目录会递归扫描其中所有普通文件，包括 `.git` 和 `node_modules`，只跳过符号链接。单文件 10 MiB，单次 100 MiB。
+- **扫描哪些文件**：`--staged` 只读暂存区，包括新增、修改、改名和类型变化（例如把符号链接换成普通文件）的文件；子模块指针没有内容，不扫描，也不会拦下提交；不带参数时扫描当前仓库里 Git 跟踪的文件和未被 ignore 规则排除的新文件（`node_modules`、构建输出只有被 ignore 时才跳过）；显式给出的目录会递归扫描其中所有普通文件，包括 `.git` 和 `node_modules`，只跳过符号链接。单文件 10 MiB，单次 100 MiB。
 - **额度**：同一系统用户每分钟共享 600 MiB 的扫描额度，换调用方或改程序名不会重置；超出返回 `RATE_LIMITED`，并给出重置时间。
 - **pre-commit 钩子**：`rekey hooks install`（与 `connect --with-hooks` 相同）安装受管 pre-commit 检查：先预览，确认后写入，并备份原钩子。钩子运行 `rekey scan --staged`（非默认保险库目录时带 `--state-dir`）。已有钩子不会被覆盖：sh、bash、zsh 等 shell 钩子在第一行之后插入扫描，即使原钩子以 `exit` 或 `exec` 结束，扫描也先执行；Python 等其他钩子原样改名为同目录的 `pre-commit.rekey-chained`，由 Rekey 的包装脚本在扫描通过后以相同参数和输入运行。`rekey hooks uninstall` 恢复原钩子。命中总是阻止提交，终端里每条命中显示"检测到 <连接> 的密钥出现在 <路径>:<行>；请改用 rekey call 或本机服务地址"。Rekey 未运行、保险库锁定、没有生效（或已过期）的签名规则、额度用完时，钩子打印警告并放行；超过 10 MiB 的暂存文件被跳过并警告，其余照常扫描。要在这些情况下也阻止提交，把钩子里的命令改成 `scan --staged --strict`。
 

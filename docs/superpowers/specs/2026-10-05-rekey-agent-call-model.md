@@ -287,7 +287,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 - **（2026-10-22 修订）本机审批的证明**：`APPROVAL_LOCAL_APPROVE/REJECT` 的证明体接受 presence（App）或保险库密码（基础模式 CLI：`rekey approval approve|reject ID --review-sha256 H --password`，隐藏输入或 `--password-stdin`）。恢复密钥不接受。审计 reason_code 分别为 `local-presence` 与 `local-password`；密码失败计入既有解锁失败限速。审阅元数据 `record_type` 为 `rekey.approval.local-review.v1`；审阅正文的 `record_type` 在 Connection/SSH/派生路径为 `rekey.approval.local-review.v1`，lab session 路径为 `rekey.approval.review.v1`，CLI 两者都接受，其余拒绝。校验规则定义在 `rekey-domain`，CLI 与 daemon 测试共用。
 - 调用方得到结构化的 `APPROVAL_REQUIRED{request_id, expires_at}`，可以等待或取消。CLI 默认等待（`--no-wait` 可关闭），MCP 返回后由 Agent 调用 `await_approval`。
 - HTTP Connection 重提只预留一次审批；同一个批准的并发重提不能同时取得预留。`approval.accepted` 与 `execution.started` 在同一 Authority 事务成功后才消费批准并清除审阅正文。忙、小时额度、日预算或 started 提交拒绝释放预留，尚有效批准可重试；已取消、过期、锁定或策略更新清除的批准不得恢复。两种时钟的审批期限也约束实际 started 提交。
-- **（2026-11-17 修订，0.5 开发线）批准前的重提**：只适用于 Connection 调用（Agent CALL、CLI、MCP 与 §6.3 本机服务）。同一调用方标注在用户决定前带该审批 ID（`approval_request_id`，或本机服务的 §6.3 请求头）重提同一规范化请求、同一策略时，返回同一 challenge 的 `APPROVAL_REQUIRED`，不执行、不预留；调用方标注、请求哈希或策略不一致时仍按不匹配拒绝。T1 派生路径（§8.4 `DERIVE_CREDENTIAL`）不变：决定前带审批 ID 重提仍按不匹配拒绝（Agent 收到 `DENIED`，消息为 `request denied: approval-request-mismatch`），调用方应先 `await_approval` 再重提；SSH 签名（§8.1）在 daemon 内等待审批，没有带 ID 的重提。审批与调用方标注的绑定不放宽：本机服务登记的审批不能由 CLI/MCP 的 `await_approval` / `cancel_approval` 操作。
+- **（2026-11-17 修订，0.5 开发线）批准前的重提**：只适用于 Connection 调用（Agent CALL、CLI、MCP 与 §6.3 本机服务）。同一调用方标注在用户决定前带该审批 ID（`approval_request_id`，或本机服务的 §6.3 请求头）重提同一规范化请求、同一策略时，返回同一 challenge 的 `APPROVAL_REQUIRED`，不执行、不预留；调用方标注、请求哈希或策略不一致时仍按不匹配拒绝。T1 派生路径（§8.4 `DERIVE_CREDENTIAL`）不变：决定前带审批 ID 重提仍按不匹配拒绝（Agent 收到 `DENIED`，消息为 `request denied: approval-request-mismatch`），调用方应先 `await_approval` 再重提；SSH 签名（§8.1）在 daemon 内等待审批，没有带 ID 的重提。审批与调用方标注的绑定不放宽：`await_approval` / `cancel_approval` 只接受与登记该审批的调用方标注相同的调用方（§4.3），本机服务登记的审批同样如此；标注不同（例如终端里的 curl 与 Claude Code 下的 CLI）按不匹配拒绝。
 
 ### 5.5 时间窗审批（新增）
 
@@ -393,7 +393,7 @@ rekey aws-credentials|kubectl-credentials|github-token <connection> [--no-wait] 
 - **请求正文编码（2026-11-17 修订，0.5 开发线）**：`Pragma` 也作为传输元数据剥除。请求 `Content-Encoding` 只接受 `identity`，以及 `github-git` Connection 的单个 `gzip`（git 会自动压缩超过 1 KiB 的 upload-pack 请求）：本服务在规则判定、审批与出站之前解码恰好一个 gzip 成员并校验其 CRC 与长度，解码后正文仍受该 Connection 的 `max_request_bytes` 约束，上游收到的是未压缩正文、不带 `content-encoding`。其他编码、其他 Connection 的压缩请求、重复的 `Content-Encoding`、格式错误或解码超限的正文返回 400（`INVALID_INPUT` / `INVALID_FRAME` / `REQUEST_TOO_LARGE`），不访问上游、不写审计。详见 §8.2。
 - 调用方识别见 §4.3。
 - 运行状态拒绝先于 Connection 查找，统一返回 503 和 §6.1 的错误 JSON：锁定为 `LOCKED`（不得因锁定清除了生效策略而报 `NOT_CONFIGURED`），容量超限为可重试的 `AUTHORITY_BUSY`，停机中为 `DRAINING`，终态审计失败后为不可重试的 `FAULTED`。403 只表示规则或请求形态被拒绝，使 SDK 不把暂时不可用当成权限错误。
-- **审批与重提（2026-11-17 修订，0.5 开发线）**：命中 approve 规则的请求返回 403 和 §6.1 的 `APPROVAL_REQUIRED` JSON，审批 ID 是 `approval.challenge_id`。本机服务登记的审批绑定该 HTTP 调用方的标注（§4.3、§5.4），CLI/MCP 的 `await_approval` 属于其他调用方，不能等待或取消它；因此 HTTP 错误的 `next` 不提 `await_approval`，而是要求：用户在 App 收件箱（或 `rekey approval approve`）批准后，用相同的方法、路径、查询、请求头与正文重提一次，并加请求头 `x-rekey-approval-challenge: <approval.challenge_id>`。
+- **审批与重提（2026-11-17 修订，0.5 开发线）**：命中 approve 规则的请求返回 403 和 §6.1 的 `APPROVAL_REQUIRED` JSON，审批 ID 是 `approval.challenge_id`。本机服务登记的审批绑定该 HTTP 调用方的标注（§4.3、§5.4）。CLI/MCP 的 `await_approval` / `cancel_approval` 只有在调用方标注相同时（例如同在 Claude Code 下运行）才能等待或取消它，标注不同按不匹配拒绝；HTTP 客户端无法确认自己与 CLI 同标注，因此 HTTP 错误的 `next` 不提 `await_approval`，而是要求：用户在 App 收件箱（或 `rekey approval approve`）批准后，用相同的方法、路径、查询、请求头与正文重提一次，并加请求头 `x-rekey-approval-challenge: <approval.challenge_id>`。
   - 该头只关联审批，不是凭据或令牌，不参与请求哈希，也不转发上游；值不是合法审批 ID 时返回 400。
   - 用户决定前带头重提返回同一 challenge 的 `APPROVAL_REQUIRED`，不执行；批准只能使用一次，消费后再带头重提返回 403 且不执行；正文或其他请求内容变化时不匹配，返回 403。
   - 不带头的重提从不消费批准：用户决定前复用同一待审批 challenge，批准后则登记新的审批请求。
@@ -600,7 +600,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 
 ### 9.1 `rekey scan`
 
-- **输入**：文件路径、`--staged`（git 暂存区）或 `--stdin`。不带参数时扫描当前 Git 仓库里 `git ls-files --cached --others --exclude-standard` 列出的文件，即已跟踪文件加未被 ignore 规则排除的新文件；显式给出的目录递归扫描其中全部普通文件（包括 `.git`、`node_modules`），只跳过符号链接。大小限制：单文件 10MiB，单次总量 100MiB。
+- **输入**：文件路径、`--staged`（git 暂存区）或 `--stdin`。`--staged` 扫描暂存区中新增、修改、改名或复制（取目标路径）以及类型变化（例如符号链接换成普通文件）的条目；子模块指针（gitlink，模式 160000）只是一个提交 ID，本仓库里没有它的内容，不作为扫描输入（2026-11-17 修订）。不带参数时扫描当前 Git 仓库里 `git ls-files --cached --others --exclude-standard` 列出的文件，即已跟踪文件加未被 ignore 规则排除的新文件；显式给出的目录递归扫描其中全部普通文件（包括 `.git`、`node_modules`），只跳过符号链接。大小限制：单文件 10MiB，单次总量 100MiB。
 - **处理**：CLI 将每个文件作为一帧经 agent socket 发给 daemon（SCAN 单帧正文上限 10MiB）；CLI 一次批次总量不超过 100MiB。daemon 在 Authority 内对完整文件匹配，避免切块漏掉跨块密钥；只返回位置和连接名。
 - **扫描范围**：生效签名策略中已启用 Connection、SSH key 与 T1 授权引用的凭据。禁用的 Connection、只导入而未被签署规则引用的凭据不参与。引用的凭据已吊销、不存在或不支持扫描时跳过并计数（SCAN 响应 `unavailable_credentials`），其余照常扫描；解密或完整性失败仍整体失败。
 - **输出**：stdout 为 `[{path, line, column, connection}]`，不含匹配内容；有命中时以 `LEAK_DETECTED`（退出码 4）结束。终端模式另在 stderr 逐条打印 §9.2 的中文提示，JSON 模式只输出 JSON。跳过凭据、跳过超限暂存文件和无法扫描的警告写到 stderr：终端模式为中文文本，JSON 模式为一行 `{"warnings":[...],"code","message","next"}`。
