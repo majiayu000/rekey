@@ -279,10 +279,18 @@ mod tests {
                     None
                 };
                 let mut execution = tokio::spawn(std::future::pending::<Result<(), BrokerError>>());
+                // A held coordinator must expire a short deadline. Otherwise the
+                // deadline only bounds a hang: the wrong proof must be rejected by
+                // verification itself, however slowly a loaded host schedules it.
+                let stop_deadline = if blocked {
+                    Duration::from_millis(40)
+                } else {
+                    crate::testing::test_timeout(Duration::from_secs(30))
+                };
                 let outcome = ctx
                     .central_stop(
                         StopCause::Admin(UnlockProof::Password(SecretInput::from_slice(b"wrong"))),
-                        tokio::time::Instant::now() + Duration::from_millis(40),
+                        tokio::time::Instant::now() + stop_deadline,
                         &mut execution,
                         None,
                     )
