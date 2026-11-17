@@ -46,6 +46,9 @@ pub enum BrokerError {
     UnsupportedPlatform,
     #[error("launcher unavailable")]
     LauncherUnavailable,
+    /// SCAN bytes for this system user exceed the per-minute budget.
+    #[error("scan byte budget for this system user is exhausted")]
+    ScanBudgetExhausted { reset_at_ms: i64 },
 }
 
 impl BrokerError {
@@ -74,6 +77,7 @@ impl BrokerError {
             Self::Io(_) => "IPC_UNAVAILABLE",
             Self::UnsupportedPlatform => "UNSUPPORTED_PLATFORM",
             Self::LauncherUnavailable => "LAUNCHER_UNAVAILABLE",
+            Self::ScanBudgetExhausted { .. } => "RATE_LIMITED",
         }
     }
 
@@ -109,7 +113,7 @@ impl BrokerError {
 
     pub(crate) fn agent_next(&self) -> String {
         match self {
-            Self::BudgetExceeded { reset_at_ms } => {
+            Self::BudgetExceeded { reset_at_ms } | Self::ScanBudgetExhausted { reset_at_ms } => {
                 let reset = time::OffsetDateTime::from_unix_timestamp_nanos(
                     i128::from(*reset_at_ms) * 1_000_000,
                 )

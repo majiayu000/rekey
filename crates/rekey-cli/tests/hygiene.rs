@@ -128,7 +128,7 @@ fn staged_scan_reads_the_index_instead_of_the_working_copy_and_never_echoes_the_
     std::fs::write(f.project.join("source.txt"), b"clean-working-copy\n").unwrap();
     let output=f.exchange(Channel::Agent,&["scan","--staged"],None,|header,metadata,body| {
         assert_eq!(header.message_type,agent_msg::SCAN);assert_eq!(metadata,json!({"path":"source.txt"}));assert_eq!(body,b"synthetic-full-secret-in-index\n");
-        (json!({}),json!({"findings":[{"path":"source.txt","line":1,"column":1,"connection":"github"}]}).to_string().into_bytes(),false)
+        (json!({}),json!({"findings":[{"path":"source.txt","line":1,"column":1,"connection":"github"}],"unavailable_credentials":0}).to_string().into_bytes(),false)
     });
     assert_eq!(output.status.code(), Some(4));
     let text = String::from_utf8_lossy(&output.stdout);
@@ -149,11 +149,9 @@ fn staged_locked_scan_warns_and_passes_unless_strict() {
         };
         let output=f.exchange(Channel::Agent,&args,None,|header,_,_|(json!({"request_id":header.request_id,"code":"LOCKED","message":"vault locked","retryable":false,"next":"Call await_unlock"}),Vec::new(),true));
         assert_eq!(output.status.success(), !strict);
-        assert!(String::from_utf8_lossy(&output.stderr).contains(if strict {
-            "LOCKED"
-        } else {
-            "Warning"
-        }));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("LOCKED"), "{stderr}");
+        assert_eq!(stderr.contains("SCAN_NOT_PERFORMED"), !strict, "{stderr}");
     }
 }
 #[test]
@@ -168,7 +166,11 @@ fn stdin_scan_supports_a_whole_file_above_the_normal_action_body_limit() {
             assert_eq!(header.message_type, agent_msg::SCAN);
             assert_eq!(metadata["path"], "<stdin>");
             assert_eq!(body.len(), 2 * 1024 * 1024);
-            (json!({}), br#"{"findings":[]}"#.to_vec(), false)
+            (
+                json!({}),
+                br#"{"findings":[],"unavailable_credentials":0}"#.to_vec(),
+                false,
+            )
         },
     );
     assert!(output.status.success());

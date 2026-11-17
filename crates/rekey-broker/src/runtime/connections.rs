@@ -21,6 +21,8 @@ pub(super) async fn accept_loop(
 ) -> Result<(), BrokerError> {
     let mut conns = JoinSet::new();
     let mut capacity_replies = JoinSet::new();
+    // One SCAN byte budget for the life of the Agent listener.
+    let scan_budget = Arc::new(crate::ipc::scan::ScanBudget::default());
     loop {
         tokio::select! {
             accepted = listener.accept(), if slots.available_permits() > 0 || capacity_replies.len() < CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL => {
@@ -55,11 +57,13 @@ pub(super) async fn accept_loop(
                 };
                 let ctx = Arc::clone(&ctx);
                 let conn_shutdown = shutdown.clone();
+                let scan_budget = Arc::clone(&scan_budget);
                 conns.spawn(async move {
                     if admin {
                         crate::ipc::admin::handle_admin_conn(stream, ctx, conn_shutdown).await;
                     } else {
-                        crate::ipc::agent::handle_agent_conn(stream, ctx, conn_shutdown).await;
+                        crate::ipc::agent::handle_agent_conn(stream, ctx, conn_shutdown, scan_budget)
+                            .await;
                     }
                     drop(permit);
                 });

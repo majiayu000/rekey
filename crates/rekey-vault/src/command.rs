@@ -232,7 +232,7 @@ pub enum AuthorityCommand {
     ScanCredentials {
         inputs: Vec<crate::hygiene::ScanInput>,
         credentials: Vec<crate::hygiene::ScanCredential>,
-        reply: Reply<Vec<crate::hygiene::ScanFinding>>,
+        reply: Reply<crate::hygiene::ScanReport>,
     },
     ImportEnv {
         request: crate::hygiene::EnvImportRequest,

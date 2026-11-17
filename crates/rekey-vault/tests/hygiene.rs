@@ -83,7 +83,7 @@ async fn scan_is_locked_until_unlock_and_returns_only_locations() {
         )
         .await
         .unwrap();
-    let findings = authority
+    let report = authority
         .scan_credentials(
             vec![ScanInput::new(
                 "src/fixture.txt",
@@ -96,6 +96,8 @@ async fn scan_is_locked_until_unlock_and_returns_only_locations() {
         )
         .await
         .unwrap();
+    assert_eq!(report.unavailable_credentials, 0);
+    let findings = report.findings;
     assert_eq!(findings.len(), 1);
     assert_eq!((findings[0].line, findings[0].column), (2, 3));
     let result = serde_json::to_string(&findings).unwrap();
@@ -111,6 +113,70 @@ async fn scan_is_locked_until_unlock_and_returns_only_locations() {
             .iter()
             .any(|event| event == "scan.performed")
     );
+    authority
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn revoked_or_missing_credentials_are_counted_and_the_rest_still_scanned() {
+    const REVOKED: &[u8] = b"synthetic-revoked-scan-value-5678";
+    let fixture = common::init_test_vault();
+    let (authority, join) = common::spawn(&fixture.state_dir);
+    authority.unlock(common::password_proof()).await.unwrap();
+    let mut ids = Vec::new();
+    for (label, value) in [
+        ("active-connection", CANARY),
+        ("revoked-connection", REVOKED),
+    ] {
+        let credential = authority
+            .credential_add(
+                CredentialLabel::new(label).unwrap(),
+                CredentialKind::OpaqueToken,
+                rekey_vault::secret::SecretInput::from_slice(value),
+                common::password_proof(),
+            )
+            .await
+            .unwrap();
+        ids.push(credential.id);
+    }
+    authority
+        .credential_revoke(ids[1], common::password_proof())
+        .await
+        .unwrap();
+    let reference = |connection: &str, credential_id| ScanCredential {
+        connection: connection.to_owned(),
+        credential_id,
+    };
+    let report = authority
+        .scan_credentials(
+            vec![ScanInput::new(
+                "src/fixture.txt",
+                [b"old: ", REVOKED, b"\ncurrent: ", CANARY].concat(),
+            )],
+            vec![
+                reference("revoked-connection", ids[1]),
+                reference(
+                    "missing-connection",
+                    rekey_domain::ids::CredentialId::new_random(),
+                ),
+                // A second reference to the same revoked credential counts once.
+                reference("revoked-alias", ids[1]),
+                reference("active-connection", ids[0]),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.unavailable_credentials, 2);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].connection, "active-connection");
+    assert_eq!(
+        (report.findings[0].line, report.findings[0].column),
+        (2, 10)
+    );
+    assert_eq!(authority.status().await.unwrap().state, "unlocked");
     authority
         .shutdown(Some(common::password_proof()))
         .await

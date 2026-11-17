@@ -296,7 +296,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   - LLM 类连接按 token 结算，日预算是软上限（v3 已说明）；
   - 其他连接按请求数限速（`limits.requests_per_hour`）。
 - 超额返回 `BUDGET_EXCEEDED`，附带重置时间。
-- HTTP Connection 小时请求额度计数成功持久准入（`execution.started`）；并发预留先占额度，准入拒绝归还，已准入后失败仍计数。access/scan 的防滥用尝试限速保持原合同。
+- HTTP Connection 小时请求额度计数成功持久准入（`execution.started`）；并发预留先占额度，准入拒绝归还，已准入后失败仍计数。access 请求的防滥用尝试限速保持原合同；SCAN 改用按系统用户计的字节额度（§9.1），超出返回 `RATE_LIMITED`。
 - HTTP Connection 固定最多 120 个全局在途执行、每个 Connection 最多 4 个；调用方标注不产生新容量。许可在 started 前取得，随受监管执行及其终态审计提交移交；HTTP/IPC 断开、流式结束或排队终态尚未提交不能提前释放。终态提交失败关闭后续远程副作用准入。Supervisor 的任务数也固定不超过 120，超限使用现有可重试 `AUTHORITY_BUSY`；不增加持久字段或用户配置。
 - 继承的账本优化只改变摘要实现、SQL prepare 复用及已认证记录定位，继续完整认证有序历史后解析 context，不新增持久格式或跳过历史。历史规模基准入口保留；旧 debug 测量与 0.3 优化测量均不能作为当前整合头的时延结果。
 
@@ -321,6 +321,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 | `APPROVAL_REQUIRED` | 需要审批 | `已通知用户；调用 await_approval(request_id)` |
 | `LOCKED` | vault 已锁定 | `已通知用户解锁；调用 await_unlock() 后重试` |
 | `BUDGET_EXCEEDED` | 预算或限速 | `在 <time> 之后重试` |
+| `RATE_LIMITED` | 防滥用限速（访问请求、SCAN 字节额度） | `在 <time> 之后重试` |
 | `UPSTREAM_ERROR` | 上游非 2xx | 透传状态码和已遮蔽的正文 |
 | `RESPONSE_BLOCKED` | 响应里检测到密钥反射 | `该响应包含凭据回显，已拦截；不要重试同一请求` |
 
@@ -526,7 +527,7 @@ OPENAI_API_KEY=rekey
 
 ### 8.3 防泄漏用的真实值
 
-daemon 在内存中持有已解锁的 Secret，用于 §9 的精确匹配。匹配变体沿用响应遮蔽：原始、base64 系列、percent、JSON 转义、hex。
+vault 解锁后，§9 的扫描在 Authority 内逐次解密生效签名规则引用的凭据并做精确匹配（范围见 §9.1），明文不离开 Authority 线程。匹配变体沿用响应遮蔽：原始、base64 系列、percent、JSON 转义、hex。
 
 ### 8.4 短期派生凭证（T1）
 
@@ -555,25 +556,28 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 
 ### 9.1 `rekey scan`
 
-- **输入**：文件路径、`--staged`（git 暂存区）或 `--stdin`。大小限制：单文件 10MiB，单次总量 100MiB。
+- **输入**：文件路径、`--staged`（git 暂存区）或 `--stdin`。不带参数时扫描当前 Git 仓库里 `git ls-files --cached --others --exclude-standard` 列出的文件，即已跟踪文件加未被 ignore 规则排除的新文件；显式给出的目录递归扫描其中全部普通文件（包括 `.git`、`node_modules`），只跳过符号链接。大小限制：单文件 10MiB，单次总量 100MiB。
 - **处理**：CLI 将每个文件作为一帧经 agent socket 发给 daemon（SCAN 单帧正文上限 10MiB）；CLI 一次批次总量不超过 100MiB。daemon 在 Authority 内对完整文件匹配，避免切块漏掉跨块密钥；只返回位置和连接名。
-- **输出**：`[{path, line, column, connection}]`，不含匹配内容。
-- **vault 锁定时**：返回 `LOCKED`。钩子模式下默认放行并打印警告；`--strict` 时阻止。
+- **扫描范围**：生效签名策略中已启用 Connection、SSH key 与 T1 授权引用的凭据。禁用的 Connection、只导入而未被签署规则引用的凭据不参与。引用的凭据已吊销、不存在或不支持扫描时跳过并计数（SCAN 响应 `unavailable_credentials`），其余照常扫描；解密或完整性失败仍整体失败。
+- **输出**：stdout 为 `[{path, line, column, connection}]`，不含匹配内容；有命中时以 `LEAK_DETECTED`（退出码 4）结束。终端模式另在 stderr 逐条打印 §9.2 的中文提示，JSON 模式只输出 JSON。跳过凭据、跳过超限暂存文件和无法扫描的警告写到 stderr：终端模式为中文文本，JSON 模式为一行 `{"warnings":[...],"code","message","next"}`。
+- **无法扫描时**：daemon 未运行（`IPC_UNAVAILABLE`）、没有生效的签名策略（未签署或已过期，均为 `NOT_CONFIGURED`）、`LOCKED`、额度用完（`RATE_LIMITED`）。钩子模式（`--staged`）默认打印中文警告并放行，已扫描文件中的命中照样阻止；某个暂存文件超过 10MiB 时只跳过该文件并警告。`--strict` 时这些情况都阻止提交。其它错误（单批超过 100MiB、`FAULTED`、`AUTHORITY_BUSY` 等）一律阻止；非钩子模式按普通错误退出。
 - **防止被当作猜测接口**：
   - 只报告完整匹配；
-  - 同一系统用户的本机扫描每分钟共享最多 60 次请求；调用方名称只作记录，改名不能得到新额度；
+  - 同一系统用户（内核验证的对端 UID）的 SCAN 共享每分钟 600MiB 的字节额度：固定 60 秒窗口，从窗口内第一帧开始计；锁定或没有生效策略时的帧不计入；超出时整帧拒绝且不计入，返回 `RATE_LIMITED`，`next` 给出窗口重置的 UTC 时间。单帧 10MiB、单批 100MiB 上限不变。调用方标注不参与额度，改名或换调用方不能得到新额度。额度只在 daemon 进程内存中，daemon 重启后重新计；
   - 审计记录扫描次数和命中次数，不记录内容。
 
 ### 9.2 git pre-commit 钩子
 
 - `rekey connect --with-hooks` 或 `rekey hooks install` 写入 `.git/hooks/pre-commit`；已有钩子时改为串联，不覆盖。
-- 钩子执行 `rekey scan --staged`，命中时阻止提交，并提示：
+- 钩子执行 `rekey scan --staged`，命中时总是阻止提交，终端模式下每条命中提示一行：
 
   > "检测到 github-personal 的密钥出现在 src/x.py:12；请改用 rekey call 或本机服务地址"
 
+- 无法扫描（§9.1）时默认打印警告并放行，例如"Rekey 保险库已锁定，2 个暂存文件没有做密钥扫描；提交照常进行。"；钩子命令加 `--strict` 后阻止提交。
+
 ### 9.3 Agent 输出扫描（可选）
 
-`rekey scan --stdin` 可以接入 Claude Code 的 PostToolUse hook，在工具输出进入 Agent 上下文前检查是否含有密钥。0.4 只提供文档和示例配置，不自动安装。
+`rekey scan --stdin` 可以接入 Claude Code 的 PostToolUse hook，检查工具输入与输出中是否含有密钥。只提供文档和示例配置（用户指南"防泄漏"一节），不自动安装。PostToolUse 在工具执行后运行：示例命中时用 `updatedToolOutput` 把 Bash 输出替换为占位文本再交给 Claude；其它工具的输出结构不同，示例只附加提示，Claude 仍会看到原输出。`--stdin` 不属于钩子模式：锁定、额度用完或 daemon 未运行时按普通错误退出，示例把这种情况报告为"未扫描"的非阻断 hook 错误。
 
 ---
 

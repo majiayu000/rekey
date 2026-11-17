@@ -90,7 +90,7 @@ impl AuthorityHandle {
         &self,
         inputs: Vec<crate::hygiene::ScanInput>,
         credentials: Vec<crate::hygiene::ScanCredential>,
-    ) -> Result<Vec<crate::hygiene::ScanFinding>, AuthorityError> {
+    ) -> Result<crate::hygiene::ScanReport, AuthorityError> {
         call!(self, |reply| AuthorityCommand::ScanCredentials {
             inputs,
             credentials,
