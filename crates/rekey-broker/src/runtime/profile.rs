@@ -437,7 +437,7 @@ impl BrokerCtx {
             if let (Some(manager), Some(identity)) = (&self.oidc_admin, admission) {
                 manager.publish(identity, self, || ())?;
             }
-            let gateway = self.gateway.endpoint(&active, &profile, &actions);
+            let gateway = None;
             let mut response = ProfileSessionCreatedResponse {
                 session: ipc::SessionCreatedResponse {
                     session_id,

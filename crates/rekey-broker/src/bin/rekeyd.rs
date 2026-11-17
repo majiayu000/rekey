@@ -584,11 +584,14 @@ fn main() {
     };
     if let Err(err) = result {
         let exit_code = err.exit_code();
-        tracing::error!(
-            event = "rekeyd.command_failed",
-            code = exit_code,
-            message = %err
-        );
+        // An IO failure prints only "ipc unavailable"; the OS cause (address in
+        // use, socket path too long) is what tells the user how to fix it.
+        match &err {
+            RekeydError::Broker(BrokerError::Io(cause)) => {
+                tracing::error!(event = "rekeyd.command_failed", code = exit_code, message = %err, %cause)
+            }
+            _ => tracing::error!(event = "rekeyd.command_failed", code = exit_code, message = %err),
+        }
         std::process::exit(exit_code);
     }
 }

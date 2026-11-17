@@ -476,7 +476,7 @@ mod tests {
         let encoded = Zeroizing::new(data_encoding::BASE64.encode(&binary));
         let malformed = Zeroizing::new(format!(
             "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----",
-            &*encoded
+            *encoded
         ));
         assert!(import_private(malformed.as_bytes()).is_err());
     }

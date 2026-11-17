@@ -216,6 +216,13 @@ pub(crate) fn agent_next(code: &str) -> &'static str {
         "UPSTREAM_INDETERMINATE" => {
             "Check the upstream effect before retrying; the request may have completed."
         }
+        "AUTHORITY_BUSY" => {
+            "Rekey is busy, for example at its concurrent-call limit. Retry shortly; before retrying a write, check whether it already took effect."
+        }
+        "DRAINING" => "Rekey is stopping. Retry after the user starts it again.",
+        "FAULTED" | "AUDIT_COMMIT_FAILED" => {
+            "Do not retry: Rekey closed call admission after an internal failure. Ask the user to check disk space and restart Rekey."
+        }
         _ => "Inspect the error code and connection configuration before retrying.",
     }
 }

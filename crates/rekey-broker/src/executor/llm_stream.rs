@@ -1378,7 +1378,7 @@ mod tests {
                 let mut digits = word;
                 let input: Vec<_> = (0..len)
                     .map(|_| {
-                        let byte = [b'a', b'\r', b'\n'][digits % 3];
+                        let byte = b"a\r\n"[digits % 3];
                         digits /= 3;
                         byte
                     })

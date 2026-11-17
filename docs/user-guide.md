@@ -128,12 +128,14 @@ App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查
 
 ## 本机 HTTP 与 SDK
 
-服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
+服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。每个保险库各用一个端口：端口已被另一个保险库或程序占用时，服务不会启动，`rekeyd` 报 `SERVICE_PORT_IN_USE` 并给出被占用的端口；在该保险库目录的 `service.json` 写入空闲端口（如 `{"port":7788}`，权限 0600）后重新启动，并相应修改 SDK 的 base URL。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
 
 ```bash
 curl -H 'Authorization: Bearer rekey' \
   'http://127.0.0.1:7787/c/github/repos/OWNER/REPO/issues'
 ```
+
+服务自身拒绝请求时返回 JSON 错误（含 `code` 和 `next`）。503 表示暂时不可用：`LOCKED`（解锁后重试）、`AUTHORITY_BUSY`（同一连接最多 4 个在途调用，稍后重试）、`DRAINING`（服务正在停止）、`FAULTED`（审计写入失败后停止放行，需检查磁盘并重启）。403 表示规则、预算或请求内容不被允许，重试无效；400 / 404 是请求形态或路由错误。上游自己的状态码和已遮蔽正文原样返回。
 
 SDK 的 key 设置为公开占位值 `rekey`，base URL 指向相应 Connection：
 

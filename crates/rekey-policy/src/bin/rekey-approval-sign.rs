@@ -184,7 +184,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     }
     let sign = args[0] == "sign";
     let mut options = BTreeMap::new();
-    for pair in args[2..].chunks_exact(2) {
+    for pair in args[2..].as_chunks::<2>().0 {
         if !matches!(
             pair[0].as_str(),
             "--policy"

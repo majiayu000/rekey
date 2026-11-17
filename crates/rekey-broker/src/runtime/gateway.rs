@@ -19,13 +19,8 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use rekey_domain::action::{ActionTarget, FixedHttpAction};
 use rekey_domain::ids::{ApprovalRequestId, RequestId};
-use rekey_domain::ipc::{
-    ErrorEnvelope, ProfileGatewayEndpoint, ProfileGatewayInstance, ProfileGatewayProvider,
-    TextStreamStatus,
-};
-use rekey_domain::profile::AgentProfile;
+use rekey_domain::ipc::{ErrorEnvelope, TextStreamStatus};
 use rekey_vault::AuthorityError;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
@@ -35,7 +30,6 @@ use tokio::time::Instant;
 use zeroize::Zeroizing;
 
 use super::BrokerCtx;
-use crate::active_policy::ActivePolicy;
 use crate::error::BrokerError;
 use crate::execution_supervisor::HttpExecution;
 use crate::executor::text_stream::TextStreamEvent;
@@ -44,6 +38,11 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTIONS: usize = 120;
 const HEADER_BYTES: usize = 16 * 1024;
+const PORT_IN_USE: (&str, &str, &str) = (
+    "SERVICE_PORT_IN_USE",
+    "the local HTTP service port is already in use",
+    "Another Rekey vault or program holds this port. Write a free port to service.json in this vault's state directory, for example {\"port\":7788}, then start again.",
+);
 
 #[derive(Default)]
 pub(super) struct Gateway {
@@ -54,7 +53,6 @@ pub(super) struct Gateway {
 }
 struct Bound {
     port: u16,
-    policy: [u8; 32],
     stop: watch::Sender<bool>,
 }
 impl Drop for Bound {
@@ -89,7 +87,6 @@ impl Gateway {
     pub(super) fn close(&self) {
         let mut state = self.bound.lock().unwrap_or_else(|e| e.into_inner());
         state.take();
-        self.remove_cache();
     }
     fn close_binding(&self, stop: &watch::Sender<bool>) {
         let mut state = self.bound.lock().unwrap_or_else(|e| e.into_inner());
@@ -98,63 +95,14 @@ impl Gateway {
             .is_some_and(|bound| bound.stop.same_channel(stop))
         {
             state.take();
-            self.remove_cache();
         }
     }
-    fn remove_cache(&self) {}
     fn current(&self, port: u16) -> bool {
         self.bound
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .is_some_and(|bound| bound.port == port)
-    }
-    pub(super) fn endpoint(
-        &self,
-        active: &ActivePolicy,
-        profile: &AgentProfile,
-        actions: &[FixedHttpAction],
-    ) -> Option<ProfileGatewayEndpoint> {
-        if profile.llm_limits.is_empty() {
-            return None;
-        }
-        let state = self.bound.lock().unwrap_or_else(|e| e.into_inner());
-        let bound = state
-            .as_ref()
-            .filter(|bound| bound.policy == active.snapshot().digest())?;
-        let instances = profile
-            .llm_limits
-            .iter()
-            .map(|limit| {
-                let grant = profile
-                    .grants
-                    .iter()
-                    .find(|grant| grant.instance == limit.instance)?;
-                let reference = grant.capabilities.first()?.actions.first()?;
-                let action = actions.iter().find(|action| {
-                    action.id == reference.action_id && action.version == reference.version
-                })?;
-                let ActionTarget::Template { source, .. } = &action.target else {
-                    return None;
-                };
-                if source.signer_id.is_some() {
-                    return None;
-                }
-                let provider = match source.template.as_str() {
-                    "anthropic@1" | "glm@1" => ProfileGatewayProvider::Anthropic,
-                    "openai@1" | "glm-responses@1" => ProfileGatewayProvider::OpenAi,
-                    _ => return None,
-                };
-                Some(ProfileGatewayInstance {
-                    instance: limit.instance.clone(),
-                    provider,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some(ProfileGatewayEndpoint {
-            port: bound.port,
-            instances,
-        })
     }
     fn publish_cache(&self, port: u16) -> io::Result<()> {
         let dir = self
@@ -207,13 +155,18 @@ impl BrokerCtx {
             .ok_or(BrokerError::Denied("service-context-unavailable"))?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await
-            .map_err(BrokerError::Io)?;
+            .map_err(|error| {
+                if error.kind() != io::ErrorKind::AddrInUse {
+                    return BrokerError::Io(error);
+                }
+                tracing::error!(event = "service.port_in_use", port, next = PORT_IN_USE.2);
+                BrokerError::LocalCall(PORT_IN_USE.0, PORT_IN_USE.1, PORT_IN_USE.2)
+            })?;
         let port = listener.local_addr().map_err(BrokerError::Io)?.port();
         self.gateway.publish_cache(port).map_err(BrokerError::Io)?;
         let (stop, stop_rx) = watch::channel(false);
         *self.gateway.bound.lock().unwrap_or_else(|e| e.into_inner()) = Some(Bound {
             port,
-            policy: [0; 32],
             stop: stop.clone(),
         });
         tokio::spawn(accept(weak, listener, stop, stop_rx));
@@ -455,6 +408,9 @@ async fn handle_request(
     let path = format!("/{path}");
     let method = rekey_domain::action::FixedMethod::parse(parts.method.as_str())
         .map_err(|e| (400, e.into()))?;
+    // Locking clears the active policy: report the lifecycle state first so a
+    // locked vault is not mistaken for a missing Connection.
+    ctx.lifecycle.reject_if_not_running().map_err(map_error)?;
     let active = ctx
         .policy
         .read()
@@ -465,7 +421,6 @@ async fn handle_request(
             503,
             BrokerError::Policy(rekey_policy::PolicyError::NotConfigured),
         ))?;
-    ctx.lifecycle.reject_if_not_running().map_err(map_error)?;
     let declaration = active
         .snapshot()
         .connections()
@@ -627,7 +582,7 @@ fn map_error(error: BrokerError) -> (u16, BrokerError) {
             | rekey_domain::DomainError::CapabilityExpired,
         ) => 401,
         BrokerError::Authority(AuthorityError::PolicyVersionConflict) => 403,
-        BrokerError::Authority(_) | BrokerError::Io(_) => 503,
+        BrokerError::Authority(_) | BrokerError::Admission(_) | BrokerError::Io(_) => 503,
         BrokerError::Frame(_) => 400,
         BrokerError::Upstream(_)
         | BrokerError::UpstreamUnconfirmed(_)
@@ -815,7 +770,6 @@ mod tests {
         let (current, _) = watch::channel(false);
         *gateway.bound.lock().unwrap() = Some(Bound {
             port: 12345,
-            policy: [0; 32],
             stop: current.clone(),
         });
         gateway.close_binding(&old);

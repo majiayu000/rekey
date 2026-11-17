@@ -421,7 +421,7 @@ async fn old_execute_rejects_stream_action_with_empty_error() {
         REQUEST,
     )
     .await;
-    assert_eq!(response.err_code(), "REQUEST_DENIED");
+    assert_eq!(response.err_code(), "DENIED");
     assert!(response.body.is_empty());
     drop(release);
     server.abort();
