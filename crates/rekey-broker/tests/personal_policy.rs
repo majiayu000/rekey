@@ -1,9 +1,13 @@
 //! Synthetic software P-256 fixtures; these tests make no hardware-trust claim.
+#[path = "personal_policy/caller_labels.rs"]
+mod caller_labels;
 mod common;
 #[path = "personal_policy/gateway.rs"]
 mod gateway;
 #[path = "personal_policy/gateway_edges.rs"]
 mod gateway_edges;
+#[path = "common/renamed_agent.rs"]
+mod renamed_agent;
 
 use std::path::PathBuf;
 use std::sync::Arc;

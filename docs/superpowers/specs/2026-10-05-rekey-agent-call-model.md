@@ -124,7 +124,7 @@
 | **Connection（连接）** | 一个 Secret 加上它允许访问的一个 origin、注入方式和规则集。例如 "github-personal → https://api.github.com，Bearer"。一个 Secret 可以对应多个 Connection |
 | **Preset（预设）** | 由现有内置模板演进而来：给定 provider 的 origin、注入方式、默认规则，以及**具名操作**（用于 MCP 工具名和 `rekey call` 子命令） |
 | **Rule（规则）** | `(method 类别, 路径模式) → allow / approve / deny`，可以按调用方覆盖（§5） |
-| **Caller（调用方）** | 发起调用的程序：claude-code、codex、cursor、script:<可执行文件>、unknown。由 daemon 识别，用于标注（§4.3） |
+| **Caller（调用方）** | 发起调用的程序：claude-code、codex、cursor、vscode、script:<可执行文件>、unknown。由 daemon 识别，用于标注（§4.3） |
 | **Access Request（访问请求）** | Agent 发起的"需要某个连接或某条规则"的请求，由用户在 App 中处理 |
 | **Approval（审批）** | 沿用现有 local-presence 审批：绑定规范化请求哈希、只能使用一次；新增时间窗审批（§5.5） |
 | **Grade（等级）** | 每个 Connection 标注一个等级：`T0 代理`（Agent 永不接触）或 `T1 派生`（Agent 进程会拿到短期派生凭证，见 §8.4） |
@@ -175,20 +175,25 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 
 ### 4.3 调用方识别
 
-**识别方法**
-- **CLI 与 MCP**：daemon 取得对端进程的 audit token（macOS）或 pidfd（Linux），沿进程树向上查找，第一个匹配已知 Agent 签名身份或路径的进程即为调用方。
-  - 已知 Agent 表：Claude Code、Codex、Cursor、VS Code 系；
-  - 匹配依据：代码签名 Team ID 或标识符，未签名时用可执行文件的真实路径；
-  - 找不到时标为 `script:<最近的可执行文件名>`。
-- **本机服务**：通过 TCP 对端端口查找所属进程。
-  - macOS 用 `proc_pidfdinfo` 扫描，Linux 用 `/proc/net/tcp*` 的 inode；
-  - 查找失败时标为 `unknown`。
-- **SSH agent**：Unix socket 对端，与 CLI 相同。
+**识别方法**（2026-11-17 修订：按实现写明）
+- **CLI、MCP 与 SSH agent**：daemon 从内核取得 Unix socket 对端的 PID（macOS 取完整 audit token，Linux 取 `SO_PEERCRED` 的 PID），沿父进程链向上最多 32 层，第一个命中已知 Agent 表的进程即为调用方。CLI 与 MCP 每个请求帧识别一次，SSH agent 每个连接识别一次。
+  - Linux 不使用 pidfd：PID 复用竞争最多让标注出错，而标注从不授权（见下方“明确限制”）。
+  - 已知 Agent 表：Claude Code（`claude-code`）、Codex（`codex`）、Cursor（`cursor`）、VS Code 系（`vscode`，含 Insiders 与 VSCodium）。
+  - 匹配依据一：可执行文件的真实路径（macOS `proc_pidpath`、Linux `/proc/<pid>/exe`，符号链接已解析）。文件名（`claude`、`codex`、`cursor`、`cursor-agent`、`code`、`code-insiders`、`codium` 等）、路径中的 macOS app bundle（`Codex.app`、`Cursor.app`、`Visual Studio Code.app`、`VSCodium.app` 等）或版本安装目录（`~/.local/share/claude/versions/<版本>`、`~/.local/share/cursor-agent/versions/<版本>/…`）任一命中即可。原生安装的 Claude Code 文件名是版本号，靠安装目录识别；只看文件名不够。
+  - 匹配依据二（仅 macOS）：路径未命中时，按 PID 取该进程的代码签名；Team ID 与标识符前缀同时命中表项，并通过 `anchor apple generic and certificate leaf[subject.OU] = "<Team ID>"` 校验，才算命中。表项：`Q6L2SF6YDW` + `com.anthropic.claude-code`；`2DC432GLL2` + `codex`、`com.openai.codex`；`VDXQ22DGB9`（Cursor，任意标识符）；`UBF8T346G9` + `com.microsoft.VSCode`。系统目录（`/System`、`/bin`、`/sbin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec`）和 Rekey 自身二进制不查签名；结果按 (PID, 真实路径) 缓存在内存中，最多 1024 条。
+  - Rekey 自身的二进制（`rekey`、`rekey-mcp`）不参与已知 Agent 匹配，也不作为脚本名。找不到已知 Agent 时标为 `script:<第一个非 Rekey 进程的可执行文件名>`；整条链只有 Rekey 自身时用对端自己的文件名。名字中的控制字符替换为 `_`，整个标注不超过 128 字节，保证审计上下文合法。
+  - macOS 上未通过“与 daemon 同一 Team ID 签名”校验的对端 `rekey-mcp` 一律标为 `script:rekey-mcp`，不沿父进程继承 Agent 标注（§6.4）；Linux 无签名可校验，按进程链标注。
+- **本机服务**：accept 时、读取请求之前，按 TCP 四元组反查持有客户端 socket 的进程，再按上面的进程链规则标注。
+  - macOS：`proc_listpids` 列出同 uid 进程，`proc_pidinfo(PROC_PIDLISTFDS)` 与 `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` 找到本地端为对端地址、远端为服务地址的 TCP socket；
+  - Linux：在 `/proc/net/tcp` 与 `/proc/net/tcp6`（IPv4 映射地址按 IPv4 比较）中找到该 socket 的 inode，再扫描 `/proc/<pid>/fd`；
+  - 只能看到同 uid 进程；其他用户的客户端、客户端已关闭或查找失败时标为 `unknown`。反查在阻塞线程池执行，不阻塞 accept。
+- **SSH agent**：Unix socket 对端，与 CLI 相同，不再固定为 `ssh-agent`。
 
 **用途**
 - 审计标注；
 - 活动页分组；
-- 规则可以按调用方覆盖，例如"codex 对 github 只读"。
+- 规则可以按调用方覆盖，例如"codex 对 github 只读"；
+- 审批归属与时间窗：一次性审批只能由登记它的同一调用方标注等待、取消和消费，时间窗也按调用方标注生效（§5.5）。HTTP 客户端不再共用 `unknown`；同一进程的重试（例如带 `x-rekey-approval-challenge` 头的重放）标注不变。
 
 **明确限制**
 - 同 uid 进程可以伪造调用方：直接 exec 一个已知 Agent 的二进制，或伪造父进程关系。

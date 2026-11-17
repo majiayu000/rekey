@@ -4,7 +4,20 @@ use std::path::Path;
 
 use tokio::net::UnixStream;
 
-pub(crate) fn unix_caller(stream: &UnixStream) -> String {
+mod known;
+#[cfg(target_os = "macos")]
+mod signing;
+mod tcp;
+
+pub(crate) use tcp::tcp_caller;
+
+/// Rekey's own clients never name a `script:` caller; the label names the
+/// program that ran them.
+const REKEY_BINARIES: [&str; 2] = ["rekey", "rekey-mcp"];
+const SCRIPT_LABEL_BYTES: usize = 128;
+
+/// The Unix peer (CLI, MCP, SSH agent client) labelled from its process chain.
+pub(crate) async fn unix_caller(stream: &UnixStream) -> String {
     #[cfg(target_os = "macos")]
     let Some((pid, audit)) = peer_identity(stream) else {
         return "unknown".into();
@@ -13,25 +26,47 @@ pub(crate) fn unix_caller(stream: &UnixStream) -> String {
     let Some(pid) = peer_pid(stream) else {
         return "unknown".into();
     };
-    caller_from_processes(pid, process, |candidate| {
-        #[cfg(target_os = "macos")]
-        {
-            candidate == pid && rekey_vault::generation_anchor::peer_has_own_team(audit)
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = candidate;
-            true
-        }
+    // Signature and process-table queries block; keep them off the reactor.
+    tokio::task::spawn_blocking(move || {
+        process_caller(pid, |candidate| {
+            #[cfg(target_os = "macos")]
+            {
+                candidate == pid && rekey_vault::generation_anchor::peer_has_own_team(audit)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let _ = candidate;
+                true
+            }
+        })
     })
+    .await
+    .unwrap_or_else(|_| "unknown".into())
+}
+
+fn process_caller(pid: i32, trusted_mcp: impl FnMut(i32) -> bool) -> String {
+    caller_from_processes(pid, process, signed, trusted_mcp)
+}
+
+#[cfg(target_os = "macos")]
+fn signed(pid: i32, path: &str) -> Option<&'static str> {
+    signing::label(pid, path)
+}
+
+/// Linux has no code signature to consult; real paths decide.
+#[cfg(target_os = "linux")]
+fn signed(_pid: i32, _path: &str) -> Option<&'static str> {
+    None
 }
 
 fn caller_from_processes(
     mut pid: i32,
     mut inspect: impl FnMut(i32) -> Option<(String, i32)>,
+    mut signed: impl FnMut(i32, &str) -> Option<&'static str>,
     mut trusted_mcp: impl FnMut(i32) -> bool,
 ) -> String {
-    let mut nearest = None;
+    let mut peer = None;
+    let mut script = None;
     for _ in 0..32 {
         let Some((path, parent)) = inspect(pid) else {
             break;
@@ -40,30 +75,48 @@ fn caller_from_processes(
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        if nearest.is_none() {
-            nearest = Some(name.to_owned());
-        }
         // A copied or unsigned rekey-mcp cannot inherit an Agent label from
         // its parent on macOS. This label never grants extra authorization.
         if name == "rekey-mcp" && !trusted_mcp(pid) {
             return "script:rekey-mcp".into();
         }
-        let known = match name {
-            "claude" => Some("claude-code"),
-            "codex" => Some("codex"),
-            "Cursor" | "cursor" => Some("cursor"),
-            "Code" => Some("vscode"),
-            _ => None,
+        let own = REKEY_BINARIES.contains(&name);
+        let known = if own {
+            None
+        } else {
+            known::by_path(&path).or_else(|| signed(pid, &path))
         };
         if let Some(label) = known {
             return label.into();
+        }
+        peer.get_or_insert_with(|| name.to_owned());
+        if !own && script.is_none() {
+            script = Some(name.to_owned());
         }
         if parent <= 1 || parent == pid {
             break;
         }
         pid = parent;
     }
-    nearest.map_or_else(|| "unknown".into(), |name| format!("script:{name}"))
+    script
+        .or(peer)
+        .map_or_else(|| "unknown".into(), |name| script_label(&name))
+}
+
+/// Audit contexts reject control characters and labels over 256 bytes.
+fn script_label(name: &str) -> String {
+    let mut label = String::from("script:");
+    for character in name.chars() {
+        if label.len() + character.len_utf8() > SCRIPT_LABEL_BYTES {
+            break;
+        }
+        label.push(if character.is_control() {
+            '_'
+        } else {
+            character
+        });
+    }
+    label
 }
 
 #[cfg(target_os = "macos")]
@@ -87,6 +140,8 @@ fn peer_identity(stream: &UnixStream) -> Option<(i32, [u32; 8])> {
         .then_some((token[5] as i32, token))
 }
 
+/// SO_PEERCRED's PID, not a pidfd: PID reuse can only mislabel, and a label
+/// is never an authorization identity.
 #[cfg(target_os = "linux")]
 fn peer_pid(stream: &UnixStream) -> Option<i32> {
     let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
@@ -145,53 +200,4 @@ fn process(pid: i32) -> Option<(String, i32)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn processes(pid: i32) -> Option<(String, i32)> {
-        match pid {
-            7 => Some(("/synthetic/rekey-mcp".into(), 8)),
-            8 => Some(("/synthetic/claude".into(), 1)),
-            9 => Some(("/synthetic/script".into(), 7)),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn untrusted_mcp_cannot_borrow_its_agent_parents_label() {
-        let mut checked = Vec::new();
-        assert_eq!(
-            caller_from_processes(7, processes, |pid| {
-                checked.push(pid);
-                false
-            }),
-            "script:rekey-mcp"
-        );
-        assert_eq!(checked, vec![7]);
-        assert_eq!(
-            caller_from_processes(7, processes, |pid| pid == 7),
-            "claude-code"
-        );
-    }
-
-    #[test]
-    fn an_audit_token_for_a_child_does_not_attest_an_mcp_ancestor() {
-        assert_eq!(
-            caller_from_processes(9, processes, |pid| pid == 9),
-            "script:rekey-mcp"
-        );
-        // Linux keeps its existing best-effort process-chain attribution.
-        assert_eq!(caller_from_processes(9, processes, |_| true), "claude-code");
-        assert_eq!(caller_from_processes(10, processes, |_| true), "unknown");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn kernel_audit_token_is_captured_whole_and_cannot_be_supplied_by_metadata() {
-        let (stream, _peer) = UnixStream::pair().unwrap();
-        let (pid, token) = peer_identity(&stream).unwrap();
-        assert_eq!(pid as u32, std::process::id());
-        assert_eq!(token[5], std::process::id());
-        assert!(!rekey_vault::generation_anchor::peer_has_own_team([0; 8]));
-    }
-}
+mod tests;
