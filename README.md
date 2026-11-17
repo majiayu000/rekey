@@ -53,7 +53,7 @@ rekey scan --stdin
 rekey connect claude-code --with-hooks
 ```
 
-扫描以 vault 中的真实值做完整匹配，只输出连接、路径和位置。pre-commit 命中会阻止提交。锁定时默认提示并放行；`--strict` 阻止。每文件最多 10 MiB，每批最多 100 MiB；普通扫描忽略 `.git`、`node_modules`、构建输出等目录。
+扫描以 vault 中的真实值做完整匹配，只输出连接、路径和位置。pre-commit 命中会阻止提交；Rekey 未运行、锁定、没有生效的签名规则或扫描额度（每个系统用户每分钟 600 MiB）用完时默认提示并放行，`--strict` 阻止。每文件最多 10 MiB，每批最多 100 MiB。不带参数时只扫描 Git 跟踪和未被 ignore 的文件；显式给出的目录会递归扫描全部普通文件（包括 `.git`、`node_modules`），只跳过符号链接。扫描范围和 Claude Code 工具输出扫描示例见[用户指南](docs/user-guide.md)。
 
 ## OAuth 与临时凭据
 
