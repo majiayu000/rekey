@@ -290,6 +290,59 @@ fn app_import_and_rewrite_send_only_public_selections_and_explicit_proof() {
         assert!(!f.project.join(".env").exists());
     }
 }
+/// Agent-call 7.3: the backup keeps the original values, so the rewrite
+/// receipt says whether git ignores it (git runs only inside a repository).
+#[test]
+fn rewrite_receipt_reports_whether_git_ignores_the_backup() {
+    for (repository, ignored, expected) in [
+        (false, false, "no-repository"),
+        (true, false, "not-ignored"),
+        (true, true, "ignored"),
+    ] {
+        let f = Fixture::new();
+        assert!(
+            f.project
+                .ancestors()
+                .all(|parent| !parent.join(".git").exists()),
+            "the fixture must start outside any repository"
+        );
+        if repository {
+            f.git(&["init"]);
+        }
+        if ignored {
+            std::fs::write(f.project.join(".gitignore"), b"*.rekey-backup\n").unwrap();
+        }
+        let backup = f.project.join(".env.rekey-backup");
+        std::fs::write(&backup, b"SYNTHETIC=backup\n").unwrap();
+        let receipt = json!({ "backup": backup });
+        let input = "synthetic-app-presence\n[{\"key\":\"OPENAI_API_KEY\",\"connection\":\"openai\",\"base_url_variable\":\"OPENAI_BASE_URL\"}]\n";
+        let output = f.exchange(
+            Channel::Admin,
+            &[
+                "import",
+                ".env",
+                "--rewrite-stdin",
+                "--presence",
+                "--password-stdin",
+            ],
+            Some(input.as_bytes()),
+            move |header, _, _| {
+                assert_eq!(header.message_type, admin_msg::IMPORT_ENV);
+                (json!({}), receipt.to_string().into_bytes(), false)
+            },
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            json!({ "backup": backup, "backup_git": expected }),
+            "{expected}"
+        );
+    }
+}
 fn ipc_proof(body: &[u8]) -> &[u8] {
     let (kind, proof) = rekey_domain::ipc::parse_proof_body(body).unwrap();
     assert_eq!(kind, rekey_domain::ipc::ProofKind::Presence);

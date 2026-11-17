@@ -220,6 +220,7 @@ pub fn scan(
 struct EnvPreviewEntry {
     key: String,
     preset_hint: Option<String>,
+    unsupported_protocol: Option<String>,
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -265,6 +266,55 @@ struct EnvRewriteReceipt {
     backup: PathBuf,
 }
 
+/// Agent-call 7.3: the backup keeps the original values, so the receipt says
+/// whether git ignores it. Git runs only inside a repository, without reading
+/// the index, and is stopped after five seconds.
+fn backup_git(backup: &Path) -> &'static str {
+    let (Some(directory), Some(name)) = (backup.parent(), backup.file_name()) else {
+        return "unknown";
+    };
+    if !directory
+        .ancestors()
+        .any(|parent| parent.join(".git").symlink_metadata().is_ok())
+    {
+        return "no-repository";
+    }
+    // The "./" prefix keeps a name that starts with ':' from being read as
+    // pathspec magic; check-ignore refuses GIT_LITERAL_PATHSPECS.
+    let Ok(mut child) = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["check-ignore", "-q", "--no-index", "--"])
+        .arg(Path::new(".").join(name))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return "unknown";
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return match status.code() {
+                    Some(0) => "ignored",
+                    Some(1) => "not-ignored",
+                    _ => "unknown",
+                };
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return "unknown";
+            }
+        }
+    }
+}
+
 fn import_mutation(
     state_dir: &Path,
     path: &Path,
@@ -303,7 +353,8 @@ fn import_mutation(
                 "import backup path must be absolute",
             ));
         }
-        super::write_json(&receipt)
+        let backup_git = backup_git(&receipt.backup);
+        super::write_json(&json!({"backup":receipt.backup,"backup_git":backup_git}))
     } else {
         let report: EnvImportReport = serde_json::from_slice(&body)
             .map_err(|_| CliError::local("INVALID_FRAME", "invalid import report"))?;

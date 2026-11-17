@@ -3,8 +3,9 @@ import AppKit
 import CryptoKit
 
 // Synthetic App flow contracts: device signals, late desktop tokens, a CLI handoff that
-// arrives while the App is busy, and the signer preflight before an onboarding key is
-// saved. A Python stand-in replaces the CLI; no vault, Keychain or Secure Enclave is used.
+// arrives while the App is busy, the signer preflight before an onboarding key is saved,
+// and the .env import review. A Python stand-in replaces the CLI; no vault, Keychain or
+// Secure Enclave is used.
 extension ConnectionUIContract {
     @MainActor
     static func appFlows() async throws {
@@ -12,7 +13,8 @@ extension ConnectionUIContract {
         try await lateDesktopTokens()
         try await pendingHandoff()
         try await signerPreflight()
-        print("PASS: four device signals lock (none when disabled), late resume/remember/login tokens are revoked, a busy-time handoff is applied once idle, and the signer preflight precedes the key save.")
+        try await envImportReview()
+        print("PASS: four device signals lock (none when disabled), late resume/remember/login tokens are revoked, a busy-time handoff is applied once idle, the signer preflight precedes the key save, and the .env import review keeps the signed expiry and SDK base-URL variables.")
     }
 
     /// `delay-<name>` holds that command after it touches `<name>-started`; desktop-lock
@@ -48,6 +50,8 @@ extension ConnectionUIContract {
             print(json.dumps({'name':args[2],'origin':'https://api.example.invalid','auth':{'header_name':'authorization','prefix':'Bearer '},'rules':[{'id':'00000000-0000-4000-8000-0000000000aa','methods':'read','path':'/**','effect':'allow'}],'allowed_headers':[],'fixed_headers':{},'allowed_response_headers':[],'query_allowlist':None,'operations':[]}))
         elif args[:2]==['connection','list']:
             sys.stdout.write((root/'connections.json').read_text())
+        elif args[0]=='import' and args[2:]==['--dry-run']:
+            sys.stdout.write((root/'preview.json').read_text())
         elif args[0]=='desktop-add':
             with open(root/'adds.log','a') as log:log.write(args[1]+'\\n')
             print(json.dumps({'id':'00000000-0000-4000-8000-000000000001','label':args[1],'kind':'opaque-token','state':'active','current_version':1}))
@@ -225,14 +229,7 @@ extension ConnectionUIContract {
         var settings = DesktopSecuritySettings(); settings.idle = .disabled
         let (model, client, preferences, suite) = try flowModel(root, executable, settings)
         defer { preferences.removePersistentDomain(forName: suite); cleanup(root) }
-        func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
-        let signer = UUID().uuidString.lowercased()
-        let key = Data([4]) + Data(repeating: 7, count: 64), other = Data([4]) + Data(repeating: 9, count: 64)
-        let trust: [String: Any] = ["algorithm": "secure-enclave-p256", "format_version": 1, "public_key": hex(key), "signer_id": signer]
-        let digest = hex(Data(SHA256.hash(data: try JSONSerialization.data(withJSONObject: trust, options: [.sortedKeys]))))
-        let installed: [String: Any] = ["vault_id": UUID().uuidString.lowercased(), "mode": "personal", "algorithm": "secure-enclave-p256", "trust_sha256": digest,
-                                        "bundle_persisted": false, "trust_installed": true, "status": "absent", "signer_id": signer]
-        try JSONSerialization.data(withJSONObject: installed).write(to: root.appendingPathComponent("policy.json"))
+        let key = try installTrust(root), other = Data([4]) + Data(repeating: 9, count: 64)
         let policy = try client.decode(PolicyStatus.self, ["policy", "status"])
         try require(try PolicySigning.available(current: policy, client: client, hardwarePublicKey: { _ in key }) == .secureEnclave, "a Secure Enclave key matching the installed trust is selected")
         try rejected("another hardware key never matches") { _ = try PolicySigning.available(current: policy, client: client, hardwarePublicKey: { _ in other }) }
@@ -263,5 +260,62 @@ extension ConnectionUIContract {
         try await refused("a duplicate connection name", .new(label: "again", secret: "synthetic-key-9876543210"), hardware: { _ in key })
         let reused = try await model.prepareKeyConnection(.existing(prepared.credential), name: "glm-second", preset: "glm", models: ["glm-synthetic"], hardwarePublicKey: { _ in key })
         try require(reused.credential.id == prepared.credential.id && adds() == ["synthetic"], "a duplicate name or a reused key saves nothing new")
+    }
+
+    /// Installs a synthetic Secure Enclave trust in the fixture and returns its public key.
+    static func installTrust(_ root: URL) throws -> Data {
+        func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+        let signer = UUID().uuidString.lowercased(), key = Data([4]) + Data(repeating: 7, count: 64)
+        let trust: [String: Any] = ["algorithm": "secure-enclave-p256", "format_version": 1, "public_key": hex(key), "signer_id": signer]
+        let digest = hex(Data(SHA256.hash(data: try JSONSerialization.data(withJSONObject: trust, options: [.sortedKeys]))))
+        let installed: [String: Any] = ["vault_id": UUID().uuidString.lowercased(), "mode": "personal", "algorithm": "secure-enclave-p256", "trust_sha256": digest,
+                                        "bundle_persisted": false, "trust_installed": true, "status": "absent", "signer_id": signer]
+        try JSONSerialization.data(withJSONObject: installed).write(to: root.appendingPathComponent("policy.json"))
+        return key
+    }
+
+    // agent-call 7.3: the import review keeps the signed base's expiry (the whole snapshot is
+    // signed), derives the variables the SDKs read and prepares only entries chosen for
+    // import. Nothing is saved before the review.
+    @MainActor
+    static func envImportReview() async throws {
+        let (root, executable) = try flowFixture()
+        var settings = DesktopSecuritySettings(); settings.idle = .disabled
+        let (model, client, preferences, suite) = try flowModel(root, executable, settings)
+        defer { preferences.removePersistentDomain(forName: suite); cleanup(root) }
+        let key = try installTrust(root)
+        model.policy = try client.decode(PolicyStatus.self, ["policy", "status"])
+        await flowLogin(model, client)
+        try require(model.desktopReady, "synthetic desktop session")
+        func entry(_ name: String, _ hint: String?, _ unproxyable: String?) -> [String: Any] {
+            ["key": name, "preset_hint": hint ?? NSNull(), "unsupported_protocol": unproxyable ?? NSNull()]
+        }
+        let preview: [String: Any] = ["entries": [entry("OPENAI_API_KEY", "openai", nil), entry("ANTHROPIC_AUTH_TOKEN", "anthropic", nil),
+                                                  entry("AWS_SECRET_ACCESS_KEY", nil, "aws"), entry("APP_MODE", nil, nil)], "unsupported": []]
+        try JSONSerialization.data(withJSONObject: preview).write(to: root.appendingPathComponent("preview.json"))
+        func signedBase(expiresAt: Int64) throws {
+            let base: [String: Any] = ["connections": [], "ssh_keys": [], "derived_credentials": [], "policy_sha256": String(repeating: "ab", count: 32), "expires_at_ms": expiresAt]
+            try JSONSerialization.data(withJSONObject: base).write(to: root.appendingPathComponent("connections.json"))
+        }
+        let expires: Int64 = 4_000_000_000_000
+        try signedBase(expiresAt: expires)
+        let fetched = try await model.previewEnv(root.appendingPathComponent("project/.env").path)
+        var items = EnvImportPlan.items(fetched)
+        try require(items.map(\.preset) == ["openai", "anthropic", "generic-bearer", "generic-bearer"] && items.allSatisfy { $0.choice == .skip }
+                    && items[2].unsupportedProtocol == "aws", "the preview maps to loadable presets and nothing is chosen by default")
+        for i in items.indices { items[i].choice = .importKey }
+        items[3].choice = .nonSecret
+        do {
+            _ = try await model.prepareEnvImport(items, preview: fetched, hardwarePublicKey: { _ in nil })
+            throw UIError(message: "FAILED: a review without the signer was accepted")
+        } catch let failure as UIError where failure.message.hasPrefix("FAILED") { throw failure } catch {}
+        let prepared = try await model.prepareEnvImport(items, preview: fetched, hardwarePublicKey: { _ in key })
+        try require(prepared.mode == .secureEnclave && prepared.expiry == Date(timeIntervalSince1970: Double(expires) / 1000), "the review keeps the signed base's expiry")
+        try require(prepared.connections.map(\.key) == ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"] && prepared.connections.map(\.baseURLVariable) == ["OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"]
+                    && prepared.connections.map(\.definition.preset) == ["openai", "anthropic"], "SDK base-URL variables; unproxyable and non-secret entries are not prepared")
+        try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent("adds.log").path), "nothing is saved before the review")
+        try signedBase(expiresAt: 1_000)
+        let expired = try await model.prepareEnvImport(items, preview: fetched, hardwarePublicKey: { _ in key })
+        try require(abs(expired.expiry.timeIntervalSinceNow - 86400) < 600, "an expired base falls back to 24 hours")
     }
 }

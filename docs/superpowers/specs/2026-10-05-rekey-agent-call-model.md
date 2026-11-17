@@ -470,12 +470,13 @@ OPENAI_API_KEY=rekey
 
 1. **识别**
    - 解析 dotenv 格式。
-   - 按变量名和值的特征匹配 Preset，例如 `OPENAI_API_KEY`、`sk-`、`ghp_`、`github_pat_`、`AKIA`。识别不出的列为"未知"。
+   - 按变量名和值的特征匹配 Preset，例如 `OPENAI_API_KEY`、`sk-`、`ghp_`、`github_pat_`。`preset_hint` 只给 App 能加载的 Preset 名，GitHub 为 `github-pat`。
+   - 无法代理的项在 `unsupported_protocol` 中标出原因：`aws`（以 `AWS_` 开头、以 `_KEY`、`_TOKEN`、`_SECRET` 或 `_PAT` 结尾的变量名，`AWS_ACCESS_KEY_ID`，或 `AKIA` 开头的值；SigV4 逐请求签名，没有可注入的请求头）、`database`（`DATABASE_URL`、`*_DATABASE_URL`，或 `postgres://`、`postgresql://`、`mysql://`、`mariadb://`、`mongodb://`、`mongodb+srv://`、`redis://`、`rediss://`、`amqp://`、`amqps://` 连接串）、`password`（`PASSWORD`、`*_PASSWORD`、`*_PASSWD`、`*_PASS`、`*_PWD`）。先匹配 Preset，两类都不中的列为"未知"。daemon 拒绝导入或改写 `unsupported_protocol` 项，base URL 变量也不能覆盖它们。
    - CLI 只打印**变量名和识别结果，不打印值**。
-2. **确认（在 App 中）**：用户逐项选择导入、跳过或标记为非密钥。值由 daemon 直接读取文件，不经过 CLI 的标准输出。
-3. **导入**：每项建立 Secret 和 Connection（规则取 Preset 默认值）。
-4. **改写**：原文件备份为 `.env.rekey-backup`，权限 0600，并提示用户删除或确认已加入 `.gitignore`。新 `.env` 写入：
-   - LLM 和 HTTP 类：`<X>_BASE_URL=http://127.0.0.1:7787/c/<connection>/...` 和 `<X>_API_KEY=rekey`；
+2. **确认（在 App 中）**：用户逐项选择导入、跳过或标记为非密钥；无法代理的项只能跳过或标记为非密钥。跳过和非密钥的行都原样保留、不导入，回执分开列出：无法代理的标"未迁移：协议不支持代理"，跳过的密钥仍以明文留在文件中，非密钥的只说明已保留。"非密钥"只是本次导入中的选择，不写入保险库。值由 daemon 直接读取文件，不经过 CLI 的标准输出。
+3. **导入**：每项建立 Secret 和 Connection（规则取 Preset 默认值）。签署的是完整策略快照，有效期默认沿用当前已签署策略的有效期（与策略编辑页一致），没有未过期的基线时默认 24 小时；因此导入默认不改变其余已签署 Connection 的有效期。
+4. **改写**：原文件备份为 `.env.rekey-backup`，权限 0600，并提示用户删除或确认已加入 `.gitignore`。改写回执带 `backup_git`，由 CLI 判断：备份所在目录或其上级有 `.git` 时运行 `git check-ignore --no-index`（不读取 index），结果为 `ignored` 或 `not-ignored`；不在仓库中为 `no-repository`；git 无法运行、拒绝该仓库或 5 秒内没有结果为 `unknown`。App 按此提示删除备份，或把它加入 `.gitignore`。新 `.env` 写入：
+   - LLM 和 HTTP 类：`<X>_BASE_URL=http://127.0.0.1:7787/c/<connection>/...` 和 `<X>_API_KEY=rekey`，地址用本机服务实际监听的端口和 Preset 的 SDK 路径后缀。App 的默认变量名去掉 `_API_KEY`、`_AUTH_TOKEN`、`_KEY` 或 `_TOKEN` 后缀再加 `_BASE_URL`（`OPENAI_API_KEY` → `OPENAI_BASE_URL`，`ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_BASE_URL`，即官方 SDK 读取的变量）；没有这些后缀，或该名字已是选中项、无法代理的项、未支持的行或另一项的变量时，用 `<变量名>_BASE_URL`。签署前可以修改；
    - 无法代理的项，例如数据库密码：保留原值，并在报告中标注"未迁移：协议不支持代理"，不静默处理。
 5. 全程只做一次 step-up（A2）。
 

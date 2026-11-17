@@ -1,5 +1,7 @@
 //! Synthetic software P-256 fixtures; these tests make no hardware-trust claim.
 mod common;
+#[path = "personal_policy/env_import.rs"]
+mod env_import;
 #[path = "personal_policy/gateway.rs"]
 mod gateway;
 #[path = "personal_policy/gateway_edges.rs"]

@@ -2267,58 +2267,6 @@ extension AppModel {
     }
 }
 
-struct EnvPreview:Decodable {
-    struct Entry:Decodable,Identifiable {let key:String;let preset_hint:String?;var id:String{key}}
-    struct Unsupported:Decodable {let line:UInt64;let key:String?}
-    let entries:[Entry]
-    let unsupported:[Unsupported]
-}
-struct EnvImportSelection:Encodable {let key:String;let label:String}
-struct EnvImportReport:Decodable {
-    struct Entry:Decodable {let key:String;let credential:Credential}
-    let entries:[Entry]
-    let unsupported:[EnvPreview.Unsupported]
-}
-struct EnvReplacement:Encodable {let key:String;let connection:String;let base_url_variable:String}
-struct EnvRewriteReport:Decodable {let backup:String}
-extension CLI {
-    func importSelected(path:String,selections:[EnvImportSelection],proof:String)throws->EnvImportReport {
-        let key=try PresenceKey.validated(proof)
-        let payload=try JSONEncoder().encode(selections)
-        return try JSONDecoder().decode(EnvImportReport.self,from:run(["import",path,"--selections-stdin","--presence","--password-stdin"],input:key+"\n"+String(decoding:payload,as:UTF8.self),redacting:[key]))
-    }
-    func rewriteImported(path:String,replacements:[EnvReplacement],proof:String)throws->EnvRewriteReport {
-        let key=try PresenceKey.validated(proof)
-        let payload=try JSONEncoder().encode(replacements)
-        return try JSONDecoder().decode(EnvRewriteReport.self,from:run(["import",path,"--rewrite-stdin","--presence","--password-stdin"],input:key+"\n"+String(decoding:payload,as:UTF8.self),redacting:[key]))
-    }
-}
-extension AppModel {
-    func previewEnv(_ path:String)async throws->EnvPreview {
-        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
-        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
-        let preview=try await Task.detached{try client.decode(EnvPreview.self,["import",path,"--dry-run"])}.value
-        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"导入预览期间上下文已改变。")}
-        return preview
-    }
-    func importSelected(path:String,selections:[EnvImportSelection],authentication:PresenceReadContext)async throws->EnvImportReport {
-        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
-        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
-        let (proof,_)=try await readPresenceProof(client:client,revision:revision,read:{id in try authentication.read(vaultID:id){try PresenceKey.read(vaultID:id,context:$0)}})
-        let report=try await Task.detached{try client.importSelected(path:path,selections:selections,proof:proof)}.value
-        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"导入结果的工作区已改变，请检查凭证列表，勿自动重试。")}
-        return report
-    }
-    func rewriteImported(path:String,replacements:[EnvReplacement],revision:UUID,authentication:PresenceReadContext)async throws->EnvRewriteReport {
-        guard !busy,acceptsNativeCompletion(revision,workspace:stateDirectory)else{throw UIError(message:"导入上下文已失效，请重新审阅文件替换。")}
-        busy=true;defer{busy=false};let client=cli
-        let (proof,_)=try await readPresenceProof(client:client,revision:revision,read:{id in try authentication.read(vaultID:id){try PresenceKey.read(vaultID:id,context:$0)}})
-        let report=try await Task.detached{try client.rewriteImported(path:path,replacements:replacements,proof:proof)}.value
-        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"文件替换结果未确认，请检查原文件及备份，勿自动重试。")}
-        return report
-    }
-}
-
 struct OAuthBindingDefinition:Codable,Equatable,Sendable {
     var provider:String;var client_id:String;var scopes:[String]
 }

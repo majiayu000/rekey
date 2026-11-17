@@ -180,7 +180,7 @@ import CryptoKit
         else:
             assert '--rewrite-stdin' in args
             assert request==[{'key':'SYNTHETIC_KEY','connection':'synthetic','base_url_variable':'SYNTHETIC_BASE_URL'}]
-            print(json.dumps({'backup':'/tmp/synthetic.env.rekey-backup'}))
+            print(json.dumps({'backup':'/tmp/synthetic.env.rekey-backup','backup_git':'not-ignored'}))
         """
         try Data(script.utf8).write(to:executable);try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:executable.path)
         let client=CLI(binary:executable,stateDirectory:temporary.path),path=temporary.appendingPathComponent("missing-source.env").path
@@ -194,7 +194,25 @@ import CryptoKit
         let receipt=try client.importSelected(path:path,selections:[.init(key:"SYNTHETIC_KEY",label:"synthetic label")],proof:String(repeating:"ab",count:32))
         precondition(receipt.entries.count==1 && receipt.entries[0].key=="SYNTHETIC_KEY")
         let rewritten=try client.rewriteImported(path:path,replacements:[.init(key:"SYNTHETIC_KEY",connection:"synthetic",base_url_variable:"SYNTHETIC_BASE_URL")],proof:String(repeating:"ab",count:32))
-        precondition(rewritten.backup=="/tmp/synthetic.env.rekey-backup" && !FileManager.default.fileExists(atPath:path))
+        precondition(rewritten.backup=="/tmp/synthetic.env.rekey-backup" && rewritten.backup_git=="not-ignored" && !FileManager.default.fileExists(atPath:path))
+        // agent-call 7.3: default SDK base-URL variables, recognition, the receipt, the signed expiry and the backup notice.
+        precondition(EnvImportPlan.baseURLVariables(["OPENAI_API_KEY","ANTHROPIC_AUTH_TOKEN","GITHUB_TOKEN","DEEPSEEK_KEY","SYNTHETIC"],reserved:[])==["OPENAI_BASE_URL","ANTHROPIC_BASE_URL","GITHUB_BASE_URL","DEEPSEEK_BASE_URL","SYNTHETIC_BASE_URL"])
+        precondition(EnvImportPlan.baseURLVariables(["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","API_KEY","_KEY"],reserved:["API_BASE_URL"])==["ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN_BASE_URL","API_KEY_BASE_URL","_KEY_BASE_URL"])
+        precondition(EnvImportPlan.baseURLVariables(["OPENAI_API_KEY","OPENAI_BASE_URL"],reserved:[])==["OPENAI_API_KEY_BASE_URL","OPENAI_BASE_URL_BASE_URL"])
+        let envPreview=try JSONDecoder().decode(EnvPreview.self,from:Data(#"{"entries":[{"key":"GH_TOKEN","preset_hint":"github-pat","unsupported_protocol":null},{"key":"AWS_SECRET_ACCESS_KEY","preset_hint":null,"unsupported_protocol":"aws"},{"key":"APP_MODE","preset_hint":null,"unsupported_protocol":null},{"key":"LEGACY","preset_hint":"retired","unsupported_protocol":null}],"unsupported":[]}"#.utf8))
+        var envItems=EnvImportPlan.items(envPreview)
+        precondition(envItems.map(\.preset)==["github-pat","generic-bearer","generic-bearer","generic-bearer"] && envItems.allSatisfy{$0.choice == .skip} && envItems[1].unsupportedProtocol=="aws")
+        envItems[0].choice = .importKey;envItems[2].choice = .nonSecret
+        precondition(EnvImportPlan.report(envItems)==["未迁移：协议不支持代理：AWS_SECRET_ACCESS_KEY（AWS 签名），原值保留。","已跳过，仍以明文留在文件中：LEGACY","已标记为非密钥，原样保留：APP_MODE"])
+        func signedBase(_ expires:Any)throws->ConnectionList {try JSONDecoder().decode(ConnectionList.self,from:JSONSerialization.data(withJSONObject:["connections":[],"ssh_keys":[],"derived_credentials":[],"policy_sha256":expires is NSNull ? NSNull() as Any:String(repeating:"ab",count:32),"expires_at_ms":expires]))}
+        let reviewTime=Date(timeIntervalSince1970:1_000_000)
+        let currentBase=try signedBase(Int64(4_000_000_000_000)),lapsedBase=try signedBase(Int64(999_999_000)),absentBase=try signedBase(NSNull())
+        precondition(EnvImportPlan.defaultExpiry(currentBase,now:reviewTime)==Date(timeIntervalSince1970:4_000_000_000))
+        precondition(EnvImportPlan.defaultExpiry(lapsedBase,now:reviewTime)==reviewTime.addingTimeInterval(86400) && EnvImportPlan.defaultExpiry(absentBase,now:reviewTime)==reviewTime.addingTimeInterval(86400))
+        for (state,phrase) in [("ignored","已被 git 忽略"),("not-ignored","加入 .gitignore"),("no-repository","确认替换无误后请删除它"),("unknown","未能确认 git 是否忽略它")] {
+            let notice=EnvImportPlan.backupNotice(.init(backup:"/tmp/p/.env.rekey-backup",backup_git:state))
+            precondition(notice.contains(phrase) && notice.contains("/tmp/p/.env.rekey-backup") && notice.contains("删除"))
+        }
         let ordered=["0.4.0-alpha.1","0.4.0","0.5.0-alpha.1","0.5.0-alpha.2","0.5.0-alpha.10","0.5.0-beta","0.5.0","0.10.0"].map{ReleaseVersion($0)!}
         precondition(zip(ordered,ordered.dropFirst()).allSatisfy{$0 < $1} && ReleaseVersion("0.5.0+build")! == ReleaseVersion("0.5.0")!)
         for bad in ["v0.5.0","0.5","0.5.0-","0.5.x","0.5.0-alpha..1"] {precondition(ReleaseVersion(bad)==nil)}
@@ -206,7 +224,7 @@ import CryptoKit
         precondition(upgrade?.version=="0.5.0-alpha.1" && upgrade?.page.absoluteString=="https://github.com/\(UpdateFeed.repository)/releases/tag/v0.5.0-alpha.1" && current==nil)
         let major=try UpdateFeed.newest(try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v1.0.0")]),current:"0.5.0-alpha.1")
         precondition(major?.version=="1.0.0")
-        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes and re-authorization, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, the App SSH git-signing default, SSH generation proof boundaries and update feed selection.")
+        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes and re-authorization, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, the App SSH git-signing default, SSH generation proof boundaries, .env import defaults and receipts, and update feed selection.")
     }
     static func reviewResponse(_ review:[String:Any],id:String)throws->Data {
         let raw=try JSONSerialization.data(withJSONObject:review,options:[.sortedKeys,.withoutEscapingSlashes])
