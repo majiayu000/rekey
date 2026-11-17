@@ -245,6 +245,8 @@ pub(super) struct Edit {
     pub(super) updated: Vec<u8>,
     pub(super) before: String,
     pub(super) after: String,
+    /// Shown after the preview, e.g. when a project file names a local path.
+    pub(super) warning: Option<&'static str>,
 }
 impl Edit {
     pub(super) fn load(
@@ -265,6 +267,7 @@ impl Edit {
             updated: Vec::new(),
             before: String::new(),
             after: String::new(),
+            warning: None,
         })
     }
     pub(super) fn bytes(&self) -> &[u8] {

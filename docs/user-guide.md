@@ -55,18 +55,26 @@ rekey --state-dir /absolute/path/rekey-dev status --passive
 在项目目录先预览，再确认写入：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-dev connect claude-code --print
-rekey --state-dir /absolute/path/rekey-dev connect claude-code
+rekey connect claude-code --print
+rekey connect claude-code
 ```
 
 支持 `claude-code`、`codex`、`cursor`。指定项目目录：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-dev connect codex --project /absolute/path/project --print
-rekey --state-dir /absolute/path/rekey-dev connect codex --project /absolute/path/project
+rekey connect codex --project /absolute/path/project --print
+rekey connect codex --project /absolute/path/project
 ```
 
-命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。MCP、受管 CLI 说明及扫描钩子均绑定本次选择的 vault 绝对目录；更换目录后重新执行 `connect`。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
+命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
+
+0.5 源码起，使用默认保险库（`~/.rekey`）时写入的文件不含本机路径：MCP 配置只有 `"command": "rekey-mcp"`，说明书里是普通的 `rekey` 命令，这两个文件可以随项目提交；扫描钩子同样使用普通的 `rekey`。使用其他目录时加 `--state-dir`：
+
+```bash
+rekey --state-dir /absolute/path/rekey-dev connect claude-code --print
+```
+
+这时 MCP 配置、说明书和扫描钩子都写入这个绝对目录，让 Agent 连到这一个保险库；预览会提示含本机绝对路径的文件不要提交。更换目录后重新执行 `connect`。已发布的 0.4 总是写入绝对目录。
 
 Claude Code 插件位于 [`plugins/rekey`](../plugins/rekey)，由仓库根目录的 marketplace 清单注册。先添加本地源码或解压后的发行目录，再安装：
 

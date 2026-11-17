@@ -13,11 +13,43 @@ use crate::client::CliError;
 mod edit;
 use edit::{Edit, MAX_CONFIG, marked};
 
+const LOCAL_PATH_WARNING: &str =
+    "Warning: this file will contain the absolute path of a non-default vault; do not commit it.";
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum ConnectClient {
     ClaudeCode,
     Codex,
     Cursor,
+}
+/// How generated files name the vault. The default `~/.rekey` stays implicit,
+/// so project files carry no local path; any other vault is bound explicitly.
+struct Vault {
+    path: PathBuf,
+    custom: Option<String>,
+    rekey: String,
+}
+impl Vault {
+    fn resolve(state_dir: &Path) -> Result<Self, CliError> {
+        let path = std::path::absolute(state_dir)
+            .map_err(|e| io_error("cannot resolve state directory", e))?;
+        let state = path
+            .to_str()
+            .ok_or_else(|| invalid("state directory must be UTF-8"))?;
+        let default = super::resolve_state_dir(None)
+            .ok()
+            .and_then(|dir| std::path::absolute(dir).ok());
+        let custom = (default.as_deref() != Some(&*path)).then(|| state.to_owned());
+        let rekey = custom.as_deref().map_or_else(
+            || "rekey".into(),
+            |state| format!("rekey --state-dir '{}'", state.replace('\'', "'\"'\"'")),
+        );
+        Ok(Self {
+            path,
+            custom,
+            rekey,
+        })
+    }
 }
 impl ConnectClient {
     fn instruction_file(self) -> &'static str {
@@ -98,12 +130,13 @@ impl Object {
 #[serde(deny_unknown_fields)]
 struct JsonServer {
     command: String,
-    args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<Vec<String>>,
 }
-fn json_server(executable: &str, state_dir: &str) -> JsonServer {
+fn json_server(executable: &str, state_dir: Option<&str>) -> JsonServer {
     JsonServer {
         command: executable.into(),
-        args: vec!["--state-dir".into(), state_dir.into()],
+        args: state_dir.map(|state| vec!["--state-dir".into(), state.into()]),
     }
 }
 fn encode_raw(value: &impl Serialize) -> Result<Box<RawValue>, CliError> {
@@ -114,11 +147,12 @@ fn preview_fields<'a>(keys: impl Iterator<Item = &'a str>) -> Result<String, Cli
     serde_json::to_string_pretty(&fields).map_err(|_| invalid("cannot encode MCP preview"))
 }
 // (new bytes, existing subtree field comparison with values hidden, already equal)
+// `state_dir` is set only for a non-default vault.
 fn prepare(
     client: ConnectClient,
     original: &[u8],
     executable: &str,
-    state_dir: &str,
+    state_dir: Option<&str>,
 ) -> Result<(Vec<u8>, String, bool), CliError> {
     if matches!(client, ConnectClient::Codex) {
         let text = std::str::from_utf8(original)
@@ -134,12 +168,14 @@ fn prepare(
             .ok_or_else(|| invalid("mcp_servers must be a TOML table"))?;
         let old = servers.get("rekey");
         let same = old.and_then(Item::as_table_like).is_some_and(|t| {
-            t.len() == 2
+            t.len() == 1 + usize::from(state_dir.is_some())
                 && t.get("command").and_then(Item::as_str) == Some(executable)
-                && t.get("args").and_then(Item::as_array).is_some_and(|args| {
-                    args.len() == 2
-                        && args.get(0).and_then(toml_edit::Value::as_str) == Some("--state-dir")
-                        && args.get(1).and_then(toml_edit::Value::as_str) == Some(state_dir)
+                && state_dir.is_none_or(|state| {
+                    t.get("args").and_then(Item::as_array).is_some_and(|args| {
+                        args.len() == 2
+                            && args.get(0).and_then(toml_edit::Value::as_str) == Some("--state-dir")
+                            && args.get(1).and_then(toml_edit::Value::as_str) == Some(state)
+                    })
                 })
         });
         let before = match old {
@@ -151,7 +187,9 @@ fn prepare(
         };
         let mut server = Table::new();
         server["command"] = value(executable);
-        server["args"] = value(Array::from_iter(["--state-dir", state_dir]));
+        if let Some(state) = state_dir {
+            server["args"] = value(Array::from_iter(["--state-dir", state]));
+        }
         servers.insert("rekey", Item::Table(server));
         Ok((doc.to_string().into_bytes(), before, same))
     } else {
@@ -203,13 +241,10 @@ pub fn connect(
     ssh_hosts: Vec<String>,
     state_dir: &Path,
 ) -> Result<(), CliError> {
-    let state_dir = std::path::absolute(state_dir)
-        .map_err(|e| io_error("cannot resolve state directory", e))?;
-    let state = state_dir
-        .to_str()
-        .ok_or_else(|| invalid("state directory must be UTF-8"))?;
-    let rekey = format!("rekey --state-dir '{}'", state.replace('\'', "'\"'\"'"));
-    let instruction_text = INSTRUCTIONS.replace("{rekey}", &rekey);
+    let vault = Vault::resolve(state_dir)?;
+    let (rekey, state) = (&vault.rekey, vault.custom.as_deref());
+    let warning = state.map(|_| LOCAL_PATH_WARNING);
+    let instruction_text = INSTRUCTIONS.replace("{rekey}", rekey);
     let project_path = std::path::absolute(
         project
             .unwrap_or(std::env::current_dir().map_err(|e| io_error("cannot resolve project", e))?),
@@ -232,6 +267,7 @@ pub fn connect(
     config.before = before;
     config.after =
         String::from_utf8(prepare(client, &[], "rekey-mcp", state)?.0).expect("generated UTF-8");
+    config.warning = warning;
     let mut instructions = Edit::load(project_path, None, client.instruction_file())?;
     instructions.updated = marked(
         instructions.bytes(),
@@ -239,10 +275,11 @@ pub fn connect(
         "<!-- rekey:begin -->",
         "<!-- rekey:end -->",
     )?;
+    let begin = b"<!-- rekey:begin -->";
     instructions.before = if instructions
         .bytes()
-        .windows(19)
-        .any(|s| s == b"<!-- rekey:begin -->")
+        .windows(begin.len())
+        .any(|s| s == begin)
     {
         "<existing Rekey instructions; values hidden>"
     } else {
@@ -250,6 +287,7 @@ pub fn connect(
     }
     .into();
     instructions.after = instruction_text;
+    instructions.warning = warning;
     let mut edits = vec![config, instructions];
     if with_hooks {
         let result = std::process::Command::new("git")
@@ -312,7 +350,7 @@ pub fn connect(
         }
         let home = std::env::home_dir().ok_or_else(|| invalid("cannot resolve home directory"))?;
         let mut ssh = Edit::load(home, Some(".ssh"), "config")?;
-        let socket = state_dir.join("ssh-agent.sock");
+        let socket = vault.path.join("ssh-agent.sock");
         let socket = socket
             .to_str()
             .ok_or_else(|| invalid("SSH socket must be UTF-8"))?;
@@ -349,6 +387,9 @@ pub fn connect(
         .map_err(|e| io_error("cannot write preview", e))?;
         for line in edit.after.lines() {
             writeln!(output, "+ {line}").map_err(|e| io_error("cannot write preview", e))?;
+        }
+        if let Some(warning) = edit.warning {
+            writeln!(output, "{warning}").map_err(|e| io_error("cannot write preview", e))?;
         }
     }
     if print {

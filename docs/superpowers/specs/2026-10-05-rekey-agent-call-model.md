@@ -406,21 +406,26 @@ OPENAI_API_KEY=rekey
 
 ### 6.5 `rekey connect`
 
-在项目目录或用户级写入以下内容，均需展示**改动前后的 diff**并确认，写入前自动备份；沿用 0.3 的 O_NOFOLLOW 和原子写入：
+在项目目录或用户级写入以下内容，均需展示**改动前后的 diff**并确认，写入前自动备份；沿用 0.3 的 O_NOFOLLOW 和原子写入。diff 不回显已有文件里的值，只标明已有字段或已有的 Rekey 标记段。
+
+**vault 绑定（2026-11-17 修订）**
+- 默认 vault（`~/.rekey`，显式写出同一路径也算）：生成的文件不含本机路径。MCP 配置只有 `command`，说明书里的命令是不带 `--state-dir` 的 `rekey`；`rekey-mcp` 与 `rekey` 缺省都使用 `~/.rekey`。
+- 其他 vault（`--state-dir` 指向别的目录）：MCP 配置写 `args = ["--state-dir", "<绝对路径>"]`，说明书使用 `rekey --state-dir '<绝对路径>'`（shell 单引号转义），让 Agent 连到所选 vault 而不是默认 vault。预览对 MCP 配置和说明书提示"文件将包含非默认 vault 的绝对路径，不要提交"。
+- 更换 vault 后重新执行 `connect`，原绑定整体替换。
 
 1. **MCP 配置**
    - Claude Code：`.mcp.json`；
    - Codex：`.codex/config.toml` 中的 `mcp_servers.rekey`；
    - Cursor：`.cursor/mcp.json`。
-   - 只写 `command`，不写 env，不写令牌。`command` 使用 `rekey-mcp` 的稳定路径，比如 Homebrew 或 pkg 安装的 `/usr/local/bin/rekey-mcp`，避免把开发机上的绝对路径提交进仓库。
-2. **Agent 说明书**：在 `AGENTS.md` 或 `CLAUDE.md` 中写入一个带标记的段落，再次执行时替换而不是追加：
+   - 不写 env，不写令牌。`command` 固定为 `rekey-mcp`，由客户端按 PATH 找到 Homebrew 或 pkg 安装的稳定位置（如 `/usr/local/bin/rekey-mcp`），不写开发机上的二进制绝对路径；`args` 只在非默认 vault 时出现（见上）。
+2. **Agent 说明书**：在 `AGENTS.md` 或 `CLAUDE.md` 中写入一个带标记的段落，再次执行时替换而不是追加。下例为默认 vault；非默认 vault 时其中的 `rekey` 带 `--state-dir`：
 
 ```markdown
 <!-- rekey:begin -->
 ## 使用密钥
 - 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `rekey list` / `rekey call`。
 - 不要向用户索要 API Key，不要读取或写入 .env 中的密钥，不要把密钥写进代码。
-- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时调用 `await_approval`。
+- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时用错误里的 `approval.challenge_id`（不是顶层 `request_id`）调用 `await_approval`，批准后带同一个 ID 重试原请求。
 - Agent 写的程序使用 `rekey list` 给出的本机服务地址和占位 Key `rekey`。
 <!-- rekey:end -->
 ```
@@ -629,7 +634,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C10 | SSH agent | 用 OpenSSH 客户端 `git push` 到测试仓库成功；未登记 host 进入审批；私钥无法导出；session-bind 缺失时按 approve |
 | C11 | OAuth | 合成 IdP（本地）完成 PKCE 授权与刷新；refresh 失败时返回 `NEEDS_REAUTH`；Agent 侧看不到任何 token |
 | C12 | T1 | AWS `credential_process` 返回的凭证有效期不超过设定值且附带 session policy（用模拟 STS）；未开启 T1 的 Connection 拒绝；审计标注 |
-| C13 | `rekey connect` | 前后 diff 准确、备份、重复执行幂等（标记段替换）、不写入任何令牌或密钥 |
+| C13 | `rekey connect` | 前后 diff 准确、备份、重复执行幂等（标记段替换）、不写入任何令牌或密钥；默认 vault 不写本机绝对路径，非默认 vault 在预览中警告（2026-11-17） |
 | C14 | 插件 | 安装插件后 Claude Code 能列出 MCP 工具，skill 可用；未安装 rekey 时给出提示 |
 | C15 | 真实 Agent | Claude Code 和 Codex 在不经任何包装的情况下完成 U2–U5（合成上游，加一次真实 GitHub 测试仓库） |
 | C16 | 体验 | 已安装用户：添加 GitHub PAT 到 Claude Code 首次成功调用，总时长不超过 2 分钟，密码最多 1 次，Touch ID 最多 2 次 |
