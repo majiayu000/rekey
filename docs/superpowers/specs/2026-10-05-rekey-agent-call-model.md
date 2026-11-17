@@ -584,6 +584,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
   - 判定结果和命中的规则 ID；
   - 审批 ID、状态码、字节数、LLM token 数。
 - **不记录**：正文、查询值、头的值。
+- 执行审计的 `request_id` 由 daemon 为每次执行生成。Agent 帧里的 `request_id` 只做传输关联（错误信封回显它），重复使用既不得合并两次执行的审计配对，也不得触发 `one_execution_started_per_request` 唯一约束而使运行时故障。
 - 新增事件类型：
   - `call.dry_run`
   - `access_request.created` / `.resolved`
