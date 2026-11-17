@@ -143,7 +143,7 @@ impl Daemon {
         std::fs::write(
             &hook,
             format!(
-                "#!/bin/sh\n# rekey:begin\nrekey --state-dir '{state}' scan --staged || exit $?\n# rekey:end\n"
+                "#!/bin/sh\n# rekey:begin\nrekey --state-dir '{state}' scan --staged </dev/null || exit $?\n# rekey:end\n"
             ),
         )
         .unwrap();
@@ -396,6 +396,51 @@ fn hook_blocks_complete_canary_variants_and_passes_cannot_scan_states_with_a_war
         assert!(!committed.lines().any(|line| line == *name), "{committed}");
     }
     d.assert_never_printed();
+}
+
+/// A symlink replaced by a regular file is a type change (`T`); the hook
+/// scans it like any other staged change.
+#[test]
+fn hook_scans_a_symlink_replaced_by_a_file() {
+    let mut d = Daemon::start();
+    d.add_connection();
+    std::os::unix::fs::symlink("target.txt", d.project.join("link")).unwrap();
+    d.git(&["add", "link"]);
+    let base = d.commit("target.txt", "clean\n", false);
+    assert!(base.status.success(), "{}", text(&base.stderr));
+    std::fs::remove_file(d.project.join("link")).unwrap();
+    let blocked = d.commit("link", &format!("token = {CANARY}\n"), false);
+    assert!(!blocked.status.success(), "a type change must be scanned");
+    let output = text(&blocked.stderr) + &text(&blocked.stdout);
+    assert!(output.contains("LEAK_DETECTED"), "{output}");
+    assert!(output.contains("\"path\": \"link\""), "{output}");
+    d.assert_never_printed();
+}
+
+/// A staged submodule pointer (gitlink) has no content in this repository,
+/// so it is not scan input and never blocks the commit.
+#[test]
+fn hook_commits_a_staged_submodule_pointer() {
+    let mut d = Daemon::start();
+    d.add_connection();
+    let base = d.commit("base.txt", "clean\n", false);
+    assert!(base.status.success(), "{}", text(&base.stderr));
+    let head = text(&d.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_owned();
+    let entry = format!("160000,{head},vendor/sub");
+    d.git(&["update-index", "--add", "--cacheinfo", &entry]);
+    let pointer = d.commit("next.txt", "clean\n", false);
+    assert!(pointer.status.success(), "{}", text(&pointer.stderr));
+    let committed = d.committed();
+    assert!(
+        committed.lines().any(|line| line == "vendor/sub"),
+        "{committed}"
+    );
+    assert!(
+        committed.lines().any(|line| line == "next.txt"),
+        "{committed}"
+    );
 }
 
 /// Sends one SCAN frame directly; returns the response type, metadata and body.

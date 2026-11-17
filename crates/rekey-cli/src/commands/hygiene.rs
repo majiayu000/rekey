@@ -54,36 +54,59 @@ fn git_bytes(arguments: &[&std::ffi::OsStr], limit: usize) -> Result<Zeroizing<V
     }
     Ok(bytes)
 }
+fn utf8_path(name: &[u8]) -> Result<PathBuf, CliError> {
+    std::str::from_utf8(name)
+        .map(PathBuf::from)
+        .map_err(|_| usage("staged paths must be UTF-8"))
+}
 fn repository_files(staged: bool) -> Result<Vec<PathBuf>, CliError> {
-    let arguments: Vec<_> = if staged {
-        vec![
-            "diff",
-            "--cached",
-            "--name-only",
-            "--diff-filter=ACMR",
-            "-z",
-        ]
-    } else {
-        vec![
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ]
+    if staged {
+        let arguments = ["diff", "--cached", "--raw", "-z", "--diff-filter=ACMRT"];
+        return staged_paths(&git_bytes(
+            &arguments.map(std::ffi::OsStr::new),
+            TOTAL_LIMIT,
+        )?);
     }
-    .into_iter()
-    .map(std::ffi::OsStr::new)
-    .collect();
-    git_bytes(&arguments, TOTAL_LIMIT)?
+    let arguments = [
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ];
+    git_bytes(&arguments.map(std::ffi::OsStr::new), TOTAL_LIMIT)?
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())
-        .map(|name| {
-            std::str::from_utf8(name)
-                .map(PathBuf::from)
-                .map_err(|_| usage("staged paths must be UTF-8"))
-        })
+        .map(utf8_path)
         .collect()
+}
+/// Paths with staged content from `git diff --cached --raw -z`. Type changes
+/// (a symlink replaced by a regular file) are scanned like any other change;
+/// a rename or copy scans its destination. A submodule gitlink (new mode
+/// 160000) points at a commit, has no blob in this repository and is skipped.
+fn staged_paths(raw: &[u8]) -> Result<Vec<PathBuf>, CliError> {
+    let invalid = || usage("git returned an invalid staged entry");
+    let mut fields = raw.split(|byte| *byte == 0);
+    let mut paths = Vec::new();
+    while let Some(entry) = fields.next().filter(|entry| !entry.is_empty()) {
+        let parts: Vec<&[u8]> = entry
+            .strip_prefix(b":")
+            .ok_or_else(invalid)?
+            .split(|byte| *byte == b' ')
+            .collect();
+        let [_, mode, _, _, status] = parts[..] else {
+            return Err(invalid());
+        };
+        let mut path = fields.next().filter(|path| !path.is_empty());
+        if matches!(status.first(), Some(b'R' | b'C')) {
+            path = fields.next().filter(|path| !path.is_empty());
+        }
+        let path = path.ok_or_else(invalid)?;
+        if mode != b"160000" {
+            paths.push(utf8_path(path)?);
+        }
+    }
+    Ok(paths)
 }
 fn collect(path: &Path, paths: &mut Vec<PathBuf>) -> Result<(), CliError> {
     let metadata =
@@ -680,6 +703,29 @@ mod tests {
                 Some(PathBuf::from("/usr/bin/git")),
                 "{layout}"
             );
+        }
+    }
+    #[test]
+    fn staged_paths_scan_type_changes_and_destinations_and_skip_gitlinks() {
+        let raw = b":000000 100644 0000000 45b983b A\0added.txt\0\
+            :120000 100644 1111111 2222222 T\0was-a-link\0\
+            :100644 100644 84275f9 84275f9 R100\0old.txt\0renamed.txt\0\
+            :100644 100644 84275f9 84275f9 C075\0source.txt\0copy.txt\0\
+            :000000 160000 0000000 38ed5f0 A\0vendor/sub\0\
+            :100644 160000 1111111 38ed5f0 T\0became-sub\0";
+        assert_eq!(
+            staged_paths(raw).unwrap(),
+            ["added.txt", "was-a-link", "renamed.txt", "copy.txt"].map(PathBuf::from)
+        );
+        assert!(staged_paths(b"").unwrap().is_empty());
+        for invalid in [
+            &b"100644 100644 0 0 A\0a\0"[..],
+            b":100644 100644 0 A\0a\0",
+            b":100644 100644 0 0 A\0",
+            b":100644 100644 0 0 R100\0old\0",
+            b":100644 100644 0 0 A\0\xff\0",
+        ] {
+            assert!(staged_paths(invalid).is_err(), "{invalid:?}");
         }
     }
     #[test]
