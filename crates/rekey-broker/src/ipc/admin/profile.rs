@@ -1,18 +1,35 @@
-//! One-use Profile control connection. EOF and OS owner death are independent.
+//! Lab-only one-use Profile control connection (admin opcode 59). EOF and OS
+//! owner death are independent. Default builds do not compile this module.
 use tokio::io::AsyncReadExt;
 
 use super::*;
 use crate::ipc::owner::PeerProcess;
 
 pub(super) async fn handle_control(
-    stream: UnixStream,
+    mut stream: UnixStream,
     frame: IncomingFrame,
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
-    request_permit: tokio::sync::OwnedSemaphorePermit,
-    control_owner: Arc<tokio::sync::OwnedSemaphorePermit>,
 ) {
     let request_id = frame.header.request_id;
+    // Same admission order as other admin requests, plus a finite owner quota.
+    let admitted = Arc::clone(&ctx.sessions.admin_requests)
+        .try_acquire_owned()
+        .map_err(|_| AuthorityError::AuthorityBusy)
+        .and_then(|permit| Ok((permit, ctx.sessions.reserve_control_owner()?)));
+    let (request_permit, control_owner) = match admitted {
+        Ok(admitted) => admitted,
+        Err(error) => {
+            let _ = write_admin_error(
+                &mut stream,
+                admin_msg::PROFILE_SESSION_CREATE,
+                request_id,
+                &BrokerError::Admission(error),
+            )
+            .await;
+            return;
+        }
+    };
     let mut owner = match PeerProcess::from_peer(&stream) {
         Ok(owner) if owner.uid() == crate::ipc::peer::current_uid() => owner,
         Ok(_) => return,
@@ -22,7 +39,6 @@ pub(super) async fn handle_control(
             } else {
                 BrokerError::Io(error)
             };
-            let mut stream = stream;
             let _ = write_admin_error(
                 &mut stream,
                 admin_msg::PROFILE_SESSION_CREATE,
@@ -38,17 +54,11 @@ pub(super) async fn handle_control(
     let (cancel, receiver) = watch::channel(false);
     let create = async {
         let deadline = admin_mutation_deadline();
-        #[cfg(feature = "lab")]
         let (frame, admission) = prepare_admin_frame(&frame, &ctx, deadline).await?;
-        #[cfg(not(feature = "lab"))]
-        if frame.body.starts_with(b"RKAU") {
-            return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
-        }
         let request: ipc::ProfileNameMeta = meta(&frame)?;
         ctx.profile_create_until(
             &request.profile,
             &frame.body,
-            #[cfg(feature = "lab")]
             admission.as_ref(),
             deadline,
             Arc::clone(&control_owner),
@@ -110,7 +120,7 @@ pub(super) async fn handle_control(
     drop(reader);
     if let Err(error) = ctx
         .authority
-        .commit_audit(crate::runtime::profile::session_audit(
+        .commit_audit(crate::runtime::profile::issue::session_audit(
             rekey_vault::model::event_type::SESSION_REVOKED,
             session_id,
         ))

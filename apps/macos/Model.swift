@@ -61,17 +61,17 @@ struct CLI: Sendable {
     }
 
     func run(_ arguments: [String], input: String = "", redacting: [String] = []) throws -> Data {
-        try execute(binary, commandArguments(arguments), input: Data(input.utf8), redacting: redacting, operation: arguments)
+        try execute(binary, commandArguments(arguments), input: Data(input.utf8), redacting: redacting, operation: arguments).stdout
     }
 
     // The signer accepts only public arguments and exact signing bytes on stdin.
     // It shares the CLI's bounded capture, timeout and clean environment boundary.
     func policySigner(_ arguments: [String], input: Data = Data()) throws -> Data {
         try execute(binary.deletingLastPathComponent().appendingPathComponent("rekey-policy-sign"), arguments,
-                    input: input, redacting: [], operation: arguments)
+                    input: input, redacting: [], operation: arguments).stdout
     }
 
-    private func execute(_ executable: URL, _ arguments: [String], input: Data, redacting: [String], operation: [String]) throws -> Data {
+    func execute(_ executable: URL, _ arguments: [String], input: Data, redacting: [String], operation: [String]) throws -> (stdout: Data, stderr: Data) {
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw UIError(message: "找不到随应用安装的 rekey，请重新构建应用。")
         }
@@ -119,13 +119,7 @@ struct CLI: Sendable {
             let rebuild = Self.rebuildGuidance(stderr: detail).map { "\n" + $0 } ?? ""
             throw UIError(message: "操作未完成（\(process.terminationStatus)）\n\(detail)\(rebuild)")
         }
-        return output.data
-    }
-
-    static func rebuildGuidance(stderr: String) -> String? {
-        guard stderr.hasPrefix("error [UNSUPPORTED_FORMAT_VERSION]:") ||
-              stderr.hasPrefix("error [UNSUPPORTED_VAULT_LAYOUT]:") else { return nil }
-        return "此版本无法读取这个格式，不提供迁移。请保留原工作区和备份，在左侧“个人工作区”中选择一个新建的空目录，再创建保险库并重新添加密钥。不要覆盖或清空旧目录；本次操作不会自动重建。"
+        return (output.data, errors.data)
     }
 
     func decode<T: Decodable>(_ type: T.Type, _ arguments: [String]) throws -> T {
@@ -171,51 +165,6 @@ private final class OutputCapture: @unchecked Sendable {
     }
 }
 
-struct ServiceStatus: Decodable {
-    let state: String
-    let format_version: Int
-    let runtime_version: String
-    let sessions_active: Int
-    let peer_security: String
-    let lab_enabled: Bool
-    let rollback: RollbackContext?
-    var identityLabel: String {
-        peer_security == "verified_signature" ? "服务签名已校验" : "服务签名未校验"
-    }
-    var protectionLabel: String {
-        switch state {
-        case "locked" where sessions_active == 0: return "L0 · Agent 访问已锁定"
-        case "unlocked": return "L1-dev · 已确认的保护下限"
-        default: return "保护状态未确认 · 禁止执行"
-        }
-    }
-    var protectionDetail: String {
-        "L0 表示只保存凭据。L1-dev 表示 Agent 接口不返回密钥；当前构建的钥匙串访问和同用户内存隔离仍待设备验收，服务签名通过也不宣称 L1。同用户调用方可伪造标注；调用方规则只能收紧，不能扩大已签署权限。"
-    }
-    var unlocked: Bool { state == "unlocked" }
-    var label: String {
-        switch state {
-        case "unlocked": return "已解锁"
-        case "locked": return "已锁定"
-        case "faulted": return "服务故障"
-        case "rollback-suspected": return "疑似回滚 · 需明确确认"
-        default: return "状态：" + state
-        }
-    }
-}
-extension ServiceStatus {
-    private enum CodingKeys: String, CodingKey { case state, format_version, runtime_version, sessions_active, peer_security, lab_enabled, rollback }
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        state = try c.decode(String.self, forKey: .state)
-        format_version = try c.decode(Int.self, forKey: .format_version)
-        runtime_version = try c.decode(String.self, forKey: .runtime_version)
-        sessions_active = try c.decode(Int.self, forKey: .sessions_active)
-        peer_security = try c.decode(String.self, forKey: .peer_security)
-        lab_enabled = try c.decode(Bool.self, forKey: .lab_enabled)
-        rollback = try c.decode(RollbackContext?.self, forKey: .rollback)
-    }
-}
 struct RollbackContext: Codable, Equatable, Sendable {
     let vault_id: UUID
     let source_generation: UInt64
@@ -779,6 +728,7 @@ struct AuditEvent: Decodable, Identifiable {
     let created_at_ms: Int64
     let request_id: String?
     let approval_request_id: String?
+    let credential_id: String?
     let request_context: ActivityContext?
     let usage: ActivityUsage?
     var id: UInt64 { sequence }
@@ -843,6 +793,8 @@ struct ActivitySnapshot {
     private var groups: [ActivityContext?: ActivityRow] = [:]
     private var sequences = Set<UInt64>(), eventIDs = Set<String>()
     private var approvalIDs = Set<String>(), settledRequests = Set<String>()
+    /// OAuth connections whose newest record is a provider refusal (agent-call §7.4).
+    private(set) var reauthorization = OAuthReauthorization()
 
     init(nowMs: Int64) {
         untilMs = max(0, nowMs)
@@ -871,6 +823,7 @@ struct ActivitySnapshot {
         for event in page.events {
             guard !next.sequences.contains(event.sequence), !next.eventIDs.contains(event.event_id) else { continue }
             next.sequences.insert(event.sequence); next.eventIDs.insert(event.event_id)
+            next.reauthorization.note(event)
             var counts = ActivityCounts()
             if event.event_type == "execution.started" { counts.admitted = 1 }
             if event.event_type == "execution.blocked" { counts.denied = 1 }
@@ -883,7 +836,7 @@ struct ActivitySnapshot {
                 case .notApplicable: break
                 }
             }
-            guard counts.admitted != 0 || counts.denied != 0 || counts.approvals != 0 || counts.measuredTokens != 0 || counts.estimatedTokens != 0 || event.request_context?.connection != nil else { continue }
+            guard !event.event_type.hasPrefix("access_request."), counts.admitted != 0 || counts.denied != 0 || counts.approvals != 0 || counts.measuredTokens != 0 || counts.estimatedTokens != 0 || event.request_context?.connection != nil else { continue } // Access requests are not calls (§7.2, §10).
             let group=event.request_context?.group
             var row = next.groups[group] ?? ActivityRow(context:group)
             if event.request_context?.connection != nil {
@@ -902,52 +855,6 @@ struct ActivitySnapshot {
         self = next
     }
 }
-
-struct OnboardingAddRequest: Equatable, Hashable, Sendable {
-    let provider: String
-    var name: String? = nil
-    var label: String? = nil
-    var credentialID: String? = nil
-    var origin: String? = nil
-    var header: String? = nil
-    var prefix: String? = nil
-    var validDays: Int? = nil
-    var models: [String] = []
-}
-
-enum OnboardingRoute: Equatable, Hashable, Sendable {
-    case setup
-    case add(OnboardingAddRequest)
-    case importEnv(String)
-    case oauth(String)
-    var rawValue: String { switch self { case .setup:return "rekey://setup";case .add(let request):return "rekey://add/"+request.provider;case .importEnv(let path):return "import:"+path;case .oauth(let connection):return "oauth:"+connection } }
-    init?(url: URL) {
-        guard url.scheme == "rekey", url.fragment == nil, url.user == nil, url.password == nil, url.port == nil, url.absoluteString.utf8.count <= 8192 else { return nil }
-        if url.host == "import",url.path.isEmpty,let components=URLComponents(url:url,resolvingAgainstBaseURL:false),let query=components.queryItems,query.count==1,query[0].name=="path",let path=query[0].value,path.hasPrefix("/"),!path.contains("\0") {self = .importEnv(path);return}
-        if url.host == "oauth",url.path.isEmpty,let query=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems,query.count==1,query[0].name=="connection",let connection=query[0].value,!connection.isEmpty,connection.utf8.count<=100,connection.utf8.allSatisfy({$0>=48 && $0<=57 || $0>=65 && $0<=90 || $0>=97 && $0<=122 || [45,46,95].contains($0)}) {self = .oauth(connection);return}
-        if url.host == "setup", url.query == nil, url.path.isEmpty { self = .setup; return }
-        let presets = ConnectionPreset.apiKeyPresets+OAuthSetup.presets
-        guard url.host == "add", presets.contains(String(url.path.dropFirst())),url.path.hasPrefix("/") else { return nil }
-        var request = OnboardingAddRequest(provider: String(url.path.dropFirst()))
-        var seen = Set<String>()
-        for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] {
-            guard let value = item.value, !value.contains("\0"), item.name == "model" || seen.insert(item.name).inserted else { return nil }
-            switch item.name {
-            case "name": request.name = value
-            case "label": request.label = value
-            case "credential_id": guard UUID(uuidString: value) != nil else { return nil }; request.credentialID = value.lowercased()
-            case "origin": request.origin = value
-            case "header": request.header = value
-            case "prefix": request.prefix = value
-            case "valid_days": guard let days = Int(value), (1...365).contains(days) else { return nil }; request.validDays = days
-            case "model": request.models.append(value)
-            default: return nil
-            }
-        }
-        self = .add(request)
-    }
-}
-
 
 struct InstalledTemplateActions: Decodable, Sendable {
     struct Item: Decodable, Sendable { let binding_index: UInt64; let action: FixedAction }
@@ -1083,6 +990,8 @@ final class AppModel: ObservableObject {
     private(set) var notifiedApprovalIDs = Set<String>()
     private var notificationRevision = UUID()
     @Published var onboardingRoute: OnboardingRoute?
+    /// The latest valid CLI handoff that arrived while busy; applied once idle.
+    var pendingOnboarding: OnboardingRoute?
     @Published var onboardingConnection: ConnectionDefinition?
     @Published var onboardingCommand: String?
     @Published var showPolicyDraft = false
@@ -1114,9 +1023,11 @@ final class AppModel: ObservableObject {
     @Published var selectedCredential: String? { didSet {
         if oldValue != selectedCredential { nativeFlowRevision = UUID() }
     } }
-    @Published var busy = false
+    @Published var busy = false { didSet { if oldValue && !busy { applyPendingOnboarding() } } }
     @Published var error: String?
+    @Published var warning: String?
     @Published var connectionError: String?
+    @Published var startupFailure: StartupFailure?
     @Published var operation: Operation?
     @Published var result: ResultMessage?
     @Published var oidcProfileFile: String?
@@ -1502,7 +1413,7 @@ final class AppModel: ObservableObject {
         guard acceptsRecoveryCompletion(revision, workspace: workspace), status?.rollback == expected else { throw UIError(message: "回滚确认结果未展示；提交可能已完成，请检查状态，勿自动重试。") }
         struct Receipt: Decodable { let locked: Bool }
         guard try JSONDecoder().decode(Receipt.self, from: data).locked, let prior = status else { throw UIError(message: "确认回执未表明锁定状态，请检查服务，勿自动重试。") }
-        status = ServiceStatus(state: "locked", format_version: prior.format_version, runtime_version: prior.runtime_version, sessions_active: 0, peer_security: prior.peer_security, lab_enabled: prior.lab_enabled, rollback: nil)
+        status = ServiceStatus(state: "locked", format_version: prior.format_version, runtime_version: prior.runtime_version, sessions_active: 0, peer_security: prior.peer_security, protection_level: "L0", lab_enabled: prior.lab_enabled, rollback: nil)
         clearCache()
         result = ResultMessage(title: "回滚快照已确认 · 保持锁定", text: "历史上限未降低。请另行执行普通解锁；本次确认没有提供密钥使用权限。")
     }
@@ -1525,34 +1436,15 @@ final class AppModel: ObservableObject {
     func requestDesktopLogin() {
         operation = Operation(title: "解锁管理会话", detail: "验证后可管理密钥。自动锁定只关闭管理界面；锁定整个保险库会撤销 Agent 授权。", arguments: ["unlock"])
     }
-    func openOnboarding(_ url: URL) {
-        guard let route = OnboardingRoute(url: url) else { error = "不支持的 Rekey 页面地址。"; return }
-        guard !busy, operation == nil, result == nil, !showPolicyDraft, !showTemplate,
-              BackgroundService.usesDefaultState(stateDirectory), oidcProfileFile == nil, oidcSessionFile == nil else {
-            error = "请先完成当前操作，并在默认保险库工作区打开设置或接入页面。"; return
-        }
-        clearNativeFlow(); onboardingConnection = nil; onboardingCommand = nil; onboardingRoute = route
-        if case .add(let request) = route { addPreset = request.provider }
-    }
-    func checkPolicySigner() async throws -> PolicySigning.Mode {
-        guard !busy, unlocked else { throw UIError(message: "请先解锁并等待当前操作完成。") }
-        busy = true; defer { busy = false }
-        let client = cli, revision = nativeFlowRevision
-        let mode = try await Task.detached {
-            try PolicySigning.available(current: client.decode(PolicyStatus.self, ["policy", "status"]), client: client)
-        }.value
-        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory) else { throw UIError(message: "签名检查期间工作区已改变，请重试。") }
-        return mode
-    }
     func saveAPIKey(label: String, secret: String, client injectedClient: CLI? = nil) async throws -> Credential {
         guard desktopReady, let token = desktopToken else { throw UIError(message: "管理会话已过期，请先解锁管理会话。") }
         guard !busy else { throw UIError(message: "当前操作尚未完成，未保存凭据。") }
         busy = true; defer { busy = false }
         let client = injectedClient ?? cli, revision = nativeFlowRevision
-        let data = try await Task.detached { try client.run(["desktop-add", label], input: token + "\n" + secret + "\n", redacting: [token, secret]) }.value
+        let (data, warnings) = try await Task.detached { try client.runReportingWarnings(["desktop-add", label], input: token + "\n" + secret + "\n", redacting: [token, secret]) }.value
         guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "上下文已改变，请检查已保存凭据，勿自动重试。") }
         let credential = try JSONDecoder().decode(Credential.self, from: data)
-        credentials.removeAll { $0.id == credential.id }; credentials.append(credential)
+        credentials.removeAll { $0.id == credential.id }; credentials.append(credential); warning = CLIDiagnostics.notice(warnings) ?? warning
         return credential
     }
     func addAPIKey(label: String, secret: String) async -> Bool {
@@ -1781,36 +1673,51 @@ final class AppModel: ObservableObject {
             guard onboardingCurrent() else { throw UIError(message: "设置上下文已改变，未提交后续操作。") }
             let command = args, requestInput = body
             let data = try await Task.detached { try client.run(command, input: requestInput, redacting: [operationProof, secret]) }.value
+            let loginToken = desktopLogin ? String(data: data, encoding: .utf8).flatMap { try? PresenceKey.validated($0) } : nil
             guard desktopAttempt == desktopRevision, client.stateDirectory == stateDirectory else {
-                if desktopLogin, let token = String(data: data, encoding: .utf8), let valid = try? PresenceKey.validated(token) { revokeDesktop(valid, client: client) }
+                if let loginToken { revokeDesktop(loginToken, client: client) }
                 busy = false; return
             }
             guard !guarded || acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: desktopLogin) else {
+                if let loginToken { revokeDesktop(loginToken, client: client) }
                 throw UIError(message: "操作上下文已改变，结果未展示；请检查审计，不要自动重试。")
             }
             guard onboardingCurrent() else { throw UIError(message: "设置上下文已改变，结果未展示；已提交步骤可能完成，请检查状态，勿自动重试。") }
             guard let output = String(data: data, encoding: .utf8) else { throw UIError(message: "命令返回了无法解码的内容，操作结果需重新确认。") }
             if desktopLogin {
-                acceptDesktopSession(try PresenceKey.validated(output), expiry: Date().addingTimeInterval(7 * 24 * 60 * 60))
+                let token = try PresenceKey.validated(output)
+                var expiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
                 if let vaultID = issuingVault {
-                    let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
-                    guard UUID(uuidString: current.vault_id) == vaultID, current.mode != nil,
-                          acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
-                        throw UIError(message: "保险库或操作上下文已改变，未签发系统认证授权。")
+                    // The UI opens only after the grant is saved. A lock or context change meanwhile
+                    // revokes this login and, once a grant may exist, forgets it with the same token.
+                    func current() -> Bool { desktopAttempt == desktopRevision && acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true) && !Task.isCancelled }
+                    var sent = false
+                    do {
+                        let latest = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+                        guard UUID(uuidString: latest.vault_id) == vaultID, latest.mode != nil, current() else {
+                            throw UIError(message: "保险库或操作上下文已改变，未签发系统认证授权。")
+                        }
+                        guard securitySettings.passwordInterval != .everyUnlock else { throw UIError(message: "当前设置要求每次输入保险库密码，未签发系统认证授权。") }
+                        let rememberArgs = ["desktop-remember", "--ttl", "\(securitySettings.passwordInterval.rawValue)h"] + (recovery ? ["--recovery"] : [])
+                        sent = true
+                        let receipt = try await Task.detached { try client.run(rememberArgs, input: requestInput, redacting: [operationProof]) }.value
+                        let key = try PresenceKey.issuedKey(receipt)
+                        expiry = min(expiry, try DesktopReceipt.parse(receipt).expiresAt)
+                        guard current() else { throw UIError(message: "操作上下文已改变，新授权未保存，请重新用密码解锁。") }
+                        presenceAuthenticating = true
+                        defer { presenceAuthenticating = false }
+                        try await Task.detached { try PresenceKey.save(key, vaultID: vaultID) }.value
+                    } catch {
+                        // Outside a lock the password login stands; only remembering failed.
+                        if current() { acceptDesktopSession(token, expiry: expiry) } else { revokeDesktop(token, client: client, forget: sent) }
+                        throw error
                     }
-                    guard securitySettings.passwordInterval != .everyUnlock else { throw UIError(message: "当前设置要求每次输入保险库密码，未签发系统认证授权。") }
-                    let rememberArgs = ["desktop-remember", "--ttl", "\(securitySettings.passwordInterval.rawValue)h"] + (recovery ? ["--recovery"] : [])
-                    let receipt = try await Task.detached { try client.run(rememberArgs, input: requestInput, redacting: [operationProof]) }.value
-                    let key = try PresenceKey.issuedKey(receipt)
-                    desktopExpiry = min(desktopExpiry, try DesktopReceipt.parse(receipt).expiresAt)
-                    guard desktopAttempt == desktopRevision, acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
-                        throw UIError(message: "操作上下文已改变，新授权未保存，请重新用密码解锁。")
+                    guard current() else {
+                        revokeDesktop(token, client: client, forget: true)
+                        throw UIError(message: "操作上下文已改变，系统认证授权已撤销，请重新用密码解锁。")
                     }
-                    presenceAuthenticating = true
-                    do { try await Task.detached { try PresenceKey.save(key, vaultID: vaultID) }.value }
-                    catch { presenceAuthenticating = false; throw error }
-                    presenceAuthenticating = false
                 }
+                acceptDesktopSession(token, expiry: expiry)
             } else {
                 if op.arguments.first == "backup" { _ = try JSONDecoder().decode(BackupReceipt.self, from: data) }
                 if op.unregisterBackgroundService {
@@ -1834,18 +1741,19 @@ final class AppModel: ObservableObject {
     }
     func startService() {
         guard !busy else { return }
-        error = nil
+        error = nil; startupFailure = nil
         if managesBackgroundService {
             guard !needsSetup else { beginSetup(); return }
             busy = true; error = nil
+            let attempt = Date(), directory = stateDirectory
             Task {
                 do {
                     try await BackgroundService.start()
                     busy = false
-                    await refresh()
+                    await awaitServiceStart(since: attempt, directory: directory)
                     if status != nil { await requestNotificationsIfUndecided() }
                     if backgroundServiceNeedsApproval { error = BackgroundService.statusDescription }
-                } catch { busy = false; self.error = error.localizedDescription }
+                } catch { busy = false; self.error = error.localizedDescription; showStartupFailure(in: directory, since: attempt) }
             }
             return
         }
@@ -1863,6 +1771,7 @@ final class AppModel: ObservableObject {
         child.standardOutput = FileHandle.nullDevice
         let errors = Pipe()
         child.standardError = errors
+        let launchedAt = Date()
         do {
             try child.run()
             launchedService = child
@@ -1876,7 +1785,7 @@ final class AppModel: ObservableObject {
                 errors.fileHandleForReading.readabilityHandler = nil
                 Task { @MainActor [weak self] in
                     guard let self, self.stateDirectory == serviceDirectory else { return }
-                    if process.terminationStatus != 0 { self.error = "服务已退出。\n" + captured.text }
+                    if process.terminationStatus != 0 { self.showStartupFailure(in: serviceDirectory, since: launchedAt, exited: captured.text) }
                     await self.refresh()
                 }
             }
@@ -2294,8 +2203,8 @@ struct ConnectionList: Decodable, Sendable {
     }
 }
 struct AccessRequestItem:Decodable,Identifiable,Sendable {
-    let request_id:String;let caller:String;let provider:String?;let connection:String?;let operation:String?;let reason:String;let created_at_ms:Int64;let expires_at_ms:Int64;let status:String
-    var id:String {request_id}
+    let request_id:String;let caller:String;let provider:String?;let connection:String?;let operation:String?;let reason:String;let created_at_ms:Int64;let expires_at_ms:Int64;let status:String;let presets:[String]?
+    var id:String {request_id};var suggestedPreset:String {let known=ConnectionPreset.apiKeyPresets+OAuthSetup.presets;return known.first{(presets ?? []).contains($0)} ?? provider.flatMap{known.contains($0) ? $0:nil} ?? "generic-bearer"} // §7.2: first candidate in App order.
 }
 struct AccessInbox:Decodable,Sendable {let requests:[AccessRequestItem];let blocked_callers:[String]}
 /// A static notification: identifiers only, never request text, providers or secrets.
@@ -2358,58 +2267,6 @@ extension AppModel {
     }
 }
 
-struct EnvPreview:Decodable {
-    struct Entry:Decodable,Identifiable {let key:String;let preset_hint:String?;var id:String{key}}
-    struct Unsupported:Decodable {let line:UInt64;let key:String?}
-    let entries:[Entry]
-    let unsupported:[Unsupported]
-}
-struct EnvImportSelection:Encodable {let key:String;let label:String}
-struct EnvImportReport:Decodable {
-    struct Entry:Decodable {let key:String;let credential:Credential}
-    let entries:[Entry]
-    let unsupported:[EnvPreview.Unsupported]
-}
-struct EnvReplacement:Encodable {let key:String;let connection:String;let base_url_variable:String}
-struct EnvRewriteReport:Decodable {let backup:String}
-extension CLI {
-    func importSelected(path:String,selections:[EnvImportSelection],proof:String)throws->EnvImportReport {
-        let key=try PresenceKey.validated(proof)
-        let payload=try JSONEncoder().encode(selections)
-        return try JSONDecoder().decode(EnvImportReport.self,from:run(["import",path,"--selections-stdin","--presence","--password-stdin"],input:key+"\n"+String(decoding:payload,as:UTF8.self),redacting:[key]))
-    }
-    func rewriteImported(path:String,replacements:[EnvReplacement],proof:String)throws->EnvRewriteReport {
-        let key=try PresenceKey.validated(proof)
-        let payload=try JSONEncoder().encode(replacements)
-        return try JSONDecoder().decode(EnvRewriteReport.self,from:run(["import",path,"--rewrite-stdin","--presence","--password-stdin"],input:key+"\n"+String(decoding:payload,as:UTF8.self),redacting:[key]))
-    }
-}
-extension AppModel {
-    func previewEnv(_ path:String)async throws->EnvPreview {
-        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
-        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
-        let preview=try await Task.detached{try client.decode(EnvPreview.self,["import",path,"--dry-run"])}.value
-        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"导入预览期间上下文已改变。")}
-        return preview
-    }
-    func importSelected(path:String,selections:[EnvImportSelection],authentication:PresenceReadContext)async throws->EnvImportReport {
-        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
-        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
-        let (proof,_)=try await readPresenceProof(client:client,revision:revision,read:{id in try authentication.read(vaultID:id){try PresenceKey.read(vaultID:id,context:$0)}})
-        let report=try await Task.detached{try client.importSelected(path:path,selections:selections,proof:proof)}.value
-        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"导入结果的工作区已改变，请检查凭证列表，勿自动重试。")}
-        return report
-    }
-    func rewriteImported(path:String,replacements:[EnvReplacement],revision:UUID,authentication:PresenceReadContext)async throws->EnvRewriteReport {
-        guard !busy,acceptsNativeCompletion(revision,workspace:stateDirectory)else{throw UIError(message:"导入上下文已失效，请重新审阅文件替换。")}
-        busy=true;defer{busy=false};let client=cli
-        let (proof,_)=try await readPresenceProof(client:client,revision:revision,read:{id in try authentication.read(vaultID:id){try PresenceKey.read(vaultID:id,context:$0)}})
-        let report=try await Task.detached{try client.rewriteImported(path:path,replacements:replacements,proof:proof)}.value
-        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"文件替换结果未确认，请检查原文件及备份，勿自动重试。")}
-        return report
-    }
-}
-
 struct OAuthBindingDefinition:Codable,Equatable,Sendable {
     var provider:String;var client_id:String;var scopes:[String]
 }
@@ -2460,10 +2317,10 @@ extension AppModel {
         guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
         busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
         let (proof,_)=try await readPresenceProof(client:client,revision:revision)
-        let data=try await Task.detached{try client.run(["credential","add",label,"--kind",kind,"--stdin-secrets","--presence"],input:proof+"\n"+secret+"\n",redacting:[proof,secret])}.value
+        let (data,warnings)=try await Task.detached{try client.runReportingWarnings(["credential","add",label,"--kind",kind,"--stdin-secrets","--presence"],input:proof+"\n"+secret+"\n",redacting:[proof,secret])}.value
         guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"上下文已改变，请检查已保存凭据，勿自动重试。")}
         let credential=try JSONDecoder().decode(Credential.self,from:data)
-        credentials.append(credential)
+        credentials.append(credential);warning=CLIDiagnostics.notice(warnings) ?? warning
         return credential
     }
     func beginOAuth(_ connection:String,redirectURI:String) async throws -> OAuthLoginResult {
@@ -2497,6 +2354,8 @@ struct SSHKeyDefinition:Codable,Equatable,Identifiable,Sendable {
     var approver = SSHApproverDefinition(kind:"local-presence", keys:nil, threshold:nil)
     var session_budget = SSHSessionBudget(max_signatures:100,max_seconds:600)
     var id:String{credential_id}
+    /// A key generated in the App starts with no host; git signing is allowed by default (agent-call §8.1).
+    static func generated(credentialID:String,publicKey:String)->Self {.init(name:"ssh-"+UUID().uuidString.lowercased().prefix(8),credential_id:credentialID,user_public_key:publicKey,hosts:[],git_signing:"allow")}
     var publicKeyText:String {
         guard let bytes=Data(base64Encoded:user_public_key),bytes.count>=4 else{return user_public_key}
         let length=bytes.prefix(4).reduce(0){($0<<8)|Int($1)}

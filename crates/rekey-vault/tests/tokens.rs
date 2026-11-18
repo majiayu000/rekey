@@ -472,7 +472,8 @@ async fn scan_matches_decoded_oauth_and_aws_fields_and_only_reports_locations() 
             ],
         )
         .await
-        .unwrap();
+        .unwrap()
+        .findings;
     assert_eq!(findings.len(), 6);
     for (index, expected) in ["oauth", "oauth", "notion", "aws", "aws", "aws"]
         .iter()

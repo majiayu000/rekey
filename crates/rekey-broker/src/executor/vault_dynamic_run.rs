@@ -817,12 +817,12 @@ impl ActionExecutor {
             }
             Ok(Ok(response)) => response,
         };
-        if contains_secret(&response.body, needles)
-            || headers_contain_secret(&response.headers, needles)
+        if let Some(reason) =
+            super::http::buffered_refusal(&response.headers, &response.body, needles)
         {
             return DynamicActionResult::indeterminate_error(
                 BrokerError::ResponseSecurityViolation,
-                "reflected-secret",
+                reason,
             );
         }
         DynamicActionResult {

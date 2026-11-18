@@ -27,11 +27,11 @@ fn proof() -> UnlockProof {
     UnlockProof::Password(SecretInput::from_slice(PASSWORD))
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     _dir: tempfile::TempDir,
     state: std::path::PathBuf,
-    executor: Arc<ActionExecutor>,
-    fake: Arc<FakeUpstreamTransport>,
+    pub(super) executor: Arc<ActionExecutor>,
+    pub(super) fake: Arc<FakeUpstreamTransport>,
     executions: ExecutionSupervisorHandle,
     shutdown: watch::Sender<bool>,
     supervisor: tokio::task::JoinHandle<Result<(), BrokerError>>,
@@ -48,7 +48,7 @@ impl Fixture {
         Self::build(hourly, llm, count, false).await
     }
 
-    async fn build(hourly: u32, llm: bool, count: usize, oauth: bool) -> Self {
+    pub(super) async fn build(hourly: u32, llm: bool, count: usize, oauth: bool) -> Self {
         Self::build_preset(hourly, llm, count, oauth, "openai").await
     }
 
@@ -227,7 +227,7 @@ impl Fixture {
         }
     }
 
-    fn request(
+    pub(super) fn request(
         method: FixedMethod,
         path: &str,
         body: &[u8],
@@ -281,7 +281,7 @@ impl Fixture {
             .state
     }
 
-    fn db(&self) -> rusqlite::Connection {
+    pub(super) fn db(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(rekey_vault::paths::vault_db(&self.state)).unwrap()
     }
 
@@ -295,7 +295,7 @@ impl Fixture {
             .unwrap()
     }
 
-    async fn stop(self) {
+    pub(super) async fn stop(self) {
         self.shutdown.send_replace(true);
         self.supervisor.await.unwrap().unwrap();
         self.executor
@@ -757,55 +757,7 @@ async fn oauth_refresh_authority_queue_full_is_unconfirmed() {
     }
 }
 
-#[tokio::test]
-async fn lost_response_terminal_worker_deadline_is_unconfirmed() {
-    use std::future::Future;
-    use std::task::Poll;
-    let f = Fixture::new(1000, false).await;
-    let release = f
-        .fake
-        .push_response_gated(Err(crate::upstream::UpstreamError::Transport));
-    let mut admitted = f
-        .executor
-        .admit_connection(Fixture::request(FixedMethod::Get, "/repos/a/b", &[], None))
-        .await
-        .unwrap();
-    admitted.effect_deadline = Instant::now() + Duration::from_millis(150);
-    let mut run = Box::pin(admitted.run());
-    std::future::poll_fn(|cx| {
-        assert!(run.as_mut().poll(cx).is_pending());
-        if f.fake.requests.lock().unwrap().is_empty() {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
-    })
-    .await;
-    let db = f.db();
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let unlock = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(400));
-        db.execute_batch("COMMIT").unwrap();
-    });
-    release.notify_one();
-    let error = run.await.err().expect("response is lost");
-    assert!(
-        !error.retryable(),
-        "terminal audit timeout must never invite replay"
-    );
-    assert_eq!(error.code(), "UPSTREAM_FAILED");
-    unlock.join().unwrap();
-    f.executor
-        .terminals
-        .wait_idle(Duration::from_secs(2))
-        .await
-        .unwrap();
-    assert_eq!(f.fake.take_requests().len(), 1);
-    assert_eq!(f.count("execution.started"), 1);
-    assert_eq!(f.count("execution.indeterminate"), 1);
-    assert_eq!(f.count("execution.blocked"), 0);
-    f.stop().await;
-}
+mod terminal_deadline;
 
 #[tokio::test]
 async fn terminal_guard_real_authority_busy_reply_is_unconfirmed() {
@@ -868,72 +820,6 @@ async fn terminal_guard_real_authority_busy_reply_is_unconfirmed() {
         drop(guard);
         drop(tracker);
         worker.await.unwrap();
-        f.stop().await;
-    }
-}
-
-#[tokio::test]
-async fn proven_target_block_terminal_deadline_preserves_prior_oauth_effect() {
-    use std::future::Future;
-    use std::task::Poll;
-    for oauth in [false, true] {
-        let f = Fixture::build(1000, false, 1, oauth).await;
-        if oauth {
-            f.fake.push_response(Ok(UpstreamResponse {
-                status: 200, headers: vec![("content-type".into(), "application/json".into())].into(),
-                body: br#"{"access_token":"synthetic-access","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
-            }));
-        }
-        let release = f
-            .fake
-            .push_response_gated(Err(crate::upstream::UpstreamError::Blocked(
-                "private-address",
-            )));
-        let path = if oauth {
-            "/drive/v3/files"
-        } else {
-            "/repos/a/b"
-        };
-        let mut admitted = f
-            .executor
-            .admit_connection(Fixture::request(FixedMethod::Get, path, &[], None))
-            .await
-            .unwrap();
-        admitted.effect_deadline = Instant::now() + Duration::from_millis(150);
-        let mut run = Box::pin(admitted.run());
-        std::future::poll_fn(|cx| {
-            assert!(run.as_mut().poll(cx).is_pending());
-            if f.fake.requests.lock().unwrap().len() < 1 + usize::from(oauth) {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        })
-        .await;
-        let db = f.db();
-        db.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let unlock = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(400));
-            db.execute_batch("COMMIT").unwrap();
-        });
-        release.notify_one();
-        let error = run.await.err().unwrap();
-        unlock.join().unwrap();
-        f.executor
-            .terminals
-            .wait_idle(Duration::from_secs(2))
-            .await
-            .unwrap();
-        assert_eq!(f.fake.take_requests().len(), 1 + usize::from(oauth));
-        assert_eq!(f.count("execution.started"), 1);
-        assert_eq!(f.count("execution.indeterminate"), usize::from(oauth));
-        assert_eq!(f.count("execution.blocked"), usize::from(!oauth));
-        assert_eq!(error.code(), "UPSTREAM_FAILED");
-        assert_eq!(
-            error.retryable(),
-            !oauth,
-            "only a proven no-effect execution permits retry"
-        );
         f.stop().await;
     }
 }

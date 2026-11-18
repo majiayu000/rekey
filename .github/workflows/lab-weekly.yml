@@ -35,10 +35,9 @@ jobs:
         run: |
           set -euo pipefail
           # Legacy Action/Profile/run/G2 and enterprise fixtures must be updated together
-          # with their commands (--features lab) and policy-7 fields before runtime reuse.
+          # with their commands (--features lab) and policy-8 fields before runtime reuse.
+          # The P0 acceptance and crash-recovery gates now run in security-gate.
           for script in \
-            scripts/p0-acceptance.sh \
-            scripts/p0-crash-recovery.sh \
             scripts/p1-policy-acceptance.sh \
             scripts/p3-approval-acceptance.sh \
             scripts/p1-streaming-sealing.sh \
@@ -67,4 +66,4 @@ jobs:
               ast.parse(path.read_text(), filename=str(path))
           PYTHON
           # Docker recovery source remains at scripts/Dockerfile.dr; no weekly runtime claim.
-          echo '::notice::Enterprise reserve compile and archived harness syntax only; Action/Profile/run/G2/controlplane/DR runtime fixtures remain unverified for 0.4.'
+          echo '::notice::Enterprise reserve compile and archived harness syntax only; Action/Profile/run/G2/controlplane/DR runtime fixtures remain unverified for 0.5.'

@@ -11,8 +11,15 @@ use thiserror::Error;
 pub enum BrokerError {
     #[error("{1}")]
     LocalCall(&'static str, &'static str, &'static str),
+    /// A local refusal whose next step lists public choices, such as preset
+    /// or Connection names. Never secret material.
+    #[error("{1}")]
+    Guided(&'static str, &'static str, String),
     #[error("connection budget exceeded")]
     BudgetExceeded { reset_at_ms: i64 },
+    /// The per-caller access request window is full.
+    #[error("access request limit reached")]
+    RateLimited { reset_at_ms: i64 },
     #[error(transparent)]
     Authority(#[from] AuthorityError),
     /// Broker admission rejected without an unresolved Authority command.
@@ -46,13 +53,17 @@ pub enum BrokerError {
     UnsupportedPlatform,
     #[error("launcher unavailable")]
     LauncherUnavailable,
+    /// SCAN bytes for this system user exceed the per-minute budget.
+    #[error("scan byte budget for this system user is exhausted")]
+    ScanBudgetExhausted { reset_at_ms: i64 },
 }
 
 impl BrokerError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::LocalCall(code, _, _) => code,
+            Self::LocalCall(code, _, _) | Self::Guided(code, _, _) => code,
             Self::BudgetExceeded { .. } => "BUDGET_EXCEEDED",
+            Self::RateLimited { .. } => "RATE_LIMITED",
             Self::Authority(err) | Self::Admission(err) => err.code(),
             Self::Domain(DomainError::InvalidCapability) => "INVALID_CAPABILITY",
             Self::Domain(DomainError::CapabilityExpired) => "CAPABILITY_EXPIRED",
@@ -74,6 +85,7 @@ impl BrokerError {
             Self::Io(_) => "IPC_UNAVAILABLE",
             Self::UnsupportedPlatform => "UNSUPPORTED_PLATFORM",
             Self::LauncherUnavailable => "LAUNCHER_UNAVAILABLE",
+            Self::ScanBudgetExhausted { .. } => "RATE_LIMITED",
         }
     }
 
@@ -107,17 +119,49 @@ impl BrokerError {
         }
     }
 
+    /// Refuses a named call that several enabled Connections could serve and
+    /// names them, so the caller passes `connection` (§6.2).
+    pub(crate) fn require_selector(
+        snapshot: &rekey_policy::ValidatedSnapshot,
+        operation: Option<&str>,
+        connection: &str,
+    ) -> Result<(), Self> {
+        let Some(operation) = operation.filter(|_| connection.is_empty()) else {
+            return Ok(());
+        };
+        let shared: Vec<&str> =
+            rekey_policy::connections::operation_connections(snapshot, operation, None)
+                .map(|c| c.name.as_str())
+                .collect();
+        if shared.len() > 1 {
+            return Err(Self::Guided(
+                "INVALID_INPUT",
+                "operation name is shared by several connections",
+                format!(
+                    "Pass connection together with operation {operation}; one of: {}.",
+                    shared.join(", ")
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn agent_next(&self) -> String {
-        match self {
-            Self::BudgetExceeded { reset_at_ms } => {
-                let reset = time::OffsetDateTime::from_unix_timestamp_nanos(
-                    i128::from(*reset_at_ms) * 1_000_000,
-                )
+        let utc = |reset_at_ms: i64| {
+            time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(reset_at_ms) * 1_000_000)
                 .map(|time| time.to_string())
-                .unwrap_or_else(|_| format!("Unix milliseconds {reset_at_ms}"));
-                format!("Retry after {reset} UTC.")
+                .unwrap_or_else(|_| format!("Unix milliseconds {reset_at_ms}"))
+        };
+        match self {
+            Self::BudgetExceeded { reset_at_ms } | Self::ScanBudgetExhausted { reset_at_ms } => {
+                format!("Retry after {} UTC.", utc(*reset_at_ms))
             }
+            Self::RateLimited { reset_at_ms } => format!(
+                "At most 3 access requests per caller per minute. Wait for the user or call await_access on a pending request; request again after {} UTC.",
+                utc(*reset_at_ms)
+            ),
             Self::LocalCall(_, _, next) => (*next).to_owned(),
+            Self::Guided(_, _, next) => next.clone(),
             Self::Denied("approval-request-unknown") => {
                 "No pending approval has this ID. Pass approval.challenge_id from the APPROVAL_REQUIRED error, not its top-level request_id; an expired or used approval needs a new call."
                     .to_owned()

@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 mod macos_peer;
 
 #[path = "client/human.rs"]
-mod human;
+pub(crate) mod human;
 
 /// Pipes and explicit JSON use the same structured diagnostics contract.
 pub fn json_output() -> bool {
@@ -242,13 +242,13 @@ impl CliError {
     }
 }
 
-/// Local connection evidence, not a claim that every L1 requirement is met.
+/// Service identity label only; `status` reports `protection_level` apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum PeerSecurity {
     #[cfg(target_os = "macos")]
     #[serde(rename = "verified_signature")]
     VerifiedSignature,
-    #[serde(rename = "L1-dev")]
+    #[serde(rename = "unverified")]
     L1Dev,
 }
 

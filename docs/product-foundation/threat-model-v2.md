@@ -4,9 +4,9 @@
 
 行为来源为 [Agent call SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)。0.4 默认本机调用没有 capability token，连接和权限由用户签名决定。以下边界不继承旧版设备验收。
 
-- G1同用户程序可调用本机接口；调用方名称可伪造，仅记录/收紧，绝不能放宽默认权限。
+- 同用户程序可调用本机接口（已确认的保护下限为L1-dev）；调用方名称可伪造，仅记录/收紧，绝不能放宽默认权限。
 - 基础模式 CLI 新签发的记住解锁票据仅用于解锁，不能作为 Presence 进行审批或其他 A2 操作；本机审批可用保险库密码，拒绝恢复密钥。旧 CLI 票据与 App 票据使用相同格式，不能根据格式安全区分，不会自动降权：升级后须用新 CLI 重新执行 `rekey unlock --remember 7d` 或 `rekey lock --forget-remembered`，使旧密钥失效。此修复不提升同用户隔离等级。
-- A6网页/SDK请求：loopback IPv4绑定；Host只接受发布地址；要求公开rekey占位头，并拒绝Origin、Sec-Fetch-Site、CONNECT、Upgrade、混淆长度与真实认证头。抢占端口会使daemon启动失败；0600地址文件不代表对恶意同用户的网络隔离。
+- A6网页/SDK请求：loopback IPv4绑定；Host只接受发布地址；要求公开rekey占位头，并拒绝Origin、Sec-Fetch-Site、CONNECT、Upgrade、混淆长度与真实认证头。端口抢占：端口空闲时（rekeyd未运行或本机服务尚未绑定），同uid进程可先占用该端口；daemon启动随之失败（`SERVICE_PORT_IN_USE`），而抢占者会收到SDK/Agent发往该地址的完整请求，包括占位值`rekey`和请求正文（提示词、参数等），但拿不到任何Secret。0600地址文件不代表对恶意同用户的网络隔离。
 - 签名规则固定host/方法/路径/查询键，默认读允许、写审批、危险写拒绝；参数规范化一次，规则和审计共享结果。写审批绑定具体规范请求、策略摘要与调用方；时间窗不覆盖Deny，锁定/策略变更即清除。
 - 源凭据用途分离：HTTP、SSH、OAuth和AWS源不能互相当作普通Bearer使用。SSH公共身份来自签名策略，私钥不为列举解密；服务器签名绑定校验后按host公钥判定，未知/未绑定需审批。
 - T0结果遮蔽防止源值与支持的可逆表示反射；T1经显式签名开启，Agent收到临时凭据，目标/权限/实际期限另行审计。EKS presign暴露public access-key identifier而不返回secret key；拒绝嵌入bootstrap session token。
@@ -19,8 +19,8 @@
 
 ## 新增实验能力边界
 
-- mTLS 只接受签名 Connection 中显式的 T0 固定 HTTPS 认证声明。客户端私钥由 Worker 验证当前策略摘要与已提交 started 后一次性交给 TLS owner；每次后端 poll 检查策略、期限与生命周期。轮换、撤销和策略激活确认前取消并排空旧 owner；不复用连接、TLS session 或重试。客户端认证不提升 G1 隔离等级。
-- CA signer 为独立类型，仅管理员逐次 A2 可导入、轮换、签发外部 CSR、撤销序列号与发布完整 CRL。Agent 无 CA 签名/读取入口。证书、CRL 与现有 HTTP action 的完整集合由 generation MAC 认证；授权变更只允许预期增量，触发器引起的额外删除拒绝提交。软件证据不代表真实 CA 运维与吊销分发已部署。
+- mTLS 只接受签名 Connection 中显式的 T0 固定 HTTPS 认证声明。客户端私钥由 Worker 验证当前策略摘要与已提交 started 后一次性交给 TLS owner；每次后端 poll 检查策略、期限与生命周期。轮换、撤销和策略激活确认前取消并排空旧 owner；不复用连接、TLS session 或重试。客户端认证不提升保护等级（仍为已确认的 L1-dev 下限）。
+- CA signer 为独立类型，仅管理员逐次 A2 可导入、轮换、签发外部 CSR、撤销序列号与发布完整 CRL。Agent 无 CA 签名/读取入口。证书、CRL 与现有 HTTP action 的完整集合由 generation MAC 认证；授权变更只允许预期增量，触发器引起的额外删除拒绝提交。证书与 CRL 只在终态提交后交付；存在证书预留时拒绝发布完整 CRL，不静默遗漏可能已签名的叶证书。从 Locked 解锁（启动或锁定后，含记住解锁恢复）时没有运行中的签发，残留预留（如 Worker 崩溃遗留）从未交付：解锁在同一 generation 提交中把它们终结为 Failed，并逐条写 `pki.certificate.finished` / `pki.crl.finished` 失败审计（`abandoned-on-unlock`），之后按序列号吊销与完整 CRL 恢复可用；终结的序列号从未签发，不可吊销、不进 CRL、不复用。已解锁期间出现的预留（如终态提交失败）仍阻止完整 CRL，直到下次从 Locked 解锁；重新认证不算恢复。确认回滚会丢弃快照之后的事实，包括快照内预留的后续完成。软件证据不代表真实 CA 运维与吊销分发已部署。
 - SSH 仍由 Worker 持有密钥。每个 socket 按签名策略限制签名次数和持续时间；一次授权不绕过该预算。外部审批需一人或两名不同的允许审批者，绑定完整 challenge 与请求 review；本机 Presence 不能代替外部签名。接受审批与 started 同事务提交，待审批连接 EOF/额外输入使 challenge 失效；Worker 入队后由原 owner 等待终态，所有输出按当前策略和生命周期门控。
 - Agent PKI 准入与 HA 没有实现；lab 编译、合成 TLS/SSH 与历史性能数据不代表这些能力或真实硬件验收。
 
@@ -69,6 +69,8 @@ UI锁定且无会话显示L0，解锁显示已确认的L1-dev下限，未知/故
    PreparedCredential只消费一次，受控内存零化；不能把页锁等同所有临时副本证明。
 3. **I3：敏感管理逐次证明。** 查看明文、扩大范围、策略激活、七天授权、备份/恢复、
    wrapper/根轮换与shutdown均按其合同验证；shutdown在Locked也需证明。LOCK无需证明。
+   唯一例外（2026-11-17所有者决定）：Authority已Faulted时shutdown不再校验证明，故障
+   Authority以错误拒绝的任何管理请求（含LOCK）都触发既有fail-stop停机；同用户进程本可直接结束daemon。
    离线restore需源密码/恢复因子；VRK轮换保留两因子要求，不让Presence替代解密材料。
 4. **I4：先验证daemon身份。** 正式macOS CLI/App在发密码或K前查同Team精确rekeyd身份；
    开发/未签名路径必须提示身份未校验，等级仍只按已确认状态显示，不能声称L1。
@@ -153,8 +155,11 @@ done快照与SDK有序text投影共用有界遮蔽上下文，包括Anthropic交
 累计 wire 和 retained 限额仍生效，真实 needle 前缀和编码标记仍可能保留到限额。
 已有 4MiB fixture 通过不代表任意元数据流都可接受。
 完成帧必须等EOF与durable结算后释放；取消/断开仍由Supervisor终态记账。
+每个上游请求固定accept-encoding: identity（mTLS同）；响应带非identity的content-encoding或chunked
+以外的transfer-encoding时，在任何正文或响应头交给调用方前按RESPONSE_SECURITY_VIOLATION拒绝并记
+indeterminate，不解压，因此遮蔽只作用于未压缩的原始字节；内部固定格式解析（OAuth token、T1、source）遇压缩正文即解析失败。
 支持的raw/base64/base64url/hex/percent/JSON表示有限，嵌入base64完整对齐保证要求
-秘密至少16字节；短Key给固定警告。无法保证任意变换/压缩/加密/侧信道均被识别。
+秘密至少16字节；短Key给固定警告。无法保证正文内的任意变换、应用层压缩、加密或侧信道均被识别。
 
 ## 平台、发布与残余风险
 

@@ -92,6 +92,12 @@ jobs:
 
       - name: Runtime fail-stop acceptance
         run: scripts/p0-runtime-faults.sh
+      - name: Connection-model P0 acceptance and crash recovery
+        run: |
+          # Release binaries, basic-mode software signer and tokenless CALL; the
+          # loopback target is refused by the production screen, so no network.
+          scripts/p0-acceptance.sh
+          scripts/p0-crash-recovery.sh
       - name: Backup and restore durability acceptance
         if: runner.os == 'macOS'
         run: scripts/p0-durability.sh
@@ -105,11 +111,11 @@ jobs:
           scripts/build-macos-ui.sh
           xcrun swiftc -warnings-as-errors -swift-version 5 -O \
             -framework SwiftUI -framework AppKit -framework ServiceManagement \
-            apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-contract
+            apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Onboarding.swift apps/macos/OAuthReauthorization.swift apps/macos/EnvImport.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-contract
           /tmp/rekey-connection-contract
           xcrun swiftc -warnings-as-errors -swift-version 5 -O \
             -framework SwiftUI -framework AppKit -framework ServiceManagement \
-            apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/Updater.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+            apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Onboarding.swift apps/macos/OAuthReauthorization.swift apps/macos/EnvImport.swift apps/macos/Updater.swift scripts/test-macos-ui.swift scripts/test-macos-app-flows.swift -o /tmp/rekey-ui-contract
           # CLI_BINARY runs the Connection signing and subprocess boundary contracts together.
           /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
           mkdir -p /tmp/RekeyStartupContract.app/Contents/MacOS

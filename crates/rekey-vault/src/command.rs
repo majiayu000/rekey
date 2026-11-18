@@ -73,6 +73,27 @@ pub struct AuditDraft {
     pub latency_ms: Option<i64>,
 }
 
+/// Public use of one SSH signature, as classified by the agent protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SshSignPurpose {
+    /// OpenSSH user authentication.
+    Auth,
+    /// `ssh-keygen -Y sign` in the git namespace.
+    Git,
+    /// Any other payload; it was approved as an unknown purpose.
+    Unknown,
+}
+
+/// The signing execution's start record plus the public facts the Authority
+/// records on `ssh.sign`. No key material or signed payload is included.
+#[derive(Debug, Clone)]
+pub struct SshSignStart {
+    pub draft: AuditDraft,
+    pub purpose: SshSignPurpose,
+    /// SHA-256 of the host key verified by `session-bind`; `None` when unbound.
+    pub host_key_sha256: Option<[u8; 32]>,
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusInfo {
     pub state: &'static str,
@@ -224,7 +245,7 @@ pub enum AuthorityCommand {
         credential_id: CredentialId,
         public_key: Vec<u8>,
         data: Vec<u8>,
-        started: Box<AuditDraft>,
+        started: Box<SshSignStart>,
         approvals: Vec<AuditDraft>,
         not_after: Instant,
         reply: Reply<Vec<u8>>,
@@ -232,7 +253,7 @@ pub enum AuthorityCommand {
     ScanCredentials {
         inputs: Vec<crate::hygiene::ScanInput>,
         credentials: Vec<crate::hygiene::ScanCredential>,
-        reply: Reply<Vec<crate::hygiene::ScanFinding>>,
+        reply: Reply<crate::hygiene::ScanReport>,
     },
     ImportEnv {
         request: crate::hygiene::EnvImportRequest,

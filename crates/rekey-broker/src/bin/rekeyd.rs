@@ -40,6 +40,16 @@ impl RekeydError {
             Self::Broker(_) => 5,
         }
     }
+
+    /// Stable string code beside the numeric exit code, so callers such as
+    /// the App read `error_code` from the failure event instead of its text.
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Usage(_) => "USAGE",
+            Self::Authority(err) => err.code(),
+            Self::Broker(err) => err.code(),
+        }
+    }
 }
 
 fn authority_exit_code(err: &AuthorityError) -> i32 {
@@ -73,7 +83,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Initialize a new v2 vault in an empty state directory.
+    /// Initialize a new current-format vault in an empty state directory (no migration).
     Init {
         /// Immutable policy signing mode for this vault.
         #[arg(long, value_parser = ["personal", "team"])]
@@ -104,7 +114,7 @@ enum Command {
         #[arg(long)]
         agent_gid: Option<u32>,
     },
-    /// Restore a v2 backup into an empty state directory (offline).
+    /// Restore a current-format backup into an empty state directory (offline).
     Restore {
         #[arg(long)]
         input: PathBuf,
@@ -584,13 +594,16 @@ fn main() {
     };
     if let Err(err) = result {
         let exit_code = err.exit_code();
+        let error_code = err.code();
         // An IO failure prints only "ipc unavailable"; the OS cause (address in
         // use, socket path too long) is what tells the user how to fix it.
         match &err {
             RekeydError::Broker(BrokerError::Io(cause)) => {
-                tracing::error!(event = "rekeyd.command_failed", code = exit_code, message = %err, %cause)
+                tracing::error!(event = "rekeyd.command_failed", code = exit_code, error_code, message = %err, %cause)
             }
-            _ => tracing::error!(event = "rekeyd.command_failed", code = exit_code, message = %err),
+            _ => {
+                tracing::error!(event = "rekeyd.command_failed", code = exit_code, error_code, message = %err)
+            }
         }
         std::process::exit(exit_code);
     }
@@ -629,6 +642,20 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn bootstrap_help_names_no_retired_vault_format() {
+        use clap::CommandFactory;
+        let mut cli = Cli::command();
+        for name in ["init", "restore"] {
+            let command = cli.find_subcommand_mut(name).unwrap();
+            let help = command.render_long_help().to_string();
+            assert!(
+                help.contains("current-format") && !help.contains("v2"),
+                "{help}"
+            );
+        }
     }
 
     #[test]

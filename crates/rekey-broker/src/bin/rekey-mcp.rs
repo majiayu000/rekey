@@ -61,13 +61,13 @@ fn generic_tools() -> Vec<Value> {
         ),
         descriptor(
             "describe",
-            "Describe a named operation's parameters and applicable rules.",
-            json!({"operation":{"type":"string"}}),
+            "Describe a named operation's parameters, example arguments, rules and the rule its example matches. Pass connection when several Connections share the operation name.",
+            json!({"operation":{"type":"string"},"connection":{"type":"string"}}),
             &["operation"],
         ),
         descriptor(
             "call",
-            "Call a named operation under signed rules. After approval, repeat the original request with approval_request_id; never retry a completed or indeterminate write.",
+            "Call a named operation under signed rules; pass connection when several Connections share the operation name. After approval, repeat the original request with approval_request_id; never retry a completed or indeterminate write.",
             json!({"operation":{"type":"string"},"connection":{"type":"string"},"args":{"type":"object"},"body":{},"dry_run":{"type":"boolean"},"approval_request_id":{"type":"string","format":"uuid"}}),
             &["operation", "args"],
         ),
@@ -79,7 +79,7 @@ fn generic_tools() -> Vec<Value> {
         ),
         descriptor(
             "request_access",
-            "Ask the user to add a Connection or permission in the App. Specify either provider or connection. Do not ask the user for a key. Wait for the returned request ID with await_access.",
+            "Ask the user to add a Connection or permission in the App. Specify either provider (a preset name or family, such as github for github-pat or github-oauth) or connection, and a full operation name if needed. Do not ask the user for a key. Wait for the returned request ID with await_access.",
             json!({"provider":{"type":"string"},"connection":{"type":"string"},"operation":{"type":"string"},"reason":{"type":"string","maxLength":500}}),
             &["reason"],
         ),
@@ -626,79 +626,10 @@ fn main() {
     }
 }
 
-/// Agent-facing guidance shipped with Rekey. Every MCP tool it names must
-/// exist, so an Agent following it never calls a missing tool.
+/// Agent-facing guidance must only name MCP tools that exist.
 #[cfg(test)]
-mod guidance_contract {
-    const GUIDANCE: [(&str, &str); 4] = [
-        (
-            "plugins/rekey/skills/rekey/SKILL.md",
-            include_str!("../../../../plugins/rekey/skills/rekey/SKILL.md"),
-        ),
-        (
-            "plugins/rekey/commands/rekey-list.md",
-            include_str!("../../../../plugins/rekey/commands/rekey-list.md"),
-        ),
-        (
-            "plugins/rekey/commands/rekey-request.md",
-            include_str!("../../../../plugins/rekey/commands/rekey-request.md"),
-        ),
-        (
-            "rekey connect managed section",
-            include_str!("../../../rekey-cli/src/commands/connect.rs"),
-        ),
-    ];
-    /// Snake-case argument and field names that guidance quotes but are not tools.
-    const FIELDS: [&str; 4] = [
-        "request_id",
-        "approval_request_id",
-        "timeout_s",
-        "challenge_id",
-    ];
-
-    fn quoted_identifiers(text: &str) -> Vec<&str> {
-        text.split('`')
-            .skip(1)
-            .step_by(2)
-            .map(|quoted| quoted.split('(').next().unwrap_or(quoted))
-            .filter(|word| {
-                word.contains('_')
-                    && word
-                        .bytes()
-                        .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
-            })
-            .collect()
-    }
-
-    #[test]
-    fn every_mcp_tool_named_in_agent_guidance_exists() {
-        let tools: Vec<String> = super::generic_tools()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap().to_owned())
-            .collect();
-        let mut checked = 0;
-        for (source, text) in GUIDANCE {
-            let text = if source.starts_with("rekey connect") {
-                let start = text.find("<!-- rekey:begin -->").unwrap();
-                let end = text.find("<!-- rekey:end -->").unwrap();
-                &text[start..end]
-            } else {
-                text
-            };
-            for word in quoted_identifiers(text) {
-                if FIELDS.contains(&word) {
-                    continue;
-                }
-                assert!(
-                    tools.iter().any(|tool| tool == word),
-                    "{source} names MCP tool `{word}`, which rekey-mcp does not provide"
-                );
-                checked += 1;
-            }
-        }
-        assert!(checked >= 6, "guidance should name the core tools");
-    }
-}
+#[path = "rekey-mcp/guidance_contract.rs"]
+mod guidance_contract;
 
 #[cfg(test)]
 mod tests {

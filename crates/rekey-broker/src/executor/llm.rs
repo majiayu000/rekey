@@ -1452,7 +1452,7 @@ mod tests {
             client,
             tokio::spawn(async move {
                 let _keep = keep;
-                crate::ipc::agent::handle_agent_conn(server, ctx, rx).await
+                crate::ipc::agent::handle_agent_conn(server, ctx, rx, Default::default()).await
             }),
         )
     }

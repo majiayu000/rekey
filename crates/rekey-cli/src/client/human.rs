@@ -72,6 +72,10 @@ fn hint(code: &str) -> (&'static str, String) {
             format!("等预算窗口重置后再试；需要更多额度或其它模型时，{EDIT_RULES}。"),
         ),
         "RATE_LIMITED" => ("请求太频繁。", "稍后再试；写操作不要自动重试。".into()),
+        "LEAK_DETECTED" => (
+            "扫描的内容里有 Rekey 保存的密钥。",
+            "按上面列出的位置删除密钥，改用 `rekey call` 或本机服务地址；已经提交或推送过的密钥要到服务商处轮换。".into(),
+        ),
         "AUTHORITY_BUSY" => (
             "Rekey 正忙，当前不能确认这次操作的结果。",
             "先检查当前状态和下面的具体建议；写操作不要自动重试。".into(),
@@ -90,8 +94,8 @@ fn hint(code: &str) -> (&'static str, String) {
             "先到上游服务确认是否已生效，再决定是否重试。".into(),
         ),
         "RESPONSE_BLOCKED" | "RESPONSE_SECURITY_VIOLATION" => (
-            "上游响应里出现了凭据内容，Rekey 已拦截。",
-            "不要重试这次请求；检查上游接口是否会回显凭据。".into(),
+            "上游响应里出现了凭据内容，或用了 Rekey 无法检查的压缩编码，已拦截。",
+            "不要重试这次请求；检查上游接口是否会回显凭据或强制压缩响应。".into(),
         ),
         "CREDENTIAL_UNAVAILABLE" => (
             "所需凭据不可用（可能已删除或吊销）。",
@@ -127,7 +131,7 @@ fn hint(code: &str) -> (&'static str, String) {
 
 /// Remote or call-site text may carry terminal escapes (ANSI/OSC); show
 /// control characters escaped so they cannot rewrite the visible error.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .flat_map(|c| -> Box<dyn Iterator<Item = char>> {
             if c.is_control() {
@@ -223,6 +227,15 @@ mod tests {
         assert!(text.contains("详情：bad\\u{1b}]8;;http://x\\u{7}link\\u{1b}[2J\n"));
         assert!(text.contains("具体建议：retry\\rnow\\u{9b}\n"));
         assert!(text.ends_with("(X\\u{1b}[31m)"));
+    }
+
+    #[test]
+    fn leak_detection_explains_the_replacement_instead_of_a_generic_failure() {
+        let text = render(&CliError::local("LEAK_DETECTED", "credential detected"));
+        assert!(text.starts_with("错误：扫描的内容里有 Rekey 保存的密钥。\n"));
+        assert!(text.contains("`rekey call`"));
+        assert!(!text.contains("操作失败"));
+        assert!(text.ends_with("(LEAK_DETECTED)"));
     }
 
     #[test]

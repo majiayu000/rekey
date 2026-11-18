@@ -19,6 +19,8 @@ use crate::error::BrokerError;
 use crate::runtime::local_calls::{ConnectionAdmission, LocalCallApproval};
 
 #[cfg(test)]
+mod reauth_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) struct LocalExecuteRequest {
@@ -61,6 +63,11 @@ impl ActionExecutor {
         if active.is_expired(now) {
             return Err(BrokerError::Denied("policy-expired"));
         }
+        BrokerError::require_selector(
+            active.snapshot(),
+            input.meta.operation.as_deref(),
+            &input.meta.connection,
+        )?;
         let authorized = evaluate_connection(
             active.snapshot(),
             &input.meta,

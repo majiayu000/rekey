@@ -1,18 +1,30 @@
 //! File contents travel only in bounded Agent frame bodies. Import is daemon-owned.
+use std::io::Read;
 #[cfg(target_os = "macos")]
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
-use rekey_domain::ipc::{self, Channel, ProofKind, ScanMeta, ScanResponse, agent_msg};
+use rekey_domain::ipc::{self, Channel, ProofKind, ScanFinding, ScanMeta, ScanResponse, agent_msg};
 use serde_json::json;
 use zeroize::Zeroizing;
 
+use crate::client::human::printable;
 use crate::client::{CliError, Client};
 
 const FILE_LIMIT: usize = 10 * 1024 * 1024;
 const TOTAL_LIMIT: usize = 100 * 1024 * 1024;
+/// Daemon states in which nothing could be scanned. A staged (pre-commit)
+/// scan warns and lets the commit proceed unless --strict; findings in files
+/// that were scanned still block.
+const CANNOT_SCAN: [&str; 4] = [
+    "IPC_UNAVAILABLE",
+    "LOCKED",
+    "NOT_CONFIGURED",
+    "RATE_LIMITED",
+];
 fn usage(message: &str) -> CliError {
     CliError::local("USAGE", message)
 }
@@ -42,36 +54,59 @@ fn git_bytes(arguments: &[&std::ffi::OsStr], limit: usize) -> Result<Zeroizing<V
     }
     Ok(bytes)
 }
+fn utf8_path(name: &[u8]) -> Result<PathBuf, CliError> {
+    std::str::from_utf8(name)
+        .map(PathBuf::from)
+        .map_err(|_| usage("staged paths must be UTF-8"))
+}
 fn repository_files(staged: bool) -> Result<Vec<PathBuf>, CliError> {
-    let arguments: Vec<_> = if staged {
-        vec![
-            "diff",
-            "--cached",
-            "--name-only",
-            "--diff-filter=ACMR",
-            "-z",
-        ]
-    } else {
-        vec![
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ]
+    if staged {
+        let arguments = ["diff", "--cached", "--raw", "-z", "--diff-filter=ACMRT"];
+        return staged_paths(&git_bytes(
+            &arguments.map(std::ffi::OsStr::new),
+            TOTAL_LIMIT,
+        )?);
     }
-    .into_iter()
-    .map(std::ffi::OsStr::new)
-    .collect();
-    git_bytes(&arguments, TOTAL_LIMIT)?
+    let arguments = [
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ];
+    git_bytes(&arguments.map(std::ffi::OsStr::new), TOTAL_LIMIT)?
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())
-        .map(|name| {
-            std::str::from_utf8(name)
-                .map(PathBuf::from)
-                .map_err(|_| usage("staged paths must be UTF-8"))
-        })
+        .map(utf8_path)
         .collect()
+}
+/// Paths with staged content from `git diff --cached --raw -z`. Type changes
+/// (a symlink replaced by a regular file) are scanned like any other change;
+/// a rename or copy scans its destination. A submodule gitlink (new mode
+/// 160000) points at a commit, has no blob in this repository and is skipped.
+fn staged_paths(raw: &[u8]) -> Result<Vec<PathBuf>, CliError> {
+    let invalid = || usage("git returned an invalid staged entry");
+    let mut fields = raw.split(|byte| *byte == 0);
+    let mut paths = Vec::new();
+    while let Some(entry) = fields.next().filter(|entry| !entry.is_empty()) {
+        let parts: Vec<&[u8]> = entry
+            .strip_prefix(b":")
+            .ok_or_else(invalid)?
+            .split(|byte| *byte == b' ')
+            .collect();
+        let [_, mode, _, _, status] = parts[..] else {
+            return Err(invalid());
+        };
+        let mut path = fields.next().filter(|path| !path.is_empty());
+        if matches!(status.first(), Some(b'R' | b'C')) {
+            path = fields.next().filter(|path| !path.is_empty());
+        }
+        let path = path.ok_or_else(invalid)?;
+        if mode != b"160000" {
+            paths.push(utf8_path(path)?);
+        }
+    }
+    Ok(paths)
 }
 fn collect(path: &Path, paths: &mut Vec<PathBuf>) -> Result<(), CliError> {
     let metadata =
@@ -136,6 +171,91 @@ fn scan_one(socket: &Path, path: String, bytes: &[u8]) -> Result<ScanResponse, C
     serde_json::from_slice(&body)
         .map_err(|_| CliError::local("INVALID_FRAME", "invalid scan findings"))
 }
+/// The staged blob, or None when it is larger than one scan frame.
+fn staged_blob(name: &str) -> Result<Option<Zeroizing<Vec<u8>>>, CliError> {
+    let object = format!(":{name}");
+    let arguments = [
+        std::ffi::OsStr::new("cat-file"),
+        std::ffi::OsStr::new("blob"),
+        std::ffi::OsStr::new(&object),
+    ];
+    match git_bytes(&arguments, FILE_LIMIT) {
+        Ok(bytes) => Ok(Some(bytes)),
+        // read_bounded reports only an oversized stream as INVALID_FRAME.
+        Err(error) if error.code == "INVALID_FRAME" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+struct Batch<'a> {
+    socket: &'a Path,
+    total: usize,
+    findings: Vec<ScanFinding>,
+    unavailable: u32,
+}
+impl Batch<'_> {
+    fn send(&mut self, path: String, bytes: &[u8]) -> Result<(), CliError> {
+        self.total = self
+            .total
+            .checked_add(bytes.len())
+            .filter(|total| *total <= TOTAL_LIMIT)
+            .ok_or_else(|| usage("scan total exceeds 100 MiB"))?;
+        let response = scan_one(self.socket, path, bytes)?;
+        self.unavailable = self.unavailable.max(response.unavailable_credentials);
+        self.findings.extend(response.findings);
+        Ok(())
+    }
+}
+/// Non-blocking diagnostics: localized text for people, one JSON object per
+/// line for Agents and pipes. Never carries scanned content.
+fn warn(kind: &str, code: Option<&str>, summary: &str, next: &str) {
+    if crate::client::json_output() {
+        let mut warning = json!({"warnings": [kind], "message": summary, "next": next});
+        if let Some(code) = code {
+            warning["code"] = json!(code);
+        }
+        eprintln!("{warning}");
+    } else {
+        eprintln!("警告：{summary}\n下一步：{next}");
+    }
+}
+fn warn_not_scanned(error: &CliError, unscanned: usize) {
+    let detail = printable(&error.message);
+    let (reason, after) = match error.code.as_str() {
+        "IPC_UNAVAILABLE" => (
+            format!("连不上 Rekey 后台服务（{detail}）"),
+            "启动 Rekey（打开 App 或运行 `rekeyd serve`）后",
+        ),
+        "LOCKED" => (
+            "Rekey 保险库已锁定".to_owned(),
+            "运行 `rekey unlock` 解锁后",
+        ),
+        "NOT_CONFIGURED" => (
+            format!("Rekey 没有生效的签名连接规则（尚未签署或已过期：{detail}）"),
+            "在 Rekey 中签署或续签连接规则后",
+        ),
+        _ => (
+            format!(
+                "本机用户每分钟 {} MiB 的扫描额度已用完",
+                ipc::SCAN_USER_BYTES_PER_MINUTE >> 20
+            ),
+            "额度窗口重置后",
+        ),
+    };
+    let mut next = format!(
+        "{after}运行 `rekey scan --staged` 补扫；要在无法扫描时阻止提交，在钩子命令里加 `--strict`。"
+    );
+    if error.code == "RATE_LIMITED"
+        && let Some(reset) = &error.next
+    {
+        next.push_str(&format!("（{}）", printable(reset)));
+    }
+    warn(
+        "SCAN_NOT_PERFORMED",
+        Some(&error.code),
+        &format!("{reason}，{unscanned} 个暂存文件没有做密钥扫描；提交照常进行。"),
+        &next,
+    );
+}
 pub fn scan(
     socket: &Path,
     paths: Vec<PathBuf>,
@@ -143,6 +263,9 @@ pub fn scan(
     stdin: bool,
     strict: bool,
 ) -> Result<(), CliError> {
+    // `--staged` is the pre-commit hook path; --strict turns every state in
+    // which Rekey cannot scan into a blocking error.
+    let hook = staged && !strict;
     let mut inputs = Vec::new();
     if staged || (paths.is_empty() && !stdin) {
         inputs = repository_files(staged)?;
@@ -151,8 +274,6 @@ pub fn scan(
             collect(&path, &mut inputs)?;
         }
     }
-    let mut findings = Vec::new();
-    let mut total = 0usize;
     let stdin_bytes = if stdin {
         Some(super::read_bounded(
             std::io::stdin().lock(),
@@ -162,57 +283,77 @@ pub fn scan(
     } else {
         None
     };
-    let mut run_one = |path: String, bytes: &[u8]| -> Result<(), CliError> {
-        total = total
-            .checked_add(bytes.len())
-            .ok_or_else(|| usage("scan total exceeds 100 MiB"))?;
-        if total > TOTAL_LIMIT {
-            return Err(usage("scan total exceeds 100 MiB"));
-        }
-        findings.extend(scan_one(socket, path, bytes)?.findings);
-        Ok(())
+    let mut batch = Batch {
+        socket,
+        total: 0,
+        findings: Vec::new(),
+        unavailable: 0,
     };
-    let result: Result<(), CliError> = (|| {
-        if let Some(bytes) = &stdin_bytes {
-            run_one("<stdin>".into(), bytes)?;
-        }
-        for path in inputs {
-            let name = path
-                .to_str()
-                .ok_or_else(|| usage("scan paths must be UTF-8"))?;
-            let bytes = if staged {
-                git_bytes(
-                    &[
-                        std::ffi::OsStr::new("cat-file"),
-                        std::ffi::OsStr::new("blob"),
-                        std::ffi::OsStr::new(&format!(":{name}")),
-                    ],
-                    FILE_LIMIT,
-                )?
-            } else {
-                read_file(&path)?
-            };
-            run_one(name.into(), &bytes)?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        if staged && !strict && error.code == "LOCKED" {
-            eprintln!(
-                "Warning: Rekey is locked; staged credentials could not be scanned. Unlock Rekey or use --strict to block the commit."
+    if let Some(bytes) = &stdin_bytes {
+        batch.send("<stdin>".into(), bytes)?;
+    }
+    for (index, path) in inputs.iter().enumerate() {
+        let name = path
+            .to_str()
+            .ok_or_else(|| usage("scan paths must be UTF-8"))?;
+        let bytes = if !staged {
+            read_file(path)?
+        } else if let Some(bytes) = staged_blob(name)? {
+            bytes
+        } else if hook {
+            warn(
+                "SCAN_FILE_SKIPPED",
+                None,
+                &format!(
+                    "暂存文件 {} 超过 10 MiB，没有扫描；其余暂存文件照常扫描。",
+                    printable(name)
+                ),
+                "缩小或拆分这个文件后运行 `rekey scan --staged` 补扫；要在这种情况下阻止提交，在钩子命令里加 `--strict`。",
             );
-            return super::write_json(&json!([]));
+            continue;
+        } else {
+            return Err(CliError::local(
+                "INVALID_FRAME",
+                format!("staged file {name} exceeds 10 MiB and cannot be scanned"),
+            ));
+        };
+        if let Err(error) = batch.send(name.to_owned(), &bytes) {
+            if !(hook && CANNOT_SCAN.contains(&error.code.as_str())) {
+                return Err(error);
+            }
+            warn_not_scanned(&error, inputs.len() - index);
+            break;
         }
-        return Err(error);
     }
-    super::write_json(&findings)?;
-    if !findings.is_empty() {
-        return Err(CliError::local(
-            "LEAK_DETECTED",
-            "credential material was detected; replace it with rekey call or a local service placeholder",
-        ));
+    if batch.unavailable > 0 {
+        warn(
+            "SCAN_CREDENTIALS_UNAVAILABLE",
+            None,
+            &format!(
+                "签名规则引用的 {} 个凭据不可用（已吊销、不存在或不支持扫描），本次没有用它们扫描；其余凭据照常扫描。",
+                batch.unavailable
+            ),
+            "在 Rekey 中移除或更新引用这些凭据的连接，并重新签署规则。",
+        );
     }
-    Ok(())
+    super::write_json(&batch.findings)?;
+    if batch.findings.is_empty() {
+        return Ok(());
+    }
+    if !crate::client::json_output() {
+        for finding in &batch.findings {
+            eprintln!(
+                "检测到 {} 的密钥出现在 {}:{}；请改用 rekey call 或本机服务地址",
+                printable(&finding.connection),
+                printable(&finding.path),
+                finding.line
+            );
+        }
+    }
+    Err(CliError::local(
+        "LEAK_DETECTED",
+        "credential material was detected; replace it with rekey call or a local service placeholder",
+    ))
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -220,6 +361,7 @@ pub fn scan(
 struct EnvPreviewEntry {
     key: String,
     preset_hint: Option<String>,
+    unsupported_protocol: Option<String>,
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -265,6 +407,114 @@ struct EnvRewriteReceipt {
     backup: PathBuf,
 }
 
+/// Agent-call 7.3: the backup keeps the original values, so the receipt says
+/// whether git ignores it. Git runs only inside a repository, without reading
+/// the index, and is stopped after five seconds.
+fn backup_git(backup: &Path) -> &'static str {
+    let (Some(directory), Some(name)) = (backup.parent(), backup.file_name()) else {
+        return "unknown";
+    };
+    if !directory
+        .ancestors()
+        .any(|parent| parent.join(".git").symlink_metadata().is_ok())
+    {
+        return "no-repository";
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let path = std::env::var_os("PATH");
+    let Some(git) = git_program(path.as_deref(), || developer_dir(deadline)) else {
+        return "unknown";
+    };
+    // The "./" prefix keeps a name that starts with ':' from being read as
+    // pathspec magic; check-ignore refuses GIT_LITERAL_PATHSPECS.
+    let Ok(mut child) = Command::new(git)
+        .arg("-C")
+        .arg(directory)
+        .args(["check-ignore", "-q", "--no-index", "--"])
+        .arg(Path::new(".").join(name))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return "unknown";
+    };
+    match wait_until(&mut child, deadline).and_then(|status| status.code()) {
+        Some(0) => "ignored",
+        Some(1) => "not-ignored",
+        _ => "unknown",
+    }
+}
+
+/// The git `backup_git` runs, found on PATH here so that the check and the
+/// spawn agree; relative PATH entries are skipped. On macOS /usr/bin/git is an
+/// xcode-select shim: without developer tools it asks to install them and
+/// exits 1, which would read as not-ignored, so it runs only when the selected
+/// developer directory has a git to forward to.
+fn git_program(
+    path: Option<&std::ffi::OsStr>,
+    developer_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let program = std::env::split_paths(path?)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join("git"))
+        .find(|candidate| executable(candidate))?;
+    if cfg!(target_os = "macos") && program == Path::new("/usr/bin/git") {
+        let tools = developer_dir()?;
+        if !["usr/bin/git", "Contents/Developer/usr/bin/git"]
+            .iter()
+            .any(|git| executable(&tools.join(git)))
+        {
+            return None;
+        }
+    }
+    Some(program)
+}
+
+fn executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+/// `xcode-select -p` prints the selected developer directory (DEVELOPER_DIR
+/// first) without prompting, even when that directory does not exist.
+fn developer_dir(deadline: Instant) -> Option<PathBuf> {
+    let mut child = Command::new("/usr/bin/xcode-select")
+        .arg("-p")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let status = wait_until(&mut child, deadline)?;
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()?
+        .take(4096)
+        .read_to_end(&mut output)
+        .ok()?;
+    let directory = PathBuf::from(String::from_utf8(output).ok()?.trim_end());
+    (status.success() && directory.is_absolute()).then_some(directory)
+}
+
+/// Waits for `child` until `deadline`, then stops it.
+fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn import_mutation(
     state_dir: &Path,
     path: &Path,
@@ -303,7 +553,8 @@ fn import_mutation(
                 "import backup path must be absolute",
             ));
         }
-        super::write_json(&receipt)
+        let backup_git = backup_git(&receipt.backup);
+        super::write_json(&json!({"backup":receipt.backup,"backup_git":backup_git}))
     } else {
         let report: EnvImportReport = serde_json::from_slice(&body)
             .map_err(|_| CliError::local("INVALID_FRAME", "invalid import report"))?;
@@ -412,6 +663,70 @@ mod tests {
             import_url(Path::new("/tmp/project #1/.env")).unwrap(),
             "rekey://import?path=%2Ftmp%2Fproject%20%231%2F.env"
         );
+    }
+    #[test]
+    fn backup_git_runs_the_first_executable_git_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (plain, tool) = (dir.path().join("plain"), dir.path().join("tool"));
+        for directory in [&plain, &tool] {
+            std::fs::create_dir(directory).unwrap();
+            std::fs::write(directory.join("git"), b"#!/bin/sh\n").unwrap();
+        }
+        std::fs::set_permissions(tool.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Only /usr/bin/git consults the developer directory.
+        let unused = || -> Option<PathBuf> { panic!("developer directory read for another git") };
+        let path = std::env::join_paths([plain.as_path(), tool.as_path()]).unwrap();
+        assert_eq!(git_program(Some(&path), unused), Some(tool.join("git")));
+        let plain_only = std::env::join_paths([plain.as_path()]).unwrap();
+        assert_eq!(git_program(Some(&plain_only), unused), None);
+        assert_eq!(git_program(None, unused), None);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_git_shim_runs_only_when_the_developer_tools_have_git() {
+        let shim = std::ffi::OsStr::new("/usr/bin");
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(git_program(Some(shim), || None), None);
+        assert_eq!(
+            git_program(Some(shim), || Some(empty.path().to_path_buf())),
+            None
+        );
+        for layout in ["usr/bin", "Contents/Developer/usr/bin"] {
+            let tools = tempfile::tempdir().unwrap();
+            let bin = tools.path().join(layout);
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("git"), b"").unwrap();
+            std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            assert_eq!(
+                git_program(Some(shim), || Some(tools.path().to_path_buf())),
+                Some(PathBuf::from("/usr/bin/git")),
+                "{layout}"
+            );
+        }
+    }
+    #[test]
+    fn staged_paths_scan_type_changes_and_destinations_and_skip_gitlinks() {
+        let raw = b":000000 100644 0000000 45b983b A\0added.txt\0\
+            :120000 100644 1111111 2222222 T\0was-a-link\0\
+            :100644 100644 84275f9 84275f9 R100\0old.txt\0renamed.txt\0\
+            :100644 100644 84275f9 84275f9 C075\0source.txt\0copy.txt\0\
+            :000000 160000 0000000 38ed5f0 A\0vendor/sub\0\
+            :100644 160000 1111111 38ed5f0 T\0became-sub\0";
+        assert_eq!(
+            staged_paths(raw).unwrap(),
+            ["added.txt", "was-a-link", "renamed.txt", "copy.txt"].map(PathBuf::from)
+        );
+        assert!(staged_paths(b"").unwrap().is_empty());
+        for invalid in [
+            &b"100644 100644 0 0 A\0a\0"[..],
+            b":100644 100644 0 A\0a\0",
+            b":100644 100644 0 0 A\0",
+            b":100644 100644 0 0 R100\0old\0",
+            b":100644 100644 0 0 A\0\xff\0",
+        ] {
+            assert!(staged_paths(invalid).is_err(), "{invalid:?}");
+        }
     }
     #[test]
     fn scan_reader_rejects_symlinks_and_oversized_content() {

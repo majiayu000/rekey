@@ -1,5 +1,6 @@
 //! Process-level gate: a real rekeyd must fail before binding either UDS when
 //! persisted crypto discriminators are not implemented by this binary.
+mod common;
 
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -15,8 +16,14 @@ const TEST_PARAMS: Argon2Params = Argon2Params {
     iterations: 1,
     parallelism: 1,
 };
+/// Rejection needs no unlock or network. A passing run exits long before this;
+/// it only turns a hang into a failure on a slow or heavily loaded host.
+const REJECT_LIVENESS: Duration = Duration::from_secs(60);
 
+/// Waits for rekeyd to exit. A socket appearing first fails at once, because
+/// the contract is rejection before either endpoint is bound.
 fn run_rekeyd_bounded(state_dir: &std::path::Path, case_name: &str) -> ExitStatus {
+    let log = state_dir.with_file_name("rekeyd-stderr");
     let mut child = Command::new(env!("CARGO_BIN_EXE_rekeyd"))
         .args([
             "serve",
@@ -27,18 +34,31 @@ fn run_rekeyd_bounded(state_dir: &std::path::Path, case_name: &str) -> ExitStatu
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let started = Instant::now();
+    let limit = common::test_timeout(REJECT_LIVENESS);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             return status;
         }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
+        let bound = ["runtime/admin.sock", "runtime/agent.sock"]
+            .iter()
+            .any(|socket| state_dir.join(socket).exists());
+        if bound || started.elapsed() >= limit {
+            let _ = child.kill();
             child.wait().unwrap();
-            panic!("rekeyd did not reject {case_name} within 5 seconds");
+            panic!(
+                "rekeyd did not reject {case_name} ({}) after {:?}: {}",
+                if bound {
+                    "a socket was bound"
+                } else {
+                    "still running"
+                },
+                started.elapsed(),
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
         }
         std::thread::sleep(Duration::from_millis(10));
     }

@@ -34,14 +34,24 @@ struct DerivedReceipt {
     expires_at_ms: i64,
 }
 
-pub fn derive(
-    socket: &Path,
+#[derive(clap::Args)]
+pub struct DerivedCredentialArgs {
     connection: String,
+    /// Issue with this already approved request ID; no new approval is requested.
+    #[arg(long)]
+    approval: Option<ApprovalRequestId>,
+    /// Return APPROVAL_REQUIRED at once instead of waiting up to 120 s for local approval.
+    #[arg(long)]
+    no_wait: bool,
+}
+
+fn issue(
+    socket: &Path,
+    connection: &str,
     approval_request_id: Option<ApprovalRequestId>,
-    format: DerivedFormat,
-) -> Result<(), CliError> {
+) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>), CliError> {
     let request = serde_json::to_vec(&DeriveCredentialMeta {
-        connection: connection.clone(),
+        connection: connection.to_owned(),
         approval_request_id,
     })
     .map_err(|_| {
@@ -50,9 +60,45 @@ pub fn derive(
             "cannot encode temporary credential request",
         )
     })?;
-    let (metadata, body) =
-        Client::connect_with_response_timeout(socket, Channel::Agent, Duration::from_secs(40))?
-            .call(agent_msg::DERIVE_CREDENTIAL, &request, &[])?;
+    Client::connect_with_response_timeout(socket, Channel::Agent, Duration::from_secs(40))?.call(
+        agent_msg::DERIVE_CREDENTIAL,
+        &request,
+        &[],
+    )
+}
+
+/// `credential_process` and exec plugins cannot pass `--approval`, so an
+/// `approve` grant waits once like `rekey call` and retries exactly once with
+/// the same ID. stdout carries only the issued value.
+pub fn derive(
+    socket: &Path,
+    args: DerivedCredentialArgs,
+    format: DerivedFormat,
+) -> Result<(), CliError> {
+    let DerivedCredentialArgs {
+        connection,
+        approval,
+        no_wait,
+    } = args;
+    let (metadata, body) = match issue(socket, &connection, approval) {
+        Err(error) if error.code == "APPROVAL_REQUIRED" && !no_wait => {
+            let Some(challenge) = error.approval.as_deref().map(|a| a.challenge_id) else {
+                return Err(error);
+            };
+            // Structured stderr stays one JSON error line; people at a terminal see progress.
+            if !crate::client::json_output() {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "等待本机批准临时凭证（最长 120 秒）：{challenge}。批准后自动重试一次。"
+                );
+            }
+            if !super::agent::await_approved(socket, challenge)? {
+                return Err(error);
+            }
+            issue(socket, &connection, Some(challenge))?
+        }
+        result => result?,
+    };
     let receipt: DerivedReceipt = serde_json::from_slice(&metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "invalid temporary credential receipt"))?;
     if receipt.connection != connection

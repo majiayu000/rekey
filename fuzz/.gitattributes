@@ -1,0 +1,3 @@
+# Seeds are exact bytes (CRLF and invalid UTF-8 included): no end-of-line
+# conversion and no whitespace errors.
+corpus/** -text -whitespace

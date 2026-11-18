@@ -493,6 +493,48 @@ async fn basic_mode_password_approves_but_unlock_only_remembered_key_cannot() {
     write["approval_request_id"] = id;
     f.call(&write, body).await.ok();
     assert_eq!(f.broker.fake.requests.lock().unwrap().len(), 1);
+
+    // The vault password also rejects the next write.
+    write.as_object_mut().unwrap().remove("approval_request_id");
+    let required = f.call(&write, body).await;
+    assert_eq!(required.err_code(), "APPROVAL_REQUIRED");
+    let second = required.metadata["approval"]["challenge_id"].clone();
+    let review = admin(
+        admin_msg::APPROVAL_LOCAL_REVIEW,
+        json!({"approval_request_id":second}),
+        Vec::new(),
+    )
+    .await;
+    let reject =
+        json!({"approval_request_id":second,"expected_review_sha256":review.ok()["review_sha256"]});
+    admin(
+        admin_msg::APPROVAL_LOCAL_REJECT,
+        reject,
+        proof(ipc::ProofKind::Password, common::PASSWORD),
+    )
+    .await
+    .ok();
+    // Contract: `rekey audit list` validates every page it reads, so a page
+    // holding both password decisions must pass the same check.
+    let query: rekey_domain::audit::AuditQuery =
+        serde_json::from_value(json!({"limit":100})).unwrap();
+    let response = admin(
+        admin_msg::AUDIT_QUERY,
+        serde_json::to_value(&query).unwrap(),
+        Vec::new(),
+    )
+    .await;
+    response.ok();
+    let page: rekey_domain::audit::AuditPage = serde_json::from_slice(&response.body).unwrap();
+    page.validate_for(&query).unwrap();
+    let decisions: Vec<&str> = page
+        .events
+        .iter()
+        .filter(|event| event.reason_code == "local-password")
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert_eq!(decisions, ["approval.rejected", "approval.approved"]);
+    assert_eq!(f.broker.fake.requests.lock().unwrap().len(), 1);
     f.broker.shutdown().await;
 }
 
@@ -546,5 +588,55 @@ async fn daily_denial_preserves_approval_without_started_or_effect() {
         .unwrap();
     assert_eq!(usage, 1);
     f.assert_paired_terminals(1);
+    f.broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reused_call_frame_id_is_transport_correlation_not_audit_identity() {
+    // Agents choose frame IDs. Reusing one must neither fault the Authority on
+    // the one-started-per-request index nor merge two executions' audit.
+    use tokio::io::AsyncReadExt;
+    let f = Fixture::new(1, 1000, false).await;
+    let frame_id = RequestId::new_random();
+    let metadata = serde_json::to_vec(&read(0)).unwrap();
+    let mut stream = UnixStream::connect(f.broker.agent_sock()).await.unwrap();
+    for _ in 0..2 {
+        let mut frame = FrameHeader {
+            channel: Channel::Agent,
+            flags: 0,
+            message_type: agent_msg::CALL,
+            request_id: frame_id,
+            metadata_len: metadata.len() as u32,
+            body_len: 0,
+        }
+        .encode()
+        .to_vec();
+        frame.extend_from_slice(&metadata);
+        stream.write_all(&frame).await.unwrap();
+        let mut raw = [0; ipc::FRAME_HEADER_LEN];
+        stream.read_exact(&mut raw).await.unwrap();
+        let header = FrameHeader::decode(&raw).unwrap();
+        let mut rest = vec![0; (header.metadata_len + header.body_len) as usize];
+        stream.read_exact(&mut rest).await.unwrap();
+        assert_eq!(
+            header.message_type,
+            ipc::resp_msg::OK,
+            "{}",
+            String::from_utf8_lossy(&rest)
+        );
+        assert_eq!(header.request_id, frame_id, "responses echo the frame ID");
+    }
+    f.assert_paired_terminals(2);
+    let started: Vec<Vec<u8>> = f
+        .db()
+        .prepare("SELECT request_id FROM audit_events WHERE event_type='execution.started'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_ne!(started[0], started[1]);
+    assert!(started.iter().all(|id| id[..] != frame_id.as_bytes()[..]));
+    assert_eq!(f.count("runtime.faulted"), 0);
     f.broker.shutdown().await;
 }

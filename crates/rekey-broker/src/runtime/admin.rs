@@ -65,25 +65,6 @@ fn verified_stored_bundle(
 }
 
 impl BrokerCtx {
-    pub(crate) async fn check_local_approval_policy(
-        &self,
-        challenge: &rekey_domain::ipc::ApprovalChallenge,
-    ) -> Result<(), BrokerError> {
-        let now = crate::now_ts()?;
-        let policy = self.policy.read().await;
-        let current = policy
-            .as_ref()
-            .filter(|p| !p.is_expired(now))
-            .ok_or(BrokerError::Denied("policy-changed"))?;
-        if current.snapshot().version().get() != challenge.policy_version
-            || data_encoding::HEXLOWER.encode(&current.snapshot().digest())
-                != challenge.policy_sha256
-        {
-            return Err(BrokerError::Denied("policy-changed"));
-        }
-        Ok(())
-    }
-
     pub async fn personal_policy_draft_until(
         &self,
         request: PersonalPolicyDraftMeta,
@@ -505,8 +486,8 @@ impl BrokerCtx {
             } else {
                 self.sessions.revoke_workload();
             }
-            let mut guard = self.policy.write().await;
-            *guard = Some(Arc::new(active));
+            *self.policy.write().await = Some(Arc::new(active));
+            self.local_calls.clear_windows();
         }
         self.reconcile_gateway().await;
         Ok(())

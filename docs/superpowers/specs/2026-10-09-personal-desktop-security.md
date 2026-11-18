@@ -36,10 +36,24 @@ Full lock retains the existing Authority drain and grant deletion.
 The UI starts/reopens private-locked even if the daemon is unlocked. Privacy lock
 clears forms, results and caches immediately, invalidates
 native completion revisions and requests server session revocation. Late login or
-resume tokens are revoked when they arrive. Failed cleanup remains visible and
+resume tokens are revoked when they arrive, including a login token whose guarded
+context changed while it was issued. A password login that also remembers system
+authentication opens the UI only after the new grant is saved; a lock or context
+change meanwhile revokes that login and, once the grant may have been issued,
+forgets it with the same token (DESKTOP_LOCK forget_remembered). Failed cleanup remains visible and
 blocks another UI login until confirmed. Keychain is read only from an explicit
 system-authentication operation. OS notifications may reduce access only; activation
 never authenticates. Pending business operations are not retried or rolled back.
+
+Revision 2026-11-17 (owner decision): the Keychain rule above covers secret
+reads, such as reading the PresenceKey item; those happen only inside an
+explicit system-authentication operation. The policy-signer preflight
+(`PolicySigning.available`) is exempt. It runs when the add, policy-draft and
+OAuth forms open, and again before credentials are saved, `.env` entries are
+imported or a draft is signed. Its Keychain access, with `interactionNotAllowed`,
+only looks up the existing Secure Enclave key reference and its public key: no
+prompt and no Keychain secret read. It never signs, generates or replaces a key.
+The basic-mode software key is a state-directory file, not a Keychain item.
 
 Preserve current personal Connection forms (they supersede the old Action form).
 Extend the existing team unsigned-draft view with exact UTF-8 text editing and
@@ -58,10 +72,13 @@ tests; actual signed-device acceptance remains separate.
 
 Eighteen Worker desktop contracts pass, including failed replacement, invalid
 lifetime preservation, same-ticket monotonic caps, the seven-day A1 maximum,
-audit-trigger failure and wall-clock expiry. Four real lab IPC cases pass,
+audit-trigger failure and wall-clock expiry. Five real lab IPC cases pass,
 including execution with an existing Agent capability after privacy lock; the
-default build runs the three personal IPC cases. Lab policy test fixtures now
-include the required policy8 derived_credentials collection.
+default build runs the four personal IPC cases. Revision 2026-11-17: one of
+them activates a signed Connection, then runs DESKTOP_LOCK with
+forget_remembered false and true, and a tokenless agent.sock CALL still reaches
+the fake upstream each time. Lab policy test fixtures now include the required
+policy8 derived_credentials collection.
 
 Synthetic Swift contracts pass idle/device/disabled choices, immediate cache
 clearing, stale login revocation, authentication cancellation, visible failed
@@ -72,7 +89,12 @@ signature, real Swift/CLI/Broker Connection/lifecycle/backup, automatic locked
 startup and the human-vault mutation/failure harness pass. The independent Rust
 signer accepts the generated empty policy8 draft. These use fresh synthetic
 state and software signing; actual device events, protected Keychain/Touch ID
-and installed App acceptance remain unverified.
+and installed App acceptance remain unverified. Follow-up contracts (2026-11-17)
+post the four device signals through injected notification centers (each locks;
+none locks when the setting is off) and hold a synthetic desktop-resume,
+desktop-remember or desktop-login until a lock or context change, then check that
+the late token is revoked (the remembered grant with forget_remembered) and the
+UI stays locked. Real OS sleep, screen lock and user switching are not automated.
 
 PR61 disposition: retain current personal Connection/onboarding, source adapter
 contracts and approval-notification implementation rather than its obsolete

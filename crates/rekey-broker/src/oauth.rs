@@ -21,7 +21,7 @@ use crate::active_policy::ActivePolicy;
 use crate::error::BrokerError;
 use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::upstream::{UpstreamRequest, UpstreamTransport};
-
+mod refresh_audit;
 fn secret<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Zeroizing<String>>, D::Error> {
     Option::<String>::deserialize(d).map(|v| v.map(Zeroizing::new))
 }
@@ -438,15 +438,10 @@ impl Manager {
         }
         let access = match result {
             Ok(Ok(access)) => access,
-            other => {
-                let mut audit = crate::runtime::oauth_audit("oauth.refresh_failed", c, active)?;
-                audit.outcome = rekey_vault::model::outcome::DENIED;
-                audit.reason_code = "oauth-refresh-failed".into();
-                authority.append_audit(audit).await?;
-                return Err(match other {
-                    Ok(Err(error)) => error,
-                    _ => BrokerError::Upstream("oauth-refresh-timeout"),
-                });
+            Ok(Err(error)) => return Err(refresh_audit::record(authority, c, active, error).await?),
+            Err(_) => {
+                let timeout = BrokerError::Upstream("oauth-refresh-timeout");
+                return Err(refresh_audit::record(authority, c, active, timeout).await?);
             }
         };
         if self.epoch.load(Ordering::SeqCst) != epoch {

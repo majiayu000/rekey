@@ -83,7 +83,7 @@ async fn scan_is_locked_until_unlock_and_returns_only_locations() {
         )
         .await
         .unwrap();
-    let findings = authority
+    let report = authority
         .scan_credentials(
             vec![ScanInput::new(
                 "src/fixture.txt",
@@ -96,6 +96,8 @@ async fn scan_is_locked_until_unlock_and_returns_only_locations() {
         )
         .await
         .unwrap();
+    assert_eq!(report.unavailable_credentials, 0);
+    let findings = report.findings;
     assert_eq!(findings.len(), 1);
     assert_eq!((findings[0].line, findings[0].column), (2, 3));
     let result = serde_json::to_string(&findings).unwrap();
@@ -111,6 +113,70 @@ async fn scan_is_locked_until_unlock_and_returns_only_locations() {
             .iter()
             .any(|event| event == "scan.performed")
     );
+    authority
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn revoked_or_missing_credentials_are_counted_and_the_rest_still_scanned() {
+    const REVOKED: &[u8] = b"synthetic-revoked-scan-value-5678";
+    let fixture = common::init_test_vault();
+    let (authority, join) = common::spawn(&fixture.state_dir);
+    authority.unlock(common::password_proof()).await.unwrap();
+    let mut ids = Vec::new();
+    for (label, value) in [
+        ("active-connection", CANARY),
+        ("revoked-connection", REVOKED),
+    ] {
+        let credential = authority
+            .credential_add(
+                CredentialLabel::new(label).unwrap(),
+                CredentialKind::OpaqueToken,
+                rekey_vault::secret::SecretInput::from_slice(value),
+                common::password_proof(),
+            )
+            .await
+            .unwrap();
+        ids.push(credential.id);
+    }
+    authority
+        .credential_revoke(ids[1], common::password_proof())
+        .await
+        .unwrap();
+    let reference = |connection: &str, credential_id| ScanCredential {
+        connection: connection.to_owned(),
+        credential_id,
+    };
+    let report = authority
+        .scan_credentials(
+            vec![ScanInput::new(
+                "src/fixture.txt",
+                [b"old: ", REVOKED, b"\ncurrent: ", CANARY].concat(),
+            )],
+            vec![
+                reference("revoked-connection", ids[1]),
+                reference(
+                    "missing-connection",
+                    rekey_domain::ids::CredentialId::new_random(),
+                ),
+                // A second reference to the same revoked credential counts once.
+                reference("revoked-alias", ids[1]),
+                reference("active-connection", ids[0]),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.unavailable_credentials, 2);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].connection, "active-connection");
+    assert_eq!(
+        (report.findings[0].line, report.findings[0].column),
+        (2, 10)
+    );
+    assert_eq!(authority.status().await.unwrap().state, "unlocked");
     authority
         .shutdown(Some(common::password_proof()))
         .await
@@ -163,6 +229,95 @@ fn dotenv_preview_retains_unsupported_syntax_and_redacts_values() {
     let json = serde_json::to_string(&preview).unwrap();
     assert!(!json.contains("sk-synthetic-fixture"));
     assert!(!json.contains("synthetic-database-password"));
+}
+
+/// Agent-call 7.3: hints name presets the App can load; AWS keys, connection
+/// strings and passwords are reported as unproxyable instead of guessed.
+#[test]
+fn dotenv_preview_names_loadable_presets_and_unproxyable_protocols() {
+    let input = b"GITHUB_TOKEN=synthetic\nPAT=ghp_synthetic\nAWS_SECRET_ACCESS_KEY=synthetic-aws-secret\nAWS_ACCESS_KEY_ID=ASIASYNTHETIC\nLEGACY=AKIASYNTHETIC\nDATABASE_URL=file:./synthetic.db\nCACHE=REDISS://:synthetic@cache:6380\nSMTP_PASSWORD=synthetic-mail\nDB_PASSWORD=sk-looks-like-openai\nAWS_REGION=us-east-1\nAWS_BEARER_TOKEN_BEDROCK=ABSKsynthetic\n";
+    let preview = rekey_vault::hygiene::env::preview_bytes(input);
+    let recognized: Vec<_> = preview
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.key.as_str(),
+                entry.preset_hint.as_deref(),
+                entry.unsupported_protocol.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recognized,
+        [
+            ("GITHUB_TOKEN", Some("github-pat"), None),
+            ("PAT", Some("github-pat"), None),
+            ("AWS_SECRET_ACCESS_KEY", None, Some("aws")),
+            ("AWS_ACCESS_KEY_ID", None, Some("aws")),
+            ("LEGACY", None, Some("aws")),
+            ("DATABASE_URL", None, Some("database")),
+            ("CACHE", None, Some("database")),
+            ("SMTP_PASSWORD", None, Some("password")),
+            // A preset match wins, so a refusal never rests on a guessed name.
+            ("DB_PASSWORD", Some("openai"), None),
+            ("AWS_REGION", None, None),
+            ("AWS_BEARER_TOKEN_BEDROCK", None, None),
+        ]
+    );
+    let json = serde_json::to_string(&preview).unwrap();
+    assert!(!json.contains("synthetic-aws-secret") && !json.contains("synthetic-mail"));
+}
+
+#[tokio::test]
+async fn daemon_never_imports_or_rewrites_an_unproxyable_entry() {
+    let fixture = common::init_test_vault();
+    let path = fixture
+        .dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("fixture.env");
+    let original = b"AWS_SECRET_ACCESS_KEY=synthetic-aws-secret\nDATABASE_URL=postgres://u:synthetic@db/x\nSMTP_PASSWORD=synthetic-mail\nOPENAI_API_KEY=sk-synthetic-only\n";
+    std::fs::write(&path, original).unwrap();
+    let (authority, join) = common::spawn(&fixture.state_dir);
+    authority.unlock(common::password_proof()).await.unwrap();
+    let replacement = |key: &str, variable: &str| EnvReplacement {
+        key: key.to_owned(),
+        base_url_variable: variable.to_owned(),
+        base_url: "http://127.0.0.1:7787/c/synthetic/v1".to_owned(),
+    };
+    for key in ["AWS_SECRET_ACCESS_KEY", "DATABASE_URL", "SMTP_PASSWORD"] {
+        let refused = authority
+            .import_env(
+                EnvImportRequest {
+                    path: path.clone(),
+                    selections: vec![EnvImportSelection {
+                        key: key.to_owned(),
+                        label: CredentialLabel::new(&format!("never-{key}")).unwrap(),
+                    }],
+                },
+                common::password_proof(),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(AuthorityError::Domain(_))),
+            "{key}: {refused:?}"
+        );
+        assert!(rewrite_env(&path, &[replacement(key, "SYNTHETIC_BASE_URL")]).is_err());
+    }
+    // A base URL line may not overwrite a value that stays either.
+    assert!(rewrite_env(&path, &[replacement("OPENAI_API_KEY", "DATABASE_URL")]).is_err());
+    assert!(authority.credential_list().await.unwrap().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(!path.with_file_name("fixture.env.rekey-backup").exists());
+    assert_eq!(authority.status().await.unwrap().state, "unlocked");
+    authority
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
 }
 
 #[tokio::test]

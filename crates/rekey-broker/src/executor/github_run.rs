@@ -197,12 +197,10 @@ impl ActionExecutor {
                 return Err(github_post_effect_error(err.reason()));
             }
         };
-        if contains_secret(&response.body, &needles)
-            || headers_contain_secret(&response.headers, &needles)
+        if let Some(reason) =
+            super::http::buffered_refusal(&response.headers, &response.body, &needles)
         {
-            started
-                .indeterminate_until(effect_deadline, "reflected-secret")
-                .await?;
+            started.indeterminate_until(effect_deadline, reason).await?;
             return Err(BrokerError::ResponseSecurityViolation);
         }
         let headers = filter_response_headers(action, &response.headers);

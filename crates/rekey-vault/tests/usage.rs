@@ -717,74 +717,8 @@ async fn format_24_state_and_backup_are_rejected_without_migration() {
     assert!(!paths::vault_db(&target).exists());
 }
 
-#[test]
-fn hard_kill_child() {
-    let Some(state) = std::env::var_os("REKEY_USAGE_SYNTHETIC_CHILD") else {
-        return;
-    };
-    let state = std::path::PathBuf::from(state);
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let (h, _join) = common::spawn(&state);
-        h.unlock(common::password_proof()).await.unwrap();
-        let p = PrincipalId::new_random();
-        begin(&h, limits(Some(37)), draft(p)).await.unwrap();
-        std::fs::write(
-            state.parent().unwrap().join("usage-ready"),
-            serde_json::to_vec(&p).unwrap(),
-        )
-        .unwrap();
-        loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        }
-    });
-}
-
-#[tokio::test]
-async fn hard_kill_pending_is_recovered_once_before_unlock_admission() {
-    let v = common::init_test_vault();
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "hard_kill_child", "--nocapture"])
-        .env("REKEY_USAGE_SYNTHETIC_CHILD", &v.state_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let marker = v.dir.path().join("usage-ready");
-    let end = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() {
-        if Instant::now() >= end {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("synthetic child did not durably start");
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let p: PrincipalId = serde_json::from_slice(&std::fs::read(marker).unwrap()).unwrap();
-    child.kill().unwrap();
-    assert!(!child.wait().unwrap().success());
-    for _ in 0..2 {
-        let (h, j) = common::spawn(&v.state_dir);
-        let db = Connection::open(paths::vault_db(&v.state_dir)).unwrap();
-        h.unlock(common::password_proof()).await.unwrap();
-        assert_eq!(
-            sum(&h, p).await,
-            UsageTotals {
-                requests: 1,
-                output_tokens: 37
-            }
-        );
-        let n: i64 = db
-            .query_row(
-                "SELECT count(*) FROM audit_events WHERE event_type='execution.indeterminate'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1);
-        finish(h, j).await;
-    }
-}
+#[path = "usage/hard_kill.rs"]
+mod hard_kill;
 
 #[tokio::test]
 async fn dropped_terminal_receiver_does_not_cancel_the_queued_settlement() {

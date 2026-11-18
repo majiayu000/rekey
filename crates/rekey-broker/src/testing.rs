@@ -18,6 +18,21 @@ struct QueuedResponse {
     response: Result<UpstreamResponse, UpstreamError>,
 }
 
+/// Wall-clock fixture bounds scale with `REKEY_TEST_TIMEOUT_SCALE` (a positive
+/// integer, default 1) on slow or loaded hosts. Product deadlines never scale.
+#[cfg(test)]
+pub(crate) fn test_timeout(base: Duration) -> Duration {
+    let scale = match std::env::var("REKEY_TEST_TIMEOUT_SCALE") {
+        Err(std::env::VarError::NotPresent) => 1,
+        value => value
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .expect("REKEY_TEST_TIMEOUT_SCALE must be a positive integer"),
+    };
+    base.checked_mul(scale).expect("scaled test timeout")
+}
+
 fn lock_test_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,

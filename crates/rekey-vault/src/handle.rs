@@ -90,7 +90,7 @@ impl AuthorityHandle {
         &self,
         inputs: Vec<crate::hygiene::ScanInput>,
         credentials: Vec<crate::hygiene::ScanCredential>,
-    ) -> Result<Vec<crate::hygiene::ScanFinding>, AuthorityError> {
+    ) -> Result<crate::hygiene::ScanReport, AuthorityError> {
         call!(self, |reply| AuthorityCommand::ScanCredentials {
             inputs,
             credentials,
@@ -834,7 +834,7 @@ impl AuthorityHandle {
         credential_id: CredentialId,
         public_key: Vec<u8>,
         data: Vec<u8>,
-        started: AuditDraft,
+        started: crate::command::SshSignStart,
         approvals: Vec<AuditDraft>,
         not_after: std::time::Instant,
     ) -> Result<Vec<u8>, AuthorityError> {

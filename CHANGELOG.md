@@ -58,6 +58,74 @@ watch and Linux plugin guardian wait now use Tokio's explicit unsafe registratio
 API with owned descriptors kept valid until deregistration; registration errors
 still preserve their underlying IO cause. Both lockfiles are synchronized.
 
+Design completion (2026-11-17): an audit of the active 0.5 contracts against the
+code verified 81 gaps; this round fixes the software ones. See the
+[design completion record](docs/evidence/2026-11-17-design-completion.md).
+No vault, policy, backup, audit-schema or AAD format changes; the IPC changes
+are listed below.
+
+- Caller identification: CLI, MCP and SSH agent requests are labelled from the
+  socket peer's process chain, and local HTTP requests from the process that
+  holds the client socket (found by TCP four-tuple). Those two paths were fixed
+  to `unknown` and `ssh-agent`, so per-caller rules, approvals and time windows
+  now apply there. On macOS a path miss falls back to a Team ID and identifier
+  check.
+- Access requests: the fourth request from one caller within a minute returns
+  `RATE_LIMITED` with the reset time (it returned `BUDGET_EXCEEDED`). Provider
+  families resolve to their presets, unknown providers return `INVALID_INPUT`,
+  and under a signed policy the access-request audit rows carry Connection
+  context.
+- Scan: SCAN uses a shared 600 MiB per minute byte budget per system user
+  instead of 60 frames per minute, so commits with more than 60 staged files
+  are no longer blocked. The hook warns and lets the commit through when Rekey
+  is not running, is locked, has no current signed policy or has used its
+  budget; `--strict` blocks. A staged type change (a symlink replaced by a
+  file) is scanned, and a staged submodule pointer no longer fails the hook.
+  `ScanResponse` gains the required `unavailable_credentials`, so the CLI and
+  daemon must come from the same build; an expired policy returns
+  `NOT_CONFIGURED` instead of `DENIED`.
+- `rekey connect` writes no `--state-dir` for the default `~/.rekey` and warns
+  before writing a non-default vault path. New `rekey hooks install|uninstall`.
+  Existing hooks are chained: shell hooks get the scan after the shebang,
+  others are renamed to `pre-commit.rekey-chained`. The `--with-ssh` block
+  ends with `Match all`.
+- T1: `aws-credentials`, `kubectl-credentials` and `github-token` wait up to
+  120 s for a local approval and retry once with the same approval ID.
+- Upstream: every upstream request sends `accept-encoding: identity`. A
+  response with another content coding, or a transfer coding other than
+  chunked, is refused before any byte is released (`RESPONSE_BLOCKED`).
+  `github-git` signs `git-protocol` (Git protocol v2) and accepts a single gzip
+  request body member; Connections signed earlier must be re-signed for v2.
+  Adds the `flate2` dependency (pure-Rust backend).
+- Audit: a basic-mode password approval or rejection no longer makes
+  `AUDIT_QUERY` (`rekey audit list`, the activity view) fail with
+  `STORAGE_INTEGRITY_FAILED`. `ssh.sign` reason codes record the purpose and
+  the verified host key fingerprint, and a provider refusal during an OAuth
+  refresh is recorded as `oauth-needs-reauth`.
+- PKI: a certificate reservation left by a crashed Worker becomes `Failed`,
+  with one failure audit, at the next unlock from Locked, instead of blocking
+  the full CRL forever.
+- Default build: `rekeyd` refuses the lab-only session and Profile opcodes
+  (admin `SESSION_CREATE`, `SESSION_REVOKE`, `PROFILE_GET`,
+  `PROFILE_SESSION_CREATE`; agent `PROFILE_INVENTORY`) with `INVALID_FRAME`. `rekey unlock
+  --remember` rejects lifetimes outside 1 s to 30 days before sending the
+  password. CALL execution audit IDs come from the daemon, not the frame
+  request ID.
+- App: a failed background start writes `startup-failure.json` (0600) and the
+  App shows its code and next step, the port and `service.json` path for
+  `SERVICE_PORT_IN_USE`, and read-only rebuild guidance for unsupported vault
+  layouts. `rekey status` gains `protection_level`, and `peer_security` is only
+  the identity label. `.env` import writes the `<X>_BASE_URL` name SDKs read
+  and marks replaced lines. The signer preflight runs before a key is saved,
+  short-credential warnings are shown, desktop tokens that arrive after a lock
+  are revoked, and OAuth Connections that need re-authorization are listed.
+- Docker HA controller: publishes the ready primary before preparing a spare,
+  labels every Docker error and hands over recovery output before the first
+  start; the live drill passed on the design-completion head.
+- Tests: the P0 acceptance scripts use signed Connections and run in the
+  security gate on both platforms; four fuzz targets gained synthetic seed
+  corpora; load-sensitive tests wait for events instead of fixed deadlines.
+
 ## 0.4.0-alpha.1
 
 **Requires a new vault.** Replace local capability/Profile launching with signed

@@ -54,6 +54,15 @@ fn test_tls() -> (Vec<u8>, rustls::ServerConfig) {
 }
 
 async fn spawn_https(response: Vec<u8>, drop_after_write: bool) -> Fixture {
+    spawn_https_recording(response, drop_after_write, None).await
+}
+
+/// `seen` receives the first read of the request (its complete head here).
+async fn spawn_https_recording(
+    response: Vec<u8>,
+    drop_after_write: bool,
+    seen: Option<tokio::sync::oneshot::Sender<Vec<u8>>>,
+) -> Fixture {
     let (ca_der, server) = test_tls();
     let acceptor = TlsAcceptor::from(Arc::new(server));
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -66,7 +75,10 @@ async fn spawn_https(response: Vec<u8>, drop_after_write: bool) -> Fixture {
             return;
         };
         let mut buf = vec![0u8; 4096];
-        let _ = tls.read(&mut buf).await;
+        let read = tls.read(&mut buf).await.unwrap_or(0);
+        if let Some(seen) = seen {
+            let _ = seen.send(buf[..read].to_vec());
+        }
         let _ = tls.write_all(&response).await;
         let _ = tls.flush().await;
         if !drop_after_write {
@@ -134,6 +146,37 @@ async fn screened_tls_roundtrip() {
             .iter()
             .any(|(n, v)| n == "content-type" && v == "application/json")
     );
+}
+
+#[tokio::test]
+async fn screened_request_asks_for_identity_only_whatever_the_caller_set() {
+    let (seen, head) = tokio::sync::oneshot::channel();
+    let fixture = spawn_https_recording(
+        http_response(200, "OK", &[("content-type", "text/plain")], b"ok"),
+        false,
+        Some(seen),
+    )
+    .await;
+    let mut request = request(fixture.port, 1024);
+    request.headers = vec![
+        ("accept-encoding".to_owned(), "gzip, br".to_owned()),
+        ("Accept-Encoding".to_owned(), "zstd".to_owned()),
+        ("x-trace".to_owned(), "1".to_owned()),
+    ];
+    let response = send_screened(request, endpoint(fixture.port), Some(&fixture.ca_der))
+        .await
+        .expect("tls send");
+    assert_eq!(response.body.as_slice(), b"ok");
+    let head = String::from_utf8(head.await.unwrap())
+        .unwrap()
+        .to_ascii_lowercase();
+    let codings: Vec<_> = head
+        .split("\r\n")
+        .filter_map(|line| line.strip_prefix("accept-encoding:"))
+        .map(str::trim)
+        .collect();
+    assert_eq!(codings, ["identity"], "{head}");
+    assert!(head.contains("\r\nx-trace: 1\r\n"), "{head}");
 }
 
 #[tokio::test]

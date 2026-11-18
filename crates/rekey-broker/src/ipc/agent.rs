@@ -73,7 +73,9 @@ pub async fn handle_agent_conn(
     mut stream: UnixStream,
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
+    scan_budget: Arc<super::scan::ScanBudget>,
 ) {
+    let scan_peer = super::scan::ScanPeer::new(&stream, scan_budget);
     loop {
         if *shutdown.borrow() {
             return;
@@ -138,18 +140,18 @@ pub async fn handle_agent_conn(
             }
             continue;
         }
-        let caller = super::caller::unix_caller(&stream);
+        let caller = super::caller::unix_caller(&stream).await;
         let response = if frame.header.message_type == agent_msg::AWAIT_APPROVAL {
             let mut extra = [0u8; 1];
             tokio::select! {
                 _ = shutdown.changed() => return,
                 _ = stream.read(&mut extra) => return,
-                response = dispatch_local(&frame, &ctx, &caller) => response,
+                response = dispatch_local(&frame, &ctx, &caller, &scan_peer) => response,
             }
         } else {
             tokio::select! {
                 _ = shutdown.changed() => return,
-                response = dispatch_local(&frame, &ctx, &caller) => response,
+                response = dispatch_local(&frame, &ctx, &caller, &scan_peer) => response,
             }
         };
         #[cfg(feature = "lab")]
@@ -194,6 +196,7 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        #[cfg(feature = "lab")]
         agent_msg::PROFILE_INVENTORY => {
             if !frame.body.is_empty() {
                 return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
@@ -493,6 +496,7 @@ async fn dispatch_local(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
     caller: &str,
+    scan_peer: &super::scan::ScanPeer,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
         agent_msg::LIST_CAPABILITIES => {
@@ -511,7 +515,7 @@ async fn dispatch_local(
                 .map_err(|_| ipc::FrameError::InvalidField)?;
             Ok((
                 b"{}".to_vec(),
-                serde_json::to_vec(&ctx.describe_operation(&meta.operation, caller).await?)
+                serde_json::to_vec(&ctx.describe_operation(&meta, caller).await?)
                     .map_err(|_| ipc::FrameError::InvalidField)?,
             ))
         }
@@ -528,7 +532,8 @@ async fn dispatch_local(
             let receiver = ctx
                 .executions
                 .submit_local(crate::executor::LocalExecuteRequest {
-                    request_id: frame.header.request_id,
+                    // As for Actions: the frame ID only correlates transport.
+                    request_id: crate::random_id(RequestId::from_random_bytes)?,
                     meta,
                     body: frame.body.clone(),
                     caller: caller.to_owned(),
@@ -586,12 +591,7 @@ async fn dispatch_local(
             }
             let meta: ipc::RequestAccessMeta = serde_json::from_slice(&frame.metadata)
                 .map_err(|_| ipc::FrameError::InvalidField)?;
-            let request = ctx.local_calls.create_access(caller, meta)?;
-            let mut audit =
-                super::super::runtime::call_audit("access_request.created", "pending", caller)?;
-            audit.request_context = None;
-            audit.request_id = Some(request.request_id);
-            ctx.authority.append_audit(audit).await?;
+            let request = ctx.request_access(caller, meta).await?;
             Ok((
                 b"{}".to_vec(),
                 serde_json::to_vec(&request).map_err(|_| ipc::FrameError::InvalidField)?,
@@ -623,60 +623,7 @@ async fn dispatch_local(
             )
             .await
         }
-        agent_msg::SCAN => {
-            let meta: ipc::ScanMeta = serde_json::from_slice(&frame.metadata)
-                .map_err(|_| ipc::FrameError::InvalidField)?;
-            ctx.lifecycle.reject_if_not_running()?;
-            ctx.local_calls
-                .admit_rate("scan:local-uid", 60, std::time::Duration::from_secs(60))?;
-            let active = ctx
-                .policy
-                .read()
-                .await
-                .clone()
-                .filter(|p| p.signer_id().is_some())
-                .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-            if active.is_expired(crate::now_ts()?) {
-                return Err(rekey_policy::PolicyError::Expired.into());
-            }
-            let credentials = active
-                .snapshot()
-                .connections()
-                .iter()
-                .filter(|c| c.enabled)
-                .map(|c| rekey_vault::hygiene::ScanCredential {
-                    connection: c.name.clone(),
-                    credential_id: c.credential_id,
-                })
-                .chain(active.snapshot().ssh_keys().iter().map(|c| {
-                    rekey_vault::hygiene::ScanCredential {
-                        connection: c.name.clone(),
-                        credential_id: c.credential_id,
-                    }
-                }))
-                .chain(active.snapshot().derived_credentials().iter().map(|c| {
-                    rekey_vault::hygiene::ScanCredential {
-                        connection: c.name.clone(),
-                        credential_id: c.credential_id,
-                    }
-                }))
-                .collect();
-            let findings = ctx
-                .authority
-                .scan_credentials(
-                    vec![rekey_vault::hygiene::ScanInput::new(
-                        meta.path,
-                        frame.body.to_vec(),
-                    )],
-                    credentials,
-                )
-                .await?;
-            Ok((
-                b"{}".to_vec(),
-                serde_json::to_vec(&ipc::ScanResponse { findings })
-                    .map_err(|_| ipc::FrameError::InvalidField)?,
-            ))
-        }
+        agent_msg::SCAN => super::scan::dispatch(frame, ctx, scan_peer).await,
         agent_msg::AWAIT_UNLOCK => {
             if !frame.body.is_empty() {
                 return Err(ipc::FrameError::InvalidField.into());

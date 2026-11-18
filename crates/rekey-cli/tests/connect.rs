@@ -1,174 +1,12 @@
 //! Temporary project fixtures only; never launch a client or read user config.
-use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::time::{Duration, Instant};
+mod connect_support;
 
-const CANARY: &str = "synthetic-existing-secret-do-not-print";
-struct Fixture {
-    _dir: tempfile::TempDir,
-    root: PathBuf,
-    bin: PathBuf,
-}
-impl Fixture {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let bin = root.join("bin");
-        fs::create_dir(&bin).unwrap();
-        fs::copy(env!("CARGO_BIN_EXE_rekey"), bin.join("rekey")).unwrap();
-        fs::write(
-            bin.join("rekey-mcp"),
-            b"synthetic executable; never launched",
-        )
-        .unwrap();
-        fs::set_permissions(bin.join("rekey-mcp"), fs::Permissions::from_mode(0o700)).unwrap();
-        fs::create_dir(root.join("project")).unwrap();
-        Self {
-            _dir: dir,
-            root,
-            bin,
-        }
-    }
-    fn project(&self) -> PathBuf {
-        self.root.join("project")
-    }
-    fn command(&self, client: &str) -> Command {
-        self.command_for_state(client, &self.root.join("vault"))
-    }
-    fn command_for_state(&self, client: &str, state: &Path) -> Command {
-        let mut command = Command::new(self.bin.join("rekey"));
-        command
-            .args(["connect", client, "--project"])
-            .arg(self.project())
-            .arg("--state-dir")
-            .arg(state)
-            // Keep hook discovery inside the fixture, including Git spawned by the CLI.
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "true")
-            .env("REKEY_CAPABILITY", CANARY)
-            .env("REKEY_AGENT_SOCKET", CANARY);
-        command
-    }
-    fn write(&self, relative: &str, bytes: &[u8]) -> PathBuf {
-        let path = self.project().join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, bytes).unwrap();
-        path
-    }
-}
-fn output_text(output: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-static PTY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-struct Tty {
-    _guard: std::sync::MutexGuard<'static, ()>,
-    child: Child,
-    master: File,
-    text: String,
-}
-impl Tty {
-    fn start(mut command: Command) -> Self {
-        let guard = PTY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (mut master, mut slave) = (-1, -1);
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                )
-            },
-            0
-        );
-        let master = unsafe { File::from_raw_fd(master) };
-        let slave = unsafe { File::from_raw_fd(slave) };
-        command
-            .stdin(Stdio::from(slave.try_clone().unwrap()))
-            .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave));
-        let child = command.spawn().unwrap();
-        let mut tty = Self {
-            _guard: guard,
-            child,
-            master,
-            text: String::new(),
-        };
-        let end = Instant::now() + Duration::from_secs(10);
-        while !tty.text.contains("[y/N]") {
-            assert!(Instant::now() < end, "no prompt: {}", tty.text);
-            tty.read();
-            assert!(
-                tty.child.try_wait().unwrap().is_none(),
-                "exited before prompt: {}",
-                tty.text
-            );
-        }
-        tty
-    }
-    fn read(&mut self) {
-        let mut fd = libc::pollfd {
-            fd: self.master.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let result = unsafe { libc::poll(&mut fd, 1, 100) };
-        assert!(result >= 0);
-        if result > 0 {
-            let mut buffer = [0; 4096];
-            match self.master.read(&mut buffer) {
-                Ok(n) => self.text.push_str(&String::from_utf8_lossy(&buffer[..n])),
-                Err(e) if e.raw_os_error() == Some(libc::EIO) => {}
-                Err(e) => panic!("PTY read: {e}"),
-            }
-        }
-    }
-    fn finish(mut self, answer: &[u8]) -> (ExitStatus, String) {
-        self.master.write_all(answer).unwrap();
-        let end = Instant::now() + Duration::from_secs(10);
-        loop {
-            self.read();
-            if let Some(status) = self.child.try_wait().unwrap() {
-                self.read();
-                return (status, std::mem::take(&mut self.text));
-            }
-            assert!(
-                Instant::now() < end,
-                "command did not finish: {}",
-                self.text
-            );
-        }
-    }
-}
-impl Drop for Tty {
-    fn drop(&mut self) {
-        if self.child.try_wait().unwrap().is_none() {
-            self.child.kill().unwrap();
-            self.child.wait().unwrap();
-        }
-    }
-}
-fn siblings(path: &Path, role: &str) -> Vec<PathBuf> {
-    fs::read_dir(path.parent().unwrap())
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| {
-            p.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .contains(&format!(".rekey-{role}-"))
-        })
-        .collect()
-}
+use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use connect_support::*;
 
 #[test]
 fn print_all_formats_is_public_and_creates_nothing() {
@@ -206,12 +44,13 @@ fn nontty_cancel_and_eof_leave_missing_directory_untouched() {
 #[test]
 fn sigint_before_confirmation_creates_nothing() {
     let f = Fixture::new();
-    let mut tty = Tty::start(f.command("codex"));
+    let tty = Tty::start(f.command("codex"));
     assert_eq!(
         unsafe { libc::kill(tty.child.id() as i32, libc::SIGINT) },
         0
     );
-    assert!(!tty.child.wait().unwrap().success());
+    let (status, text) = tty.exit();
+    assert!(!status.success(), "{text}");
     assert_eq!(fs::read_dir(f.project()).unwrap().count(), 0);
 }
 #[test]
@@ -525,6 +364,8 @@ fn instructions_preserve_unrelated_text_and_replace_markers_once() {
     let path = f.write("AGENTS.md", old.as_bytes());
     let (status, text) = Tty::start(f.command("codex")).finish(b"y\n");
     assert!(status.success(), "{text}");
+    assert!(text.contains("<existing Rekey instructions; values hidden>"));
+    assert!(!text.contains("old instructions"));
     let new = fs::read_to_string(&path).unwrap();
     assert!(new.starts_with("User rules before\n\n"));
     assert!(new.ends_with("\nUser rules after\n"));
@@ -570,64 +411,11 @@ fn selected_vault_codex_config_is_a_semantic_noop_after_instructions_installed()
 }
 
 #[test]
-fn optional_hook_preserves_existing_shell_and_uses_the_staged_scanner() {
-    let f = Fixture::new();
-    assert!(
-        Command::new("git")
-            .args(["init"])
-            .current_dir(f.project())
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "true")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-    );
-    let path = f.write(
-        ".git/hooks/pre-commit",
-        b"#!/bin/sh\n# existing operator hook\ntrue\n",
-    );
-    let original = fs::read(&path).unwrap();
-    let mut command = f.command("claude-code");
-    command.arg("--with-hooks");
-    let (status, text) = Tty::start(command).finish(b"y\n");
-    assert!(status.success(), "{text}");
-    let new = fs::read_to_string(&path).unwrap();
-    assert!(new.starts_with("#!/bin/sh\n# existing operator hook\ntrue\n"));
-    assert!(new.contains(&format!(
-        "rekey --state-dir '{}' scan --staged || exit $?",
-        f.root.join("vault").display()
-    )));
-    assert_eq!(new.matches("# rekey:begin").count(), 1);
-    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o700);
-    assert_eq!(
-        fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
-        original
-    );
-    let mut command = f.command("claude-code");
-    command.arg("--with-hooks");
-    assert!(command.output().unwrap().status.success());
-    assert_eq!(fs::read_to_string(path).unwrap(), new);
-}
-
-#[test]
 fn custom_vault_binding_reaches_clients_instructions_and_hook_without_shell_expansion() {
     for client in ["codex", "cursor", "claude-code"] {
         let f = Fixture::new();
         let state = f.root.join("vault with 'quote' $(touch connect-sentinel)");
-        assert!(
-            Command::new("git")
-                .arg("init")
-                .current_dir(f.project())
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "true")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap()
-                .success()
-        );
+        f.git_init();
         let connect = |state: &Path| {
             let mut command = f.command_for_state(client, state);
             command.arg("--with-hooks");
@@ -657,6 +445,8 @@ fn custom_vault_binding_reaches_clients_instructions_and_hook_without_shell_expa
         };
         let (status, text) = Tty::start(connect(&state)).finish(b"y\n");
         assert!(status.success(), "{text}");
+        // MCP config and instructions are project files; the hook lives under .git.
+        assert_eq!(text.matches(LOCAL_PATH_WARNING).count(), 2, "{text}");
         assert_eq!(configured_args(), ["--state-dir", state.to_str().unwrap()]);
         let instructions = f.project().join(if client == "claude-code" {
             "CLAUDE.md"
@@ -728,4 +518,96 @@ fn custom_vault_binding_reaches_clients_instructions_and_hook_without_shell_expa
             "instructions must switch to the selected vault"
         );
     }
+}
+
+/// The default `~/.rekey` stays implicit, so project files carry no local path.
+#[test]
+fn default_vault_writes_only_the_stable_command_and_plain_rekey() {
+    for client in ["codex", "cursor", "claude-code"] {
+        let f = Fixture::new();
+        f.git_init();
+        let home = f.home();
+        let home_text = home.to_str().unwrap();
+        let preview = f
+            .command_default(client)
+            .args(["--with-hooks", "--print"])
+            .output()
+            .unwrap();
+        let preview = output_text(&preview);
+        assert!(!preview.contains(home_text), "{preview}");
+        assert!(!preview.contains("--state-dir") && !preview.contains("Warning:"));
+        let mut command = f.command_default(client);
+        command.arg("--with-hooks");
+        let text = confirm(command);
+        assert!(!text.contains(LOCAL_PATH_WARNING), "{text}");
+        let (config, instructions) = match client {
+            "codex" => (".codex/config.toml", "AGENTS.md"),
+            "cursor" => (".cursor/mcp.json", "AGENTS.md"),
+            _ => (".mcp.json", "CLAUDE.md"),
+        };
+        let config = fs::read_to_string(f.project().join(config)).unwrap();
+        if client == "codex" {
+            let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+            let server = doc["mcp_servers"]["rekey"].as_table_like().unwrap();
+            assert_eq!(server.len(), 1, "{config}");
+            assert_eq!(
+                server.get("command").and_then(|c| c.as_str()),
+                Some("rekey-mcp")
+            );
+        } else {
+            let doc: serde_json::Value = serde_json::from_str(&config).unwrap();
+            assert_eq!(
+                doc["mcpServers"]["rekey"],
+                serde_json::json!({"command": "rekey-mcp"})
+            );
+        }
+        let instructions = fs::read_to_string(f.project().join(instructions)).unwrap();
+        assert!(
+            instructions.contains("命令 `rekey list` / `rekey call`"),
+            "{instructions}"
+        );
+        let hook = fs::read_to_string(f.project().join(".git/hooks/pre-commit")).unwrap();
+        assert!(hook.contains("\nrekey scan --staged "), "{hook}");
+        for text in [&config, &instructions, &hook] {
+            assert!(
+                !text.contains("--state-dir") && !text.contains(home_text),
+                "{text}"
+            );
+        }
+        // Naming the default vault explicitly is the same binding.
+        let output = f
+            .command_default(client)
+            .arg("--with-hooks")
+            .arg("--state-dir")
+            .arg(home.join(".rekey"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && output_text(&output).contains("Already configured; no files changed."),
+            "{}",
+            output_text(&output)
+        );
+    }
+}
+#[test]
+fn switching_to_the_default_vault_drops_the_bound_path_with_a_backup() {
+    let f = Fixture::new();
+    confirm(f.command("claude-code"));
+    let path = f.project().join(".mcp.json");
+    let bound = fs::read(&path).unwrap();
+    let text = confirm(f.command_default("claude-code"));
+    assert!(!text.contains(LOCAL_PATH_WARNING), "{text}");
+    let doc: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        doc["mcpServers"]["rekey"],
+        serde_json::json!({"command": "rekey-mcp"})
+    );
+    assert_eq!(
+        fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
+        bound
+    );
+    let instructions = fs::read_to_string(f.project().join("CLAUDE.md")).unwrap();
+    assert!(!instructions.contains("--state-dir"), "{instructions}");
 }

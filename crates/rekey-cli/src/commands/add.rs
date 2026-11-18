@@ -43,17 +43,37 @@ pub fn dispatch(
     app: bool,
     inapplicable: bool,
 ) -> Result<(), CliError> {
-    let automatic = cfg!(target_os = "macos")
-        && !request.stdin_secrets
-        && !inapplicable
-        && state_dir == super::resolve_state_dir(None)?
-        && Path::new("/Applications/Rekey.app").is_dir();
-    if app || automatic {
+    let host = Host {
+        macos: cfg!(target_os = "macos"),
+        default_workspace: super::resolve_state_dir(None).is_ok_and(|home| home == state_dir),
+        app_installed: Path::new("/Applications/Rekey.app").is_dir(),
+    };
+    if hands_off(app, request.stdin_secrets, inapplicable, host) {
         let url = app_url(state_dir, &request, inapplicable)?;
         super::launch_onboarding(&url)
     } else {
         add(state_dir, request)
     }
+}
+
+/// Host facts the App handoff depends on, read once by `dispatch`.
+#[derive(Clone, Copy)]
+struct Host {
+    macos: bool,
+    default_workspace: bool,
+    app_installed: bool,
+}
+
+/// Explicit `--app` always hands off (`app_url` then rejects stdin secrets).
+/// Otherwise only an interactive macOS add in the default workspace with the
+/// installed App does; stdin secrets, a custom workspace, a socket or session
+/// override, or a missing App keep the basic-mode command.
+fn hands_off(app: bool, stdin_secrets: bool, inapplicable: bool, host: Host) -> bool {
+    app || (host.macos
+        && !stdin_secrets
+        && !inapplicable
+        && host.default_workspace
+        && host.app_installed)
 }
 
 fn app_url(state_dir: &Path, request: &AddRequest, inapplicable: bool) -> Result<String, CliError> {
@@ -454,6 +474,7 @@ fn save_credential(
         "Saved credential {label} ({}). If a later step fails, retry with --credential-id {} instead of entering the key again.",
         saved.id, saved.id
     );
+    super::short_secret::warn_if_short(secret);
     Ok(saved.id)
 }
 
@@ -612,5 +633,53 @@ mod app_handoff_tests {
         request.valid_days = 30;
         request.credential_id = Some("not-a-uuid".into());
         assert!(app_url(&state, &request, false).is_err());
+    }
+
+    const READY: Host = Host {
+        macos: true,
+        default_workspace: true,
+        app_installed: true,
+    };
+
+    #[test]
+    fn interactive_default_workspace_add_hands_off_to_the_installed_app() {
+        assert!(hands_off(false, false, false, READY));
+        // An explicit --app does not depend on the host facts.
+        let elsewhere = Host {
+            macos: false,
+            default_workspace: false,
+            app_installed: false,
+        };
+        assert!(hands_off(true, false, false, elsewhere));
+        // A socket or management-session override keeps basic mode.
+        assert!(!hands_off(false, false, true, READY));
+        let linux = Host {
+            macos: false,
+            ..READY
+        };
+        assert!(!hands_off(false, false, false, linux));
+    }
+
+    #[test]
+    fn stdin_secrets_keep_the_basic_mode_command() {
+        assert!(!hands_off(false, true, false, READY));
+    }
+
+    #[test]
+    fn a_custom_state_dir_keeps_the_basic_mode_command() {
+        let custom = Host {
+            default_workspace: false,
+            ..READY
+        };
+        assert!(!hands_off(false, false, false, custom));
+    }
+
+    #[test]
+    fn a_missing_app_keeps_the_basic_mode_command() {
+        let missing = Host {
+            app_installed: false,
+            ..READY
+        };
+        assert!(!hands_off(false, false, false, missing));
     }
 }

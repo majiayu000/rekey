@@ -950,11 +950,10 @@ impl ActionExecutor {
             let messages = request.body.as_slice();
             text_stream::configure(action, messages, &mut upstream_request)?;
         }
-        if llm.is_some_and(|llm| llm.streaming) {
-            upstream_request
-                .headers
-                .push(("accept-encoding".to_owned(), "identity".to_owned()));
-        }
+        // Sealing reads the bytes as sent, so no upstream may compress them.
+        upstream_request
+            .headers
+            .push(("accept-encoding".to_owned(), "identity".to_owned()));
         // Steps 10-11: fixed HTTPS send with bounded response. Credential
         // preparation consumes the same action deadline as DNS and HTTP.
         upstream_request.timeout = effect_deadline.saturating_duration_since(Instant::now());
@@ -1174,14 +1173,10 @@ async fn finish_buffered_response(
     llm: Option<&llm::LlmExecution>,
     latency_ms: i64,
 ) -> Result<ExecuteOutcome, BrokerError> {
-    // Step 12: secret sealing over the buffered body and every header
-    // the upstream sent (name and value), before any allowlist copy.
-    if contains_secret(&response.body, needles)
-        || headers_contain_secret(&response.headers, needles)
-    {
-        started
-            .indeterminate_until(effect_deadline, "reflected-secret")
-            .await?;
+    // Step 12: an identity body only, then secret sealing over it and every
+    // header the upstream sent (name and value), before any allowlist copy.
+    if let Some(reason) = http::buffered_refusal(&response.headers, &response.body, needles) {
+        started.indeterminate_until(effect_deadline, reason).await?;
         return Err(BrokerError::ResponseSecurityViolation);
     }
 

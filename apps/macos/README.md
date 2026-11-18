@@ -47,7 +47,7 @@ App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.
 - 凭证与连接：保存 API Key 后选择 Anthropic、OpenAI、GLM、GLM Responses、GitHub PAT、Git smart HTTP、自定义 Bearer 或自定义 Header 预设；预设和操作 schema 从 daemon 读取。Git smart HTTP 固定 `https://github.com`、owner 和完整 `repo.git`，upload 为读、receive 为写，默认请求正文上限 1 MiB。随后审阅连接的 host、路径规则、调用方限制与 LLM 模型、预算，再签署策略。密钥只通过隐藏输入和子进程 stdin 传递。
 - OAuth：Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 使用用户自己的 client。client secret 只经 stdin 加密保存；先签署 scope ceiling 与有限操作规则，再打开浏览器。Google 和 GitHub 使用本机随机回调；Slack 的 public PKCE client 须启用 token rotation，Slack / Notion 使用已登记的固定本机回调。Notion 展示的是 Portal capabilities，并非请求 scope；GitHub `repo` 上游也具有写权限，本机规则继续限制写操作。配置指引直接链接官方文档。此轮软件检查未实际登录任何 provider。
 - T1 临时凭据：保存 AWS 长期密钥或 GitHub App PKCS#1 RSA 根私钥后没有派生权限。逐个签署 AWS AssumeRole（900–3600 秒、固定 role / region / session policy）、EKS（900 秒上限、固定 cluster / region）或 GitHub App（3600 秒、明确 repository IDs / permissions）授权。审阅界面显示实际签名目标，说明 Agent 进程会拿到临时值；根凭据不会返回给 Agent。EKS 不接受 App 填入 session token，权限受 IAM / EKS RBAC 约束。
-- `.env` 导入：`rekey import PATH` 打开 `rekey://import?path=…`；App 只显示变量名、预设提示和未支持的行。明确选择后保存凭据，审阅完整 Connection 草案并签署；可选替换选中的原变量为 Rekey 占位值并添加本机 base URL，daemon 原子写入并返回备份路径。默认不修改原文件。失败或未知结果不自动重试。
+- `.env` 导入：`rekey import PATH` 打开 `rekey://import?path=…`；App 只显示变量名、识别结果和未支持的行。逐项选择导入、跳过或标记为非密钥；AWS 密钥、连接串和口令标为“未迁移：协议不支持代理”，只能跳过或标为非密钥。保存所选凭据后审阅完整 Connection 草案并签署，有效期默认沿用当前已签署策略；可选替换选中的原变量为 Rekey 占位值并添加本机 base URL（默认 `OPENAI_API_KEY` → `OPENAI_BASE_URL`），daemon 原子写入并返回备份路径，App 按 git 是否忽略备份提示删除它或加入 `.gitignore`，回执分列未迁移、跳过和非密钥的项；文件中已有的同名 base URL 行（如 `OPENAI_BASE_URL`）会被原位替换，审阅页逐行标出，回执列为“已替换为本机服务地址”，daemon 会拒绝的变量名在签署前就不能提交。默认不修改原文件。失败或未知结果不自动重试。
 - 个人策略：读取当前完整 signed Connection 集合及策略摘要；编辑 read/write/具体方法、路径和允许值，调用方覆盖只能收紧。草案展示完整 before/after 与连接定义，App 确认展示定义与原始签名字节一致，再用 Secure Enclave 签名并提交逐次证明。现有 SSH 规则在连接编辑时保留；空连接集合撤销全部 HTTP 连接。窗口或工作区变化取消迟到结果，不自动重签或重试。
 - Agent 接入：通过 `rekey connect claude-code`、`rekey connect codex`、`rekey connect generic` 写入客户端配置和说明；本机调用不需要 token。Agent 正常启动，需要密钥时调用 Rekey。固定操作和 capability 页面仅在 lab 显示。
 - 本机审批：审阅 daemon 的完整请求后显式批准一次、30 分钟或最多 8 小时。时间窗绑定同一连接、规则、调用方和策略，锁定或更改策略后失效，不能覆盖 deny。默认焦点与 Return 是拒绝。
@@ -77,9 +77,11 @@ target/release/rekey-approval-sign --help
 cargo check --workspace
 xcrun swiftc -warnings-as-errors -swift-version 5 -O \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/Updater.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Onboarding.swift apps/macos/OAuthReauthorization.swift apps/macos/EnvImport.swift apps/macos/Updater.swift scripts/test-macos-ui.swift scripts/test-macos-app-flows.swift -o /tmp/rekey-ui-contract
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
+
+同一程序还用合成 CLI 检查四种设备信号各自锁定界面（关闭设置后都不锁）、迟到的 resume / remember / login 令牌被撤销、忙碌时收到的接入页面在空闲后按原检查打开，签名预检先于保存密钥（Secure Enclave 匹配用注入的公钥；预检与保存之间打开新接入页面时不保存），以及 `.env` 导入审阅沿用已签署策略的有效期、按 SDK 读取的变量名生成 base URL 变量、不准备无法代理或非密钥的项，并把将被替换的已有 `OPENAI_BASE_URL` 行列为“已替换”；不读取钥匙串，也不使用 Secure Enclave。
 
 自动连接回归检查复用同一个测试程序和随包 CLI，不访问用户保险库：
 
@@ -90,7 +92,7 @@ ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContr
 /tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract --startup-only
 ```
 
-覆盖空目录不自动初始化、保存恢复密钥后连接、已有保险库自动启动并保持锁定、复用已运行服务、显式停止后普通刷新不重启，以及启动失败诊断。CI 同样执行此检查。
+覆盖空目录不自动初始化、保存恢复密钥后连接、已有保险库自动启动并保持锁定、复用已运行服务、显式停止后普通刷新不重启、端口被占用时按启动失败记录报警并在修正后重试、合成 vault26 目录只显示重建引导且旧库字节不变，以及没有记录时的启动失败诊断。CI 同样执行此检查。
 
 连接 UI 软件契约检查：
 
@@ -98,11 +100,11 @@ ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContr
 xcrun swiftc -warnings-as-errors -swift-version 5 \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift \
-  apps/macos/Model.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
+  apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Onboarding.swift apps/macos/OAuthReauthorization.swift apps/macos/EnvImport.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
 /tmp/rekey-connection-app-contract
 ```
 
-已完成完整 Swift 源码的 warnings-as-errors typecheck，以及连接序列化、编辑基线、展示定义与实际签名字节一致性、URL 路由、导入 stdin 合同、有界认证 context 复用、到期和取消失效、HTTP/SSH 审批合同、最近 50 条去重分组、OAuth scope 声明、T1 实际目标 / 过期时间和完整草案 stdin 的合成检查。未完成 0.4 真实设备上的 Touch ID 弹窗次数、Secure Enclave 签署激活、OAuth 登录和 C16；软件检查不能代替这些验收。
+已完成完整 Swift 源码的 warnings-as-errors typecheck，以及连接序列化、编辑基线、展示定义与实际签名字节一致性、URL 路由、导入 stdin 合同与 `.env` 导入默认变量名、已有 base URL 行的替换与拒绝的变量名、识别映射、回执和备份提示、有界认证 context 复用、到期和取消失效、HTTP/SSH 审批合同、最近 50 条去重分组、OAuth scope 声明与“需重新授权”判定、新建 SSH 授权的 git 签名默认值、T1 实际目标 / 过期时间和完整草案 stdin 的合成检查。未完成 0.4 真实设备上的 Touch ID 弹窗次数、Secure Enclave 签署激活、OAuth 登录和 C16；软件检查不能代替这些验收。
 
 测试使用随机临时保险库和合成凭证，不访问真实 provider。原生界面另行检查空状态、搜索、详情、表单与页面导航。没有把所有 GUI submit 路径宣称为自动化覆盖。
 

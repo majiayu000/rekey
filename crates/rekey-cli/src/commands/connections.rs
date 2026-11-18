@@ -21,6 +21,9 @@ struct AccessRequest {
     created_at_ms: i64,
     expires_at_ms: i64,
     status: AccessRequestStatus,
+    /// Presets that would satisfy a provider request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    presets: Vec<String>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -203,6 +203,8 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 
 现有 G1 对应 L1-dev，现有 G2（Linux reference）对应有界拓扑中的隔离保证。V1/V2 与受保护锚设备验收完成前，当前开发构建即使已校验服务签名，也只显示已确认的 L1-dev 下限；Locked 且无会话时显示 L0，未知/故障状态不宣称等级。L2 必须依据实际启动与隔离验收，不能由 Profile 中的隔离声明自动推断。
 
+`rekey status` 按上一段规则输出独立的 `protection_level`：`L0`、`L1-dev`，其他或未知状态为 `null`。签名身份是单独的 `peer_security` 标签，只取 `verified_signature` 或 `unverified`，不再借用等级名称（2026-11-17 修订，原来未校验时输出 `L1-dev`）。App 解码同一个 `protection_level` 显示等级，不认识的值不显示等级，签名身份另行显示。
+
 ### 3.4 不变量（每条都对应 §10 的攻击测试）
 
 - **I1**：Agent 接口（agent.sock、网关、MCP）没有任何返回凭据明文的操作。
@@ -211,7 +213,7 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
   - 通常接受密码、恢复密钥或 presence key。签发 7 天授权与修改密码只接受密码或恢复密钥；恢复密钥轮换沿用仅接受当前密码的合同。这三项操作不得使用 presence，避免把临时授权续期或变成永久解锁因子。
   - 已解锁时的 step-up 验证与 unlock、锁定状态的 shutdown 共用现有失败计数和指数退避；切换操作不能绕过限速。只有成功的密码或恢复密钥证明清零计数，presence 成功不清零，避免用临时 K 维持密码猜测。
   - 唯一例外是 `LOCK`，任何人都可以锁定。
-- **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，CLI 在交互式秘密输入前、App 在证明输入或认证控件旁提示；自动化 CLI 在发送证明前向 stderr 提示，不改变 stdout 的数据格式。
+- **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，CLI 在交互式秘密输入前、App 在证明输入或认证控件旁提示。**（2026-11-17 修订，所有者决定，记录 #87 起的行为）** 交互式 TTY CLI（stderr 是终端且未设置 `REKEY_OUTPUT=json`，或设置 `REKEY_OUTPUT=human`）在发送任何证明之前向 stderr 打印警告；JSON / 管道模式（设置 `REKEY_OUTPUT=json`，或 stderr 不是终端且未设置 `REKEY_OUTPUT=human`）不在连接时提示，而是在命令结束时于 stderr 报告 `L1_DEV_UNVERIFIED_SERVICE`（成功时为单独一行 `{"warnings":[...]}`，失败时写入错误信封的 `warnings`），此时证明可能已经发出。两种模式都不改变 stdout 的数据格式。
 - **I5**：秘密不进入 argv、env、日志、审计或 JSON 元数据。capability 进入 `rekey run` 子进程的 env 是例外，见 §8.2。
 - **I6**：出站请求只能去往 Action 或模板声明的 origin；解析结果必须是公网 IP，连接钉在该 IP 上，禁止重定向。
   DoH 只在系统 DNS 对域名只返回 `198.18.0.0/15` 虚拟地址时触发（0.5 起）。若管理员为 daemon
@@ -362,7 +364,7 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 
 Profile 会话签发的“管理会话”专指 daemon 当前已认证的 Unlocked 生命周期：与 §3.2 已允许的 A2 能力一致，只能按已激活签名 Profile 的固定范围签发，不要求新 CLI 从 App 取得或落盘管理 token。该窄入口不允许添加凭据或执行 A2；添加凭据仍需原有独立内存管理 token。Locked/过期/不存在的 Profile 返回错误，不触发后台认证。
 
-**修复 S2**：`SHUTDOWN` 在任何状态下都属于 A2。
+**修复 S2**：`SHUTDOWN` 在任何状态下都属于 A2，需要新的有效证明。**唯一例外（2026-11-17 所有者决定）**：Authority 已处于 Faulted 时不再校验证明：故障 Authority 以错误拒绝的任何管理请求（包括无需证明的 `LOCK` 和带任意证明的 `SHUTDOWN`）都会触发既有的故障停机（fail-stop），状态查询仍返回 `faulted`。同用户进程本来就能直接结束 daemon，此例外不让 A2 得到停机之外的能力；行为见 `crates/rekey-vault/tests/lifecycle_contract.rs` 的 `admin_shutdown_proof_fails_closed_on_faulted_worker` 与 `crates/rekey-broker/src/runtime/shutdown.rs`。
 
 step-up 授权与解密材料分开：`presence` 只在当前已解锁且本次运行已建立有效 verifier 时可用。
 锁定状态的 shutdown 仍需 password/recovery；离线 restore 仍需源备份的解密因子，VRK 轮换仍需密码与恢复密钥重包新根。
@@ -774,7 +776,7 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
   - JSON `\uXXXX`：先解码再匹配。
   - hex：大写和小写两种。
   - base64：三种对齐偏移。
-- **长度下限**：长度小于 16 字节的秘密，添加时给出警告。嵌入 base64 的三种对齐检测保证限于至少 16 字节的秘密；更短的秘密保留原始值、完整编码、hex、percent 和 JSON 转义检测，不能宣称任意嵌入编码都可识别。避免把一个字符的部分编码扩展为误封大量正常响应的检测片段。
+- **长度下限**：长度小于 16 字节的秘密，添加时给出警告。`credential add`、`desktop-add` 和基础模式 `rekey add` 都在保存成功后警告，警告不会让已完成的保存失败：终端显示英文提示，管道或 JSON 模式在 stderr 输出一行 `{"warnings":["SHORT_CREDENTIAL"]}`。App 从 CLI 的 stderr 读取这个代码并显示提示，不再丢弃。嵌入 base64 的三种对齐检测保证限于至少 16 字节的秘密；更短的秘密保留原始值、完整编码、hex、percent 和 JSON 转义检测，不能宣称任意嵌入编码都可识别。避免把一个字符的部分编码扩展为误封大量正常响应的检测片段。
 - **禁止的头**：`accept-encoding`、`content-encoding` 加入 Action 的禁止头列表。
 
 ### 9.3 发布与格式（不向后兼容）
@@ -784,7 +786,7 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
   - 包含 `/Applications/Rekey.app`；
   - 内嵌独立 `com.rekey.rekeyd` daemon bundle 与其 Developer ID provisioning profile，使 daemon 可使用受保护计数项的 keychain access group；App 保留自己的 profile。该结构只承载签名与授权，不引入 XPC 通信；
   - CLI 链接到 `/usr/local/bin`；
-  - 打开 App 时自动连接已有保险库；服务未运行则自动启动。固定安装位置和默认目录通过 SMAppService 注册或启动 LaunchAgent；开发构建及自定义目录由 App 启动随包服务。首次创建仍需确认密码并保存恢复密钥，保存完成后自动连接。无需另外点击“启动服务”。系统要求后台运行批准时显示设置入口，启动失败保留错误并允许重试；自动启动不读取证明、不解锁、不重启已运行服务。停止服务后，普通刷新不重新启动，下一次打开 App 或切换工作区才重新连接。
+  - 打开 App 时自动连接已有保险库；服务未运行则自动启动。固定安装位置和默认目录通过 SMAppService 注册或启动 LaunchAgent；开发构建及自定义目录由 App 启动随包服务。首次创建仍需确认密码并保存恢复密钥，保存完成后自动连接。无需另外点击“启动服务”。系统要求后台运行批准时显示设置入口，启动失败保留错误并允许重试，失败原因来自 0.4 §6.3 的公开启动失败记录（端口被占用、旧格式等）；自动启动不读取证明、不解锁、不重启已运行服务。停止服务后，普通刷新不重新启动，下一次打开 App 或切换工作区才重新连接。
   - 首次启动时，SMAppService 的 `notFound` 也可能表示系统尚无注册记录，不能据此认定安装包缺文件；与 `notRegistered` 一样尝试注册，并保留注册失败的实际错误。`requiresApproval` 仍等待用户在系统设置中批准。
   - `rekey://` 接入链接优先交给已有 App 窗口，不为每次接入创建新窗口并重新触发启动刷新；进行中的敏感操作仍由原有检查保护。
 - Homebrew cask。
@@ -795,7 +797,7 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
 - 用户的代价：升级跨越格式版本时，需要重新初始化并重新添加 Key。为了控制这个代价：
   - **当前 0.3 发布线不得改格式**，包括所有预发布与补丁版本；需要不兼容格式的功能须另行规划后续发布线并先修改 SPEC。设计阶段编号 v3 / v4 不再直接对应产品 SemVer。
   - 发布说明首行标明"需要重新初始化：是/否"。
-  - App 检测到旧格式时，显示只读提示和重建引导。不读取旧库内容，也不提供迁移。
+  - App 检测到旧格式时，显示只读提示和重建引导。不读取旧库内容，也不提供迁移。检测只依据机器可读错误码 `UNSUPPORTED_VAULT_LAYOUT` / `UNSUPPORTED_FORMAT_VERSION`：服务启动失败读启动失败记录的 `code`，CLI 命令（含旧备份的恢复预检）读 CLI 错误 JSON 的 `code` 或 `rekeyd.command_failed` 的 `error_code`；不匹配错误文本，App 自己不打开旧库或旧备份。
 - 历史基础格式为 v21；以 `5de61bf` 的实际布局冻结 vault / backup format25 与 policy snapshot6，在原 v3 alpha 中冻结，继续覆盖改号后的所有 0.3 版本。不能在相同格式号下改变读取、恢复或签名验证所依赖的布局/规范化语义；`lab` 也受此约束。需要不兼容持久格式的改动推迟到另行规划的后续发布线，不做迁移、双读或回填。
 - 格式冻结是维护约束，不是安全等级、设备验收或公开发布已经完成的证明。后续仅处理发布阻塞和已证实的安全/正确性问题；首次设置与客户端推断等体验改动先收集一周实际记录，再决定最小修正。
 
@@ -842,7 +844,7 @@ macOS pkg 的功能验收只使用实际安装的原生工具；归档专用 Pyt
 - 不删除已经通过验收的代码。
 - 不进入 v3 的能力移入 `lab` cargo feature：
   - 不进入默认构建、发布包和首页文档；
-  - 测试保留，CI 每周运行一次。
+  - 测试代码保留。**（2026-11-17 所有者决定）** lab 储备的 CI 每周只做 `--features lab` 的编译、Clippy 和归档脚本语法检查，不运行 lab 运行时测试，也不把它们当作通过证据（`.github/workflows/lab-weekly.yml`）。
 - 此处隔离实际执行、网络访问、命令入口和可选依赖；共享的纯模型、wire 编码及已有存储 schema 保留，避免仅为 feature 隔离改变 vault 格式。默认入口必须拒绝 `lab` 专属操作。
 - `lab` 是企业阶段的**储备**，不是废弃区。v4 时按 §12 的映射逐项重新评估、启用。
 

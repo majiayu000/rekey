@@ -321,6 +321,9 @@ pub(super) async fn run(
     limit: usize,
     sender: &TextStreamSender,
 ) -> Result<TextStreamStatus, BrokerError> {
+    if !super::http::response_is_identity(&response.headers) {
+        return Err(BrokerError::ResponseSecurityViolation);
+    }
     if response.status != 200
         || headers_contain_secret(&response.headers, &needles)
         || !response.headers.iter().any(|(name, value)| {
@@ -402,6 +405,35 @@ mod tests {
         assert_eq!(sealer.bytes.capacity(), 1024);
     }
     use super::*;
+
+    struct Unread;
+    impl crate::upstream::UpstreamBody for Unread {
+        fn next_chunk(&mut self) -> crate::upstream::UpstreamChunkFuture<'_> {
+            Box::pin(async { panic!("a coded stream must be refused before its body") })
+        }
+    }
+
+    #[tokio::test]
+    async fn coded_stream_is_refused_before_any_body_byte() {
+        for coding in [("content-encoding", "gzip"), ("transfer-encoding", "br")] {
+            let response = UpstreamStreamResponse {
+                status: 200,
+                headers: vec![
+                    ("content-type".to_owned(), "text/event-stream".to_owned()),
+                    (coding.0.to_owned(), coding.1.to_owned()),
+                ]
+                .into(),
+                body: Box::new(Unread),
+            };
+            let (sender, mut receiver) = mpsc::channel(4);
+            assert!(matches!(
+                run(response, Vec::new(), 4096, &sender).await,
+                Err(BrokerError::ResponseSecurityViolation)
+            ));
+            drop(sender);
+            assert!(receiver.recv().await.is_none(), "{coding:?}");
+        }
+    }
 
     #[tokio::test]
     async fn every_split_withholds_secret_sources_including_normalization_lookahead() {

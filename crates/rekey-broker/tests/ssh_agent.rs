@@ -1,5 +1,9 @@
 //! Synthetic keys and temp sockets only; no user's SSH files are opened.
+#[path = "ssh_agent/caller.rs"]
+mod caller;
 mod common;
+#[path = "common/renamed_agent.rs"]
+mod renamed_agent;
 
 use aws_lc_rs::signature::{self, KeyPair};
 use data_encoding::BASE64;
@@ -221,7 +225,7 @@ impl Fixture {
                 matches!(
                     &event.request_context,
                     Some(rekey_domain::audit::RequestAuditContext::Connection(context))
-                        if context.caller == "ssh-agent"
+                        if context.normalized_path == "/ssh/sign"
                 )
             })
             .collect();

@@ -381,15 +381,13 @@ impl Worker {
                 crate::bootstrap::prove_integrity(&header, vrk.bytes())?;
                 Ok(header)
             });
-            let header = match header {
+            let mut header = match header {
                 Ok(header) => header,
                 Err(error) => {
                     self.fault("vault-header-integrity-failed");
                     return Err(error);
                 }
             };
-            let pki = self.store.verified_certificates(&header);
-            self.fault_on_integrity(pki)?;
             if let Err(error) = self
                 .store
                 .verified_policy_material(vrk.bytes(), header.vault_id)
@@ -407,7 +405,7 @@ impl Worker {
                 self.fault("desktop-resume-journal-integrity-failed");
                 return Err(error);
             }
-            self.check_generation(&header)?;
+            self.verify_unlock_generation(&mut header, &vrk, recover_usage)?;
             let usage = if recover_usage {
                 self.store
                     .recover_profile_usage(vrk.bytes(), header.vault_id)

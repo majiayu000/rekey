@@ -27,6 +27,9 @@ use crate::error::BrokerError;
 use crate::runtime::BrokerCtx;
 use crate::runtime::local_calls::LocalCallApproval;
 
+mod challenge;
+mod sign_audit;
+
 const MAX_PACKET: usize = 256 * 1024;
 const ED: &[u8] = b"ssh-ed25519";
 const EC: &[u8] = b"ecdsa-sha2-nistp256";
@@ -171,15 +174,8 @@ pub(crate) fn fuzz_wire(bytes: &[u8]) {
     }
 }
 
-#[derive(Default)]
-struct AgentSession {
-    bound: Option<BoundSession>,
-    budgets: std::collections::BTreeMap<String, (Instant, u32)>,
-}
-struct BoundSession {
-    host: Vec<u8>,
-    session: Vec<u8>,
-}
+mod session;
+use session::{AgentSession, BoundSession};
 impl AgentSession {
     fn bind(&mut self, mut r: Reader<'_>) -> Result<(), BrokerError> {
         let host = r.string()?;
@@ -366,18 +362,6 @@ pub(crate) fn verify_external_grants(
     Ok((evidence, expires))
 }
 
-struct PendingApproval {
-    calls: Arc<crate::runtime::local_calls::LocalCalls>,
-    id: Option<ApprovalRequestId>,
-}
-impl Drop for PendingApproval {
-    fn drop(&mut self) {
-        if let Some(id) = self.id {
-            self.calls.cancel_unconfirmed(id);
-        }
-    }
-}
-
 async fn sign(
     ctx: &Arc<BrokerCtx>,
     session: &mut AgentSession,
@@ -417,7 +401,7 @@ async fn sign(
     let request = crate::random_id(RequestId::from_random_bytes)?;
     let correlation = SessionId::from_random_bytes(*request.as_bytes());
     let action_id = ActionId::from_random_bytes(id_bytes(format!("ssh:{}", key.name).as_bytes()));
-    let caller = "ssh-agent";
+    let caller = session.caller.as_str();
     let digest = active.snapshot().digest();
     let review_request = serde_json::json!({"key":key.name,"host":host,"bound_host_key":session.bound.as_ref().map(|b| BASE64.encode(&b.host)),"session_id":session.bound.as_ref().map(|b| HEXLOWER.encode(&b.session)),"public_key":encoded,"data_sha256":HEXLOWER.encode(&Sha256::digest(&data)),"data_base64":BASE64.encode(&data),"window_allowed":effect==RuleEffect::Approve && matched_host_rule && matches!(key.approver, ApproverSpec::LocalPresence {}),"use":purpose});
     let canonical = Zeroizing::new(serde_jcs::to_vec(&review_request).map_err(|_| denied())?);
@@ -484,7 +468,7 @@ async fn sign(
         return Err(BrokerError::Denied("ssh-session-budget-exceeded"));
     }
     let mut approvals = Vec::new();
-    let mut pending = PendingApproval {
+    let mut pending = challenge::PendingApproval {
         calls: Arc::clone(&ctx.local_calls),
         id: None,
     };
@@ -576,20 +560,9 @@ async fn sign(
                 });
                 ctx.authority.append_audit(requested).await?;
             }
-            loop {
-                let response = tokio::select! {
-                    biased;
-                    _ = crate::executor::wait_for_cancel(cancel.clone()) => return Err(BrokerError::Denied("ssh-peer-closed")),
-                    _ = crate::executor::wait_for_cancel(ctx.lifecycle.subscribe_cancel()) => return Err(BrokerError::Denied("ssh-draining")),
-                    _ = tokio::time::sleep_until(deadline.into()) => return Err(BrokerError::Denied("ssh-approval-expired")),
-                    response = ctx.local_calls.await_state(id, caller, 120) => response?,
-                };
-                match response.state {
-                    LocalApprovalState::Pending if Instant::now() < deadline => continue,
-                    LocalApprovalState::Approved => break,
-                    _ => return Err(BrokerError::Denied("ssh-approval-not-granted")),
-                }
-            }
+            let calls = &ctx.local_calls;
+            challenge::await_decision(calls, &ctx.lifecycle, id, caller, deadline, cancel.clone())
+                .await?;
             let consumed = ctx.local_calls.consume(
                 id,
                 caller,
@@ -648,7 +621,7 @@ async fn sign(
             key.credential_id,
             public,
             data,
-            started,
+            sign_audit::start(started, session, &purpose),
             approvals,
             deadline,
         )
@@ -781,8 +754,8 @@ pub(crate) async fn handle_connection(
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut session = AgentSession::for_peer(&stream).await;
     let (mut reader, mut writer) = stream.into_split();
-    let mut session = AgentSession::default();
     loop {
         let packet = tokio::select! {
             biased;

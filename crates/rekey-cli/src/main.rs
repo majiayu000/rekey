@@ -24,14 +24,6 @@ struct StepUpArgs {
     presence: bool,
 }
 
-#[derive(Args)]
-struct DerivedCredentialArgs {
-    connection: String,
-    /// Use one explicitly approved derivation request; issuance is never automatically replayed.
-    #[arg(long)]
-    approval: Option<ApprovalRequestId>,
-}
-
 #[derive(Subcommand)]
 enum OAuthCommand {
     /// Open the App to confirm OAuth login and authorize in the browser.
@@ -153,11 +145,11 @@ enum OidcLoginCommand {
 #[derive(Subcommand)]
 enum Command {
     /// AWS credential_process JSON. T1: the Agent receives temporary credentials.
-    AwsCredentials(DerivedCredentialArgs),
+    AwsCredentials(commands::delegated::DerivedCredentialArgs),
     /// kubectl ExecCredential JSON. T1: the Agent receives a temporary token.
-    KubectlCredentials(DerivedCredentialArgs),
+    KubectlCredentials(commands::delegated::DerivedCredentialArgs),
     /// GitHub App installation token. T1: the Agent receives the temporary token.
-    GithubToken(DerivedCredentialArgs),
+    GithubToken(commands::delegated::DerivedCredentialArgs),
     /// Authorize OAuth through the App and browser; no tokens are returned.
     #[command(subcommand)]
     Oauth(OAuthCommand),
@@ -167,7 +159,7 @@ enum Command {
         json: bool,
     },
     /// Describe a named operation and its rules; never returns keys.
-    Describe { operation: String },
+    Describe(commands::agent::DescribeArgs),
     /// Call a named operation with --name value parameters; never returns keys.
     Call {
         operation: String,
@@ -195,13 +187,7 @@ enum Command {
         approval: Option<ApprovalRequestId>,
     },
     /// Ask the user to add a Connection or permission; do not collect keys.
-    Request {
-        provider: String,
-        #[arg(long = "op")]
-        operation: Option<String>,
-        #[arg(long)]
-        reason: String,
-    },
+    Request(commands::agent::AccessRequestArgs),
     /// Wait for an access request to be granted or rejected.
     Await {
         request_id: RequestId,
@@ -328,21 +314,10 @@ enum Command {
         password_stdin: bool,
     },
     /// Preview or install project MCP configuration.
-    Connect {
-        client: commands::ConnectClient,
-        #[arg(long)]
-        print: bool,
-        #[arg(long)]
-        project: Option<PathBuf>,
-        /// Install a marked pre-commit secret scan hook.
-        #[arg(long)]
-        with_hooks: bool,
-        /// Configure SSH IdentityAgent for explicit --ssh-host targets.
-        #[arg(long, requires = "ssh_hosts")]
-        with_ssh: bool,
-        #[arg(long = "ssh-host", requires = "with_ssh")]
-        ssh_hosts: Vec<String>,
-    },
+    Connect(commands::ConnectArgs),
+    /// Install or remove the pre-commit secret scan hook.
+    #[command(subcommand)]
+    Hooks(commands::HooksCommand),
     /// Run a command with a capability limited to the named signed Profile.
     #[cfg(feature = "lab")]
     Run {
@@ -369,13 +344,13 @@ enum Command {
         #[arg(long)]
         recovery: bool,
     },
-    /// Remember this desktop for an explicit duration; proof on stdin, key on stdout.
+    /// Remember this desktop (replaces any App/CLI remembered unlock); proof stdin, key stdout.
     DesktopRemember {
         #[arg(long, default_value = "168h")]
         ttl: String,
         #[arg(long)]
         recovery: bool,
-        #[arg(long, conflicts_with = "recovery")]
+        #[arg(long, conflicts_with = "recovery", help = "Always refused by rekeyd")]
         presence: bool,
     },
     /// Resume a remembered desktop; key on stdin, session on stdout.
@@ -401,14 +376,14 @@ enum Command {
         recovery: bool,
         #[arg(long)]
         password_stdin: bool,
-        /// Also unlock automatically after daemon restarts for this long
-        /// (e.g. 7d, max 30d). Basic mode: the key is a 0600 file, not Secure Enclave.
+        /// Also unlock after daemon restarts for this long (e.g. 7d, max 30d), from a 0600 file
+        /// (not Secure Enclave). Replaces an App remembered unlock; full or idle locks forget it.
         #[arg(long)]
         remember: Option<String>,
     },
-    /// Lock the running broker and revoke all sessions.
+    /// Lock the running broker, revoke all sessions and forget any remembered unlock (App or CLI).
     Lock {
-        /// Also delete the remembered unlock so restarts stay locked.
+        /// Also delete the local remembered-unlock.key; the lock alone keeps restarts locked.
         #[arg(long)]
         forget_remembered: bool,
     },
@@ -1247,20 +1222,17 @@ fn main() {
     let result = match cli.command {
         Command::AwsCredentials(args) => commands::delegated::derive(
             &agent_socket,
-            args.connection,
-            args.approval,
+            args,
             commands::delegated::DerivedFormat::Aws,
         ),
         Command::KubectlCredentials(args) => commands::delegated::derive(
             &agent_socket,
-            args.connection,
-            args.approval,
+            args,
             commands::delegated::DerivedFormat::Kubectl,
         ),
         Command::GithubToken(args) => commands::delegated::derive(
             &agent_socket,
-            args.connection,
-            args.approval,
+            args,
             commands::delegated::DerivedFormat::GitHub,
         ),
         Command::Oauth(OAuthCommand::Login {
@@ -1278,7 +1250,7 @@ fn main() {
             onboarding_inapplicable,
         ),
         Command::List { json } => commands::agent::list(&agent_socket, json),
-        Command::Describe { operation } => commands::agent::describe(&agent_socket, operation),
+        Command::Describe(args) => commands::agent::describe(&agent_socket, args),
         Command::Call {
             operation,
             arguments,
@@ -1307,11 +1279,7 @@ fn main() {
             no_wait,
             approval,
         ),
-        Command::Request {
-            provider,
-            operation,
-            reason,
-        } => commands::agent::request(&agent_socket, provider, operation, reason),
+        Command::Request(args) => commands::agent::request(&agent_socket, args),
         Command::Await {
             request_id,
             timeout,
@@ -1479,14 +1447,8 @@ fn main() {
             }
             commands::delegate_rekeyd(&state_dir, "restore", &args, password_stdin)
         }
-        Command::Connect {
-            client,
-            print,
-            project,
-            with_hooks,
-            with_ssh: _,
-            ssh_hosts,
-        } => commands::connect(client, print, project, with_hooks, ssh_hosts, &state_dir),
+        Command::Connect(args) => commands::connect(args, &state_dir),
+        Command::Hooks(command) => commands::hooks(command, &state_dir),
         #[cfg(feature = "lab")]
         Command::Run {
             profile,

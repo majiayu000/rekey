@@ -69,6 +69,14 @@ struct RootView: View {
                             Button { model.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                         }.foregroundStyle(Color.red).padding(14).background(Color.red.opacity(0.05)).padding(.horizontal, 28).padding(.bottom, 16)
                     }
+                    if let warning = model.warning {
+                        HStack(alignment: .top) {
+                            Image(systemName: "exclamationmark.triangle")
+                            Text(warning).font(.system(size: 12)).textSelection(.enabled)
+                            Spacer()
+                            Button { model.warning = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                        }.foregroundStyle(Color.orange).padding(14).background(Color.orange.opacity(0.06)).padding(.horizontal, 28).padding(.bottom, 16)
+                    }
                     if model.status?.state == "rollback-suspected", model.page != .backup, model.page != .settings {
                         locked
                     } else if model.desktopLocked, model.status != nil, model.page != .settings, model.page != .backup {
@@ -124,6 +132,19 @@ struct RootView: View {
         .sheet(item: $model.approvalDetails) { ApprovalDetailView(details: $0).environmentObject(model) }
         .sheet(item: $model.localApprovalDetails) { _ in LocalApprovalView().environmentObject(model) }
         .sheet(item:$activityDetail){ActivityRecentView(row:$0).environmentObject(model)}
+        .alert(model.startupFailure?.title ?? "", isPresented: startupAlert, presenting: model.startupFailure) { failure in
+            // Guidance only: the App never edits service.json, reads the vault or rebuilds it.
+            switch failure.kind {
+            case .portInUse: Button("在 Finder 中显示 service.json") { failure.revealServiceFile() }
+            case .unsupportedFormat: Button("选择新的空目录") { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } }
+            case .other: EmptyView()
+            }
+            if failure.kind != .unsupportedFormat { Button("重试") { Task { await model.connectOnOpen() } } }
+            Button("关闭", role: .cancel) {}
+        } message: { failure in Text(failure.detail) }
+    }
+    private var startupAlert: Binding<Bool> {
+        Binding(get: { model.startupFailure != nil }, set: { if !$0 { model.startupFailure = nil } })
     }
 
     private var sidebar: some View {
@@ -463,6 +484,7 @@ struct RootView: View {
                 if let activity = model.activity {
                     Text("UTC 当日 · 截至 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary)
                     if activity.complete {
+                        if !activity.reauthorization.connections.isEmpty { reauthorization(activity.reauthorization.connections) }
                         HStack(spacing: 28) {
                             activityMetric("执行准入", activity.totals.admitted)
                             activityMetric("执行拒绝", activity.totals.denied)
@@ -512,6 +534,20 @@ struct RootView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
             Text(String(value)).font(.system(size: 22, weight: .semibold, design: .rounded))
+        }
+    }
+    // Provider refusals only (agent-call §7.4). The browser authorization still asks for fresh presence.
+    private func reauthorization(_ connections: [String]) -> some View {
+        SectionCard(title: "需重新授权", icon: "exclamationmark.triangle") {
+            Text("提供方已撤销授权或拒绝刷新。这些连接的调用会返回 NEEDS_REAUTH，直到在浏览器中重新授权；网络或服务端错误不会显示在这里。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            ForEach(connections, id: \.self) { name in
+                HStack {
+                    Text(name).font(.system(size: 13, weight: .medium))
+                    Spacer()
+                    Button("在浏览器重新授权") { model.onboardingRoute = .oauth(name) }.disabled(model.busy || !model.desktopReady)
+                }
+            }
         }
     }
     private var auditPage: some View {

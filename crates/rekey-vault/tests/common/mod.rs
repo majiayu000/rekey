@@ -54,6 +54,20 @@ pub fn password_input() -> SecretInput {
     SecretInput::from_slice(PASSWORD)
 }
 
+/// Wall-clock fixture bounds scale with `REKEY_TEST_TIMEOUT_SCALE` (a positive
+/// integer, default 1) on slow or loaded hosts. Product deadlines never scale.
+pub fn test_timeout(base: Duration) -> Duration {
+    let scale = match std::env::var("REKEY_TEST_TIMEOUT_SCALE") {
+        Err(std::env::VarError::NotPresent) => 1,
+        value => value
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .expect("REKEY_TEST_TIMEOUT_SCALE must be a positive integer"),
+    };
+    base.checked_mul(scale).expect("scaled test timeout")
+}
+
 pub fn password_proof() -> rekey_vault::command::UnlockProof {
     rekey_vault::command::UnlockProof::Password(password_input())
 }

@@ -17,6 +17,7 @@ single-port proxy, or TCP passthrough exists anymore.
   - `rg -n 'REKEY_PASSWORD|get_secret_value|/proxy/|passthrough' crates tests src` → no matches
   - `rg -n 'get_secret\b|read_secret|export_secret' crates/rekey-domain crates/rekey-broker crates/rekey-cli` → no matches
   - `cargo tree -p rekey-cli -e normal` → no rusqlite / aes-gcm / argon2 / reqwest / rekey-vault / rekey-broker / rekey-connector
+  - `cargo test -p rekey-cli --test agent_call` and `cargo test -p rekey-broker --test personal_policy` → pass (local calls carry no capability token, a CALL that adds one is rejected, and the default CLI has no session, capability or reveal command; with the grep above this is the agent-call model §16 "no capability, no get/export" check)
 
 ## Architecture
 

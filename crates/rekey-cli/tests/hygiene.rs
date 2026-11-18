@@ -12,6 +12,8 @@ struct Fixture {
     _dir: tempfile::TempDir,
     root: PathBuf,
     project: PathBuf,
+    /// Extra environment for the CLI process.
+    env: Vec<(&'static str, PathBuf)>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -26,6 +28,7 @@ impl Fixture {
             _dir: dir,
             root,
             project,
+            env: Vec::new(),
         }
     }
     fn git(&self, args: &[&str]) {
@@ -97,7 +100,8 @@ impl Fixture {
             .args(args)
             .current_dir(&self.project)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "true");
+            .env("GIT_CONFIG_NOSYSTEM", "true")
+            .envs(self.env.iter().map(|(name, value)| (*name, value)));
         let output = if let Some(input) = input {
             let mut child = command
                 .stdin(std::process::Stdio::piped())
@@ -128,7 +132,7 @@ fn staged_scan_reads_the_index_instead_of_the_working_copy_and_never_echoes_the_
     std::fs::write(f.project.join("source.txt"), b"clean-working-copy\n").unwrap();
     let output=f.exchange(Channel::Agent,&["scan","--staged"],None,|header,metadata,body| {
         assert_eq!(header.message_type,agent_msg::SCAN);assert_eq!(metadata,json!({"path":"source.txt"}));assert_eq!(body,b"synthetic-full-secret-in-index\n");
-        (json!({}),json!({"findings":[{"path":"source.txt","line":1,"column":1,"connection":"github"}]}).to_string().into_bytes(),false)
+        (json!({}),json!({"findings":[{"path":"source.txt","line":1,"column":1,"connection":"github"}],"unavailable_credentials":0}).to_string().into_bytes(),false)
     });
     assert_eq!(output.status.code(), Some(4));
     let text = String::from_utf8_lossy(&output.stdout);
@@ -149,11 +153,9 @@ fn staged_locked_scan_warns_and_passes_unless_strict() {
         };
         let output=f.exchange(Channel::Agent,&args,None,|header,_,_|(json!({"request_id":header.request_id,"code":"LOCKED","message":"vault locked","retryable":false,"next":"Call await_unlock"}),Vec::new(),true));
         assert_eq!(output.status.success(), !strict);
-        assert!(String::from_utf8_lossy(&output.stderr).contains(if strict {
-            "LOCKED"
-        } else {
-            "Warning"
-        }));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("LOCKED"), "{stderr}");
+        assert_eq!(stderr.contains("SCAN_NOT_PERFORMED"), !strict, "{stderr}");
     }
 }
 #[test]
@@ -168,7 +170,11 @@ fn stdin_scan_supports_a_whole_file_above_the_normal_action_body_limit() {
             assert_eq!(header.message_type, agent_msg::SCAN);
             assert_eq!(metadata["path"], "<stdin>");
             assert_eq!(body.len(), 2 * 1024 * 1024);
-            (json!({}), br#"{"findings":[]}"#.to_vec(), false)
+            (
+                json!({}),
+                br#"{"findings":[],"unavailable_credentials":0}"#.to_vec(),
+                false,
+            )
         },
     );
     assert!(output.status.success());
@@ -204,7 +210,7 @@ fn connection_and_access_lists_are_public_admin_projections() {
         (
             vec!["access", "list"],
             admin_msg::ACCESS_RESOLVE,
-            json!({"requests":[],"blocked_callers":[]}),
+            json!({"requests":[{"request_id":"00112233-4455-4677-8899-aabbccddeeff","caller":"codex","provider":"github","connection":null,"operation":"github.list_issues","reason":"Read issues","created_at_ms":1,"expires_at_ms":600001,"status":"PENDING","presets":["github-oauth","github-pat"]}],"blocked_callers":[]}),
         ),
     ] {
         let f = Fixture::new();
@@ -290,6 +296,85 @@ fn app_import_and_rewrite_send_only_public_selections_and_explicit_proof() {
         assert!(!f.project.join(".env").exists());
     }
 }
+/// Agent-call 7.3: the backup keeps the original values, so the rewrite
+/// receipt says whether git ignores it (git runs only inside a repository).
+#[test]
+fn rewrite_receipt_reports_whether_git_ignores_the_backup() {
+    for (repository, ignored, expected) in [
+        (false, false, "no-repository"),
+        (true, false, "not-ignored"),
+        (true, true, "ignored"),
+    ] {
+        let f = Fixture::new();
+        assert!(
+            f.project
+                .ancestors()
+                .all(|parent| !parent.join(".git").exists()),
+            "the fixture must start outside any repository"
+        );
+        if repository {
+            f.git(&["init"]);
+        }
+        if ignored {
+            std::fs::write(f.project.join(".gitignore"), b"*.rekey-backup\n").unwrap();
+        }
+        let (backup, receipt) = rewrite_receipt(&f);
+        assert_eq!(
+            receipt,
+            json!({ "backup": backup, "backup_git": expected }),
+            "{expected}"
+        );
+    }
+}
+/// macOS's /usr/bin/git is an xcode-select shim: without developer tools it
+/// asks to install them and exits 1, which read as not-ignored. An empty
+/// developer directory stands in for such a Mac; the shim is never run.
+#[cfg(target_os = "macos")]
+#[test]
+fn rewrite_receipt_without_developer_tools_is_unknown() {
+    let mut f = Fixture::new();
+    f.git(&["init"]);
+    std::fs::write(f.project.join(".gitignore"), b"*.rekey-backup\n").unwrap();
+    let tools = f.root.join("no-developer-tools");
+    std::fs::create_dir(&tools).unwrap();
+    // The App's PATH, so git resolves to the shim.
+    f.env.push(("PATH", PathBuf::from("/usr/bin:/bin")));
+    f.env.push(("DEVELOPER_DIR", tools));
+    let (backup, receipt) = rewrite_receipt(&f);
+    assert_eq!(
+        receipt,
+        json!({ "backup": backup, "backup_git": "unknown" })
+    );
+}
+/// Runs `import --rewrite-stdin` against a fake daemon whose receipt names
+/// `<project>/.env.rekey-backup`, and returns that path and the CLI receipt.
+fn rewrite_receipt(f: &Fixture) -> (PathBuf, Value) {
+    let backup = f.project.join(".env.rekey-backup");
+    std::fs::write(&backup, b"SYNTHETIC=backup\n").unwrap();
+    let receipt = json!({ "backup": backup });
+    let input = "synthetic-app-presence\n[{\"key\":\"OPENAI_API_KEY\",\"connection\":\"openai\",\"base_url_variable\":\"OPENAI_BASE_URL\"}]\n";
+    let output = f.exchange(
+        Channel::Admin,
+        &[
+            "import",
+            ".env",
+            "--rewrite-stdin",
+            "--presence",
+            "--password-stdin",
+        ],
+        Some(input.as_bytes()),
+        move |header, _, _| {
+            assert_eq!(header.message_type, admin_msg::IMPORT_ENV);
+            (json!({}), receipt.to_string().into_bytes(), false)
+        },
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (backup, serde_json::from_slice(&output.stdout).unwrap())
+}
 fn ipc_proof(body: &[u8]) -> &[u8] {
     let (kind, proof) = rekey_domain::ipc::parse_proof_body(body).unwrap();
     assert_eq!(kind, rekey_domain::ipc::ProofKind::Presence);
@@ -357,7 +442,13 @@ fn t1_adapters_preserve_temporary_stdout_without_exposing_root_values_or_metadat
 fn t1_wrong_kind_and_approval_errors_never_release_values_or_replay_issuance() {
     for requires_approval in [false, true] {
         let f = Fixture::new();
-        let output = f.exchange(Channel::Agent, &["aws-credentials", "fixture"], None, move |header, metadata, body| {
+        // Waiting is the default; --no-wait keeps the single-exchange refusal.
+        let args: &[&str] = if requires_approval {
+            &["aws-credentials", "fixture", "--no-wait"]
+        } else {
+            &["aws-credentials", "fixture"]
+        };
+        let output = f.exchange(Channel::Agent, args, None, move |header, metadata, body| {
             assert_eq!(header.message_type, agent_msg::DERIVE_CREDENTIAL);
             assert_eq!(metadata, json!({"connection":"fixture"}));
             assert!(body.is_empty());

@@ -93,6 +93,9 @@ import CryptoKit
         precondition(SSHHostDefinition.wireBlob(publicBlob)==publicBlob)
         let preservedSSH=try JSONDecoder().decode(SSHKeyDefinition.self,from:JSONEncoder().encode(sshKey))
         precondition(preservedSSH==sshKey && preservedSSH.hosts[0].rule_id==hostRuleID && preservedSSH.hosts[0].effect=="deny")
+        // agent-call §8.1: a key generated in the App starts with no host and allows git signing.
+        let generated=SSHKeyDefinition.generated(credentialID:sshKey.credential_id,publicKey:publicBlob)
+        precondition(generated.git_signing=="allow" && generated.hosts.isEmpty && generated.approver.kind=="local-presence" && generated.name.hasPrefix("ssh-") && generated.user_public_key==publicBlob)
         let grant=DerivedCredentialDefinition(name:"synthetic-eks",credential_id:UUID().uuidString.lowercased(),effect:"approve",max_ttl_seconds:900,target:.init(kind:"kubernetes-eks",region:"us-east-1",cluster_id:"build"))
         let grantObject=try JSONSerialization.jsonObject(with:JSONEncoder().encode(grant))
         let signObject:[String:Any] = ["format_version":1,"signer_id":"test","snapshot":["version":1,"expires_at_ms":10000,"connections":[object],"ssh_keys":[sshObject],"derived_credentials":[grantObject]]]
@@ -111,6 +114,29 @@ import CryptoKit
         var derivedActivity=ActivitySnapshot(nowMs:1000);try derivedActivity.ingest(derivedPage)
         precondition(derivedActivity.rows.count==1 && derivedActivity.totals.admitted==1 && derivedActivity.rows[0].context?.classification=="临时凭据")
         precondition(derivedActivity.rows[0].recent.count==1 && derivedActivity.rows[0].recent[0].request_context?.expires_at_ms==900100)
+        // agent-call §7.4: only a provider refusal that no later authorization or refresh cleared asks for re-authorization.
+        func oauthEvent(_ sequence:Int,_ type:String,_ reason:String,_ credential:String,_ connection:String?)->[String:Any] {
+            var event:[String:Any]=["sequence":sequence,"event_id":UUID().uuidString.lowercased(),"event_type":type,"outcome":type=="oauth.refresh_failed" ? "denied":"success","reason_code":reason,"created_at_ms":100,"request_id":NSNull(),"credential_id":credential]
+            if let connection{event["request_context"]=["connection":connection,"caller":"rekeyd","method_class":"read","normalized_path":"/"]}
+            return event
+        }
+        let drive=UUID().uuidString.lowercased(),gmail=UUID().uuidString.lowercased(),calendar=UUID().uuidString.lowercased(),notion=UUID().uuidString.lowercased()
+        let oauthEvents=[oauthEvent(7,"oauth.refresh_failed","oauth-needs-reauth",drive,"drive"),oauthEvent(6,"oauth.refresh_failed","oauth-refresh-failed",gmail,"gmail"),oauthEvent(5,"oauth.authorized","oauth-authorization",calendar,nil),oauthEvent(4,"oauth.refresh_failed","oauth-needs-reauth",calendar,"calendar"),oauthEvent(3,"oauth.refresh_failed","oauth-needs-reauth",gmail,"gmail"),oauthEvent(2,"oauth.refresh_failed","oauth-authorization-failed",notion,"notion"),oauthEvent(1,"oauth.refreshed","oauth-refresh",drive,nil)]
+        var oauthActivity=ActivitySnapshot(nowMs:1000)
+        try oauthActivity.ingest(JSONDecoder().decode(AuditPage.self,from:JSONSerialization.data(withJSONObject:["events":oauthEvents,"snapshot_max_sequence":7,"next_before_sequence":NSNull()])))
+        precondition(oauthActivity.complete && oauthActivity.reauthorization.connections==["drive","gmail"])
+        // Access request rows carry a Connection-shaped audit context (§7.2) but are not calls.
+        let accessEvent:[String:Any] = ["sequence":4,"event_id":UUID().uuidString.lowercased(),"event_type":"access_request.created","outcome":"success","reason_code":"provider-request","created_at_ms":100,"request_id":UUID().uuidString.lowercased(),"request_context":["connection":"stripe","caller":"codex","method_class":"read","normalized_path":"/"]]
+        let accessPage=try JSONDecoder().decode(AuditPage.self,from:JSONSerialization.data(withJSONObject:["events":[accessEvent]+derivedEvents,"snapshot_max_sequence":4,"next_before_sequence":NSNull()]))
+        var accessActivity=ActivitySnapshot(nowMs:1000);try accessActivity.ingest(accessPage)
+        precondition(accessActivity.rows.count==1 && accessActivity.rows[0].context?.connection=="synthetic-eks" && accessActivity.totals.admitted==1,"access requests grouped as calls")
+        let accessJSON:[String:Any] = ["request_id":UUID().uuidString.lowercased(),"caller":"codex","provider":"github","connection":NSNull(),"operation":"github.list_issues","reason":"synthetic","created_at_ms":1,"expires_at_ms":2,"status":"PENDING","presets":["github-oauth","github-pat"]]
+        func accessItem(_ fields:[String:Any]) throws -> AccessRequestItem {try JSONDecoder().decode(AccessRequestItem.self,from:JSONSerialization.data(withJSONObject:fields))}
+        var olderDaemon=accessJSON;olderDaemon.removeValue(forKey:"presets")
+        var oauthFamily=accessJSON;oauthFamily["provider"]="google";oauthFamily["presets"]=["google-calendar","google-drive"]
+        var customOnly=accessJSON;customOnly["provider"]="stripe";customOnly["presets"]=["team-billing"]
+        let suggested=try [accessJSON,olderDaemon,oauthFamily,customOnly].map{try accessItem($0).suggestedPreset}
+        precondition(suggested==["github-pat","generic-bearer","google-drive","stripe"],"\(suggested)")
         var metadata=response["metadata"] as! [String:Any];var tampered=object as! [String:Any];tampered["origin"]="https://evil.example";metadata["connections"]=[tampered];response["metadata"]=metadata
         do {_ = try PersonalPolicyDraft(response:JSONSerialization.data(withJSONObject:response),expectedPolicySHA256:nil,expiresAtMs:10000,workspace:"/tmp/synthetic",revision:UUID());fatalError("mismatched displayed definition accepted")}catch{}
         let temporary=FileManager.default.temporaryDirectory.appendingPathComponent("rekey-import-contract-"+UUID().uuidString)
@@ -166,7 +192,7 @@ import CryptoKit
         else:
             assert '--rewrite-stdin' in args
             assert request==[{'key':'SYNTHETIC_KEY','connection':'synthetic','base_url_variable':'SYNTHETIC_BASE_URL'}]
-            print(json.dumps({'backup':'/tmp/synthetic.env.rekey-backup'}))
+            print(json.dumps({'backup':'/tmp/synthetic.env.rekey-backup','backup_git':'not-ignored'}))
         """
         try Data(script.utf8).write(to:executable);try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:executable.path)
         let client=CLI(binary:executable,stateDirectory:temporary.path),path=temporary.appendingPathComponent("missing-source.env").path
@@ -180,7 +206,40 @@ import CryptoKit
         let receipt=try client.importSelected(path:path,selections:[.init(key:"SYNTHETIC_KEY",label:"synthetic label")],proof:String(repeating:"ab",count:32))
         precondition(receipt.entries.count==1 && receipt.entries[0].key=="SYNTHETIC_KEY")
         let rewritten=try client.rewriteImported(path:path,replacements:[.init(key:"SYNTHETIC_KEY",connection:"synthetic",base_url_variable:"SYNTHETIC_BASE_URL")],proof:String(repeating:"ab",count:32))
-        precondition(rewritten.backup=="/tmp/synthetic.env.rekey-backup" && !FileManager.default.fileExists(atPath:path))
+        precondition(rewritten.backup=="/tmp/synthetic.env.rekey-backup" && rewritten.backup_git=="not-ignored" && !FileManager.default.fileExists(atPath:path))
+        // agent-call 7.3: default SDK base-URL variables, recognition, the receipt, the signed expiry and the backup notice.
+        precondition(EnvImportPlan.baseURLVariables(["OPENAI_API_KEY","ANTHROPIC_AUTH_TOKEN","GITHUB_TOKEN","DEEPSEEK_KEY","SYNTHETIC"],reserved:[])==["OPENAI_BASE_URL","ANTHROPIC_BASE_URL","GITHUB_BASE_URL","DEEPSEEK_BASE_URL","SYNTHETIC_BASE_URL"])
+        precondition(EnvImportPlan.baseURLVariables(["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","API_KEY","_KEY"],reserved:["API_BASE_URL"])==["ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN_BASE_URL","API_KEY_BASE_URL","_KEY_BASE_URL"])
+        precondition(EnvImportPlan.baseURLVariables(["OPENAI_API_KEY","OPENAI_BASE_URL"],reserved:[])==["OPENAI_API_KEY_BASE_URL","OPENAI_BASE_URL_BASE_URL"])
+        let envPreview=try JSONDecoder().decode(EnvPreview.self,from:Data(#"{"entries":[{"key":"GH_TOKEN","preset_hint":"github-pat","unsupported_protocol":null},{"key":"AWS_SECRET_ACCESS_KEY","preset_hint":null,"unsupported_protocol":"aws"},{"key":"APP_MODE","preset_hint":null,"unsupported_protocol":null},{"key":"LEGACY","preset_hint":"retired","unsupported_protocol":null}],"unsupported":[]}"#.utf8))
+        var envItems=EnvImportPlan.items(envPreview)
+        precondition(envItems.map(\.preset)==["github-pat","generic-bearer","generic-bearer","generic-bearer"] && envItems.allSatisfy{$0.choice == .skip} && envItems[1].unsupportedProtocol=="aws")
+        envItems[0].choice = .importKey;envItems[2].choice = .nonSecret
+        let keptReceipt=["未迁移：协议不支持代理：AWS_SECRET_ACCESS_KEY（AWS 签名），原值保留。","已跳过，仍以明文留在文件中：LEGACY","已标记为非密钥，原样保留：APP_MODE"]
+        precondition(EnvImportPlan.report(envItems,rewritten:[])==keptReceipt && EnvImportPlan.report(envItems,rewritten:["GH_BASE_URL"])==keptReceipt)
+        // An existing OPENAI_BASE_URL / ANTHROPIC_BASE_URL line is what the SDK reads, so the default keeps the
+        // name and a rewrite replaces that line in place: the review and the receipt say so, never "kept".
+        let sdkPreview=try JSONDecoder().decode(EnvPreview.self,from:Data(#"{"entries":[{"key":"OPENAI_API_KEY","preset_hint":"openai","unsupported_protocol":null},{"key":"OPENAI_BASE_URL","preset_hint":null,"unsupported_protocol":null},{"key":"ANTHROPIC_API_KEY","preset_hint":"anthropic","unsupported_protocol":null},{"key":"ANTHROPIC_BASE_URL","preset_hint":null,"unsupported_protocol":null},{"key":"DB_PASSWORD","preset_hint":null,"unsupported_protocol":"password"}],"unsupported":[{"line":7,"key":"LEGACY_URL"}]}"#.utf8))
+        var sdkItems=EnvImportPlan.items(sdkPreview);sdkItems[0].choice = .importKey;sdkItems[2].choice = .importKey;sdkItems[3].choice = .nonSecret
+        let sdkVariables=EnvImportPlan.baseURLVariables(["OPENAI_API_KEY","ANTHROPIC_API_KEY"],reserved:["LEGACY_URL","DB_PASSWORD"])
+        let sdkConnections=zip(["OPENAI_API_KEY","ANTHROPIC_API_KEY"],sdkVariables).map{EnvImportConnection(key:$0,label:$0,baseURLVariable:$1,definition:connection)}
+        precondition(sdkVariables==["OPENAI_BASE_URL","ANTHROPIC_BASE_URL"] && sdkConnections.allSatisfy{EnvImportPlan.baseURLLine($0.baseURLVariable,connections:sdkConnections,preview:sdkPreview) == .replaces})
+        precondition(EnvImportPlan.baseURLNote(.replaces,variable:"OPENAI_BASE_URL")?.contains("原值只保留在备份中") == true && EnvImportPlan.baseURLNote(.appended,variable:"SYNTHETIC_BASE_URL")==nil)
+        precondition(EnvImportPlan.report(sdkItems,rewritten:sdkVariables)==["已替换为本机服务地址，原值只保留在备份中：OPENAI_BASE_URL、ANTHROPIC_BASE_URL","未迁移：协议不支持代理：DB_PASSWORD（口令），原值保留。"])
+        precondition(EnvImportPlan.report(sdkItems,rewritten:[])==["未迁移：协议不支持代理：DB_PASSWORD（口令），原值保留。","已跳过，仍以明文留在文件中：OPENAI_BASE_URL","已标记为非密钥，原样保留：ANTHROPIC_BASE_URL"])
+        // Names the daemon refuses to write are refused before signing; a new name is appended.
+        for refused in ["OPENAI_API_KEY","DB_PASSWORD","LEGACY_URL","","1_BASE_URL","OPENAI-BASE-URL","ÄPI_BASE_URL"] {precondition(EnvImportPlan.baseURLLine(refused,connections:sdkConnections,preview:sdkPreview) == .refused,refused)}
+        let shared=sdkConnections.map{EnvImportConnection(key:$0.key,label:$0.label,baseURLVariable:"SHARED_BASE_URL",definition:$0.definition)}
+        precondition(EnvImportPlan.baseURLLine("SHARED_BASE_URL",connections:shared,preview:sdkPreview) == .refused && EnvImportPlan.baseURLLine("SYNTHETIC_BASE_URL",connections:sdkConnections,preview:sdkPreview) == .appended)
+        func signedBase(_ expires:Any)throws->ConnectionList {try JSONDecoder().decode(ConnectionList.self,from:JSONSerialization.data(withJSONObject:["connections":[],"ssh_keys":[],"derived_credentials":[],"policy_sha256":expires is NSNull ? NSNull() as Any:String(repeating:"ab",count:32),"expires_at_ms":expires]))}
+        let reviewTime=Date(timeIntervalSince1970:1_000_000)
+        let currentBase=try signedBase(Int64(4_000_000_000_000)),lapsedBase=try signedBase(Int64(999_999_000)),absentBase=try signedBase(NSNull())
+        precondition(EnvImportPlan.defaultExpiry(currentBase,now:reviewTime)==Date(timeIntervalSince1970:4_000_000_000))
+        precondition(EnvImportPlan.defaultExpiry(lapsedBase,now:reviewTime)==reviewTime.addingTimeInterval(86400) && EnvImportPlan.defaultExpiry(absentBase,now:reviewTime)==reviewTime.addingTimeInterval(86400))
+        for (state,phrase) in [("ignored","已被 git 忽略"),("not-ignored","加入 .gitignore"),("no-repository","确认替换无误后请删除它"),("unknown","未能确认 git 是否忽略它")] {
+            let notice=EnvImportPlan.backupNotice(.init(backup:"/tmp/p/.env.rekey-backup",backup_git:state))
+            precondition(notice.contains(phrase) && notice.contains("/tmp/p/.env.rekey-backup") && notice.contains("删除"))
+        }
         let ordered=["0.4.0-alpha.1","0.4.0","0.5.0-alpha.1","0.5.0-alpha.2","0.5.0-alpha.10","0.5.0-beta","0.5.0","0.10.0"].map{ReleaseVersion($0)!}
         precondition(zip(ordered,ordered.dropFirst()).allSatisfy{$0 < $1} && ReleaseVersion("0.5.0+build")! == ReleaseVersion("0.5.0")!)
         for bad in ["v0.5.0","0.5","0.5.0-","0.5.x","0.5.0-alpha..1"] {precondition(ReleaseVersion(bad)==nil)}
@@ -192,7 +251,7 @@ import CryptoKit
         precondition(upgrade?.version=="0.5.0-alpha.1" && upgrade?.page.absoluteString=="https://github.com/\(UpdateFeed.repository)/releases/tag/v0.5.0-alpha.1" && current==nil)
         let major=try UpdateFeed.newest(try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v1.0.0")]),current:"0.5.0-alpha.1")
         precondition(major?.version=="1.0.0")
-        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, SSH generation proof boundaries and update feed selection.")
+        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes and re-authorization, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, the App SSH git-signing default, SSH generation proof boundaries, .env import defaults and receipts, and update feed selection.")
     }
     static func reviewResponse(_ review:[String:Any],id:String)throws->Data {
         let raw=try JSONSerialization.data(withJSONObject:review,options:[.sortedKeys,.withoutEscapingSlashes])
