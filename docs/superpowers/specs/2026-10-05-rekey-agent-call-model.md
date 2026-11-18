@@ -517,7 +517,7 @@ OPENAI_API_KEY=rekey
 4. **改写**：原文件备份为 `.env.rekey-backup`，权限 0600，并提示用户删除或确认已加入 `.gitignore`。改写回执带 `backup_git`，由 CLI 判断：备份所在目录或其上级有 `.git` 时运行 `git check-ignore --no-index`（不读取 index），结果为 `ignored` 或 `not-ignored`；不在仓库中为 `no-repository`；git 无法运行、拒绝该仓库或 5 秒内没有结果为 `unknown`。CLI 只运行 PATH 里第一个绝对路径目录下可执行的 `git`；macOS 上它是 `/usr/bin/git`（xcode-select 转发器）时，只有 `xcode-select -p` 选中的开发者目录里有 git 才运行，否则直接为 `unknown`，因为没有开发者工具时转发器会弹出安装对话框并以 1 退出，会被误读成 `not-ignored`。5 秒期限同时覆盖这两步。App 按此提示删除备份，或把它加入 `.gitignore`。新 `.env` 写入：
    - LLM 和 HTTP 类：`<X>_BASE_URL=http://127.0.0.1:7787/c/<connection>/...` 和 `<X>_API_KEY=rekey`，地址用本机服务实际监听的端口和 Preset 的 SDK 路径后缀。App 的默认变量名去掉 `_API_KEY`、`_AUTH_TOKEN`、`_KEY` 或 `_TOKEN` 后缀再加 `_BASE_URL`（`OPENAI_API_KEY` → `OPENAI_BASE_URL`，`ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_BASE_URL`，即官方 SDK 读取的变量）；没有这些后缀，或该名字已是选中项、无法代理的项、未支持的行或另一项的变量时，用 `<变量名>_BASE_URL`。签署前可以修改。该名字已是文件中跳过或标为非密钥的行（常见的是已有的 `OPENAI_BASE_URL` 或 `ANTHROPIC_BASE_URL`）时，默认仍用它，因为 SDK 读的是它：改写原位替换这一行，原值只留在备份中。App 在审阅中逐行标出这种替换，回执列为"已替换为本机服务地址"，不列为跳过或非密钥；要保留原行就改用其他变量名。不合法或重复的变量名，以及导入的密钥、无法代理的项和未支持的行，都不能作 base URL 变量：daemon 拒绝改写，App 在签署前就不允许这样提交；
    - 无法代理的项，例如数据库密码：保留原值，并在报告中标注"未迁移：协议不支持代理"，不静默处理。
-5. 全程只做一次 step-up（A2）。
+5. **认证复用（2026-11-18 修订）**：同一导入流程共用一个系统认证 context，首次认证后固定复用 10 秒、不滑动（与策略激活相同），写入密钥、签署策略与改写文件在窗口内不再弹窗；审阅签署草案超过 10 秒时再认证一次。不为减少弹窗而放宽复用窗口；实际弹窗次数在真机验收中记录。
 
 ### 7.4 OAuth 托管
 
