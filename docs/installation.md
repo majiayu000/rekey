@@ -1,6 +1,6 @@
 # Install, upgrade, service, and uninstall
 
-This guide covers **0.5.0-alpha.1** (vault27 / policy8), prepared for release; until its tag is published on [GitHub Releases](https://github.com/majiayu000/rekey/releases) the latest download remains **0.4.0-alpha.1** (vault26 / policy7). 0.5 cannot open a 0.4 vault, rules or backups and does not migrate them: stop the 0.4 service, keep its directory, and create a new vault in a new empty directory. On macOS, install the 0.5 pkg from the release page (or, once the `majiayu000/homebrew-rekey` tap carries it, `brew install --cask majiayu000/rekey/rekey`); later versions can be found from **Settings → 检查更新** in the App, which links to the new version's GitHub Release page; download and install the pkg from there as described below. See the [0.5.0-alpha.1 release notes](releases/v0.5.0-alpha.1.md).
+This guide covers **0.5.0-alpha.2** (vault27 / policy8), a prerelease. Check [GitHub Releases](https://github.com/majiayu000/rekey/releases) for packaged downloads; source-only tags are not installable distributions. 0.5 cannot open a 0.4 vault, rules or backups and does not migrate them: stop the 0.4 service, keep its directory, and create a new vault in a new empty directory. On macOS, install the 0.5 pkg from the release page (or, once the `majiayu000/homebrew-rekey` tap carries it, `brew install --cask majiayu000/rekey/rekey`); later versions can be found from **Settings → 检查更新** in the App, which links to the new version's GitHub Release page; download and install the pkg from there as described below. See the [0.5.0-alpha.2 release notes](releases/v0.5.0-alpha.2.md).
 
 macOS distribution uses a Developer ID signed, notarized pkg with independently provisioned App and daemon, for macOS 14+ on Apple Silicon. Linux uses the released Ubuntu 24.04 x86_64 archive. A public Homebrew tap exists only once `majiayu000/homebrew-rekey` carries the cask. Verify the actual completed release, package bytes, signature and public smoke before installation. Hardware Touch ID, SE, login-item and C16 checks are independent of software tests.
 
@@ -176,7 +176,7 @@ or App; see [Security model and terms](security/README.md#lab-实验功能).
 
 ## Format changes and restore
 
-0.5.0-alpha.1 uses vault/backup format **27** and policy snapshot format **8**.
+0.5.0-alpha.2 uses vault/backup format **27** and policy snapshot format **8**.
 A 0.4 (vault26 / policy7) vault, rule set or backup cannot be opened or restored
 by 0.5. Keep the old binary, state directory and backups together; create a new
 empty 0.5 directory and add credentials/sign Connections again. No migration, backfill or overwrite occurs.
