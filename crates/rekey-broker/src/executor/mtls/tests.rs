@@ -152,10 +152,10 @@ async fn respond(
     });
     Server {
         fixture: TestFixture {
-            endpoint: ScreenedEndpoint {
+            endpoint: Some(ScreenedEndpoint {
                 host: HOST.into(),
                 addr,
-            },
+            }),
             ca: ca.der().clone(),
             pause: stage.map(|stage| {
                 Arc::new(TestPause {
@@ -186,6 +186,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(server: &Server) -> Self {
+        Self::with_origin(server, &format!("https://{HOST}")).await
+    }
+    async fn with_origin(server: &Server, origin: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         rekey_vault::bootstrap::init_vault(
@@ -215,7 +218,7 @@ impl Fixture {
             .await
             .unwrap();
         let mut connection = rekey_policy::presets::generic_preset(
-            HttpsOrigin::parse(&format!("https://{HOST}")).unwrap(),
+            HttpsOrigin::parse(origin).unwrap(),
             "authorization",
             "Bearer ",
         )
@@ -524,5 +527,38 @@ async fn changed_policy_before_tls_never_signs_or_sends_authentication() {
     assert!(response.await.unwrap().is_err());
     assert_eq!(server.fixture.probe.signs.load(Ordering::SeqCst), 0);
     server.task.await.unwrap();
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn private_origin_is_refused_before_tcp_or_client_authentication() {
+    let mut server = server(None, false, false).await;
+    let port = server.fixture.endpoint.take().unwrap().addr.port();
+    // The listener is reachable on loopback; only Layer 1 screening stops it.
+    let f = Fixture::with_origin(&server, &format!("https://127.0.0.1:{port}")).await;
+    let Err(error) = f.request().await.await.unwrap() else {
+        panic!("private mTLS origin was not refused");
+    };
+    assert!(
+        matches!(error, BrokerError::Upstream("private-address")),
+        "{error:?}"
+    );
+    assert_eq!(
+        crate::ipc::agent::local_agent_code(&error),
+        "UPSTREAM_ADDRESS_BLOCKED"
+    );
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert_eq!(server.fixture.probe.signs.load(Ordering::SeqCst), 0);
+    assert!(server.fixture.probe.events.lock().unwrap().is_empty());
+    f.executor
+        .terminals
+        .wait_idle(Duration::from_secs(5))
+        .await
+        .unwrap();
+    // Nothing reached the upstream, so the outcome is a definite block.
+    assert_eq!(f.count("execution.blocked"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    assert_eq!(f.count("execution.finished"), 0);
+    server.task.abort();
     f.stop().await;
 }

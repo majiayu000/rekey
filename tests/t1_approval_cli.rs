@@ -166,7 +166,9 @@ impl Broker {
                     "Action":"s3:GetObject","Resource":"arn:aws:s3:::synthetic/*"}]}),
             },
         };
-        let listed = broker.admin(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+        let listed = broker
+            .admin(admin_msg::CONNECTION_LIST, json!({}), &[])
+            .await;
         let base: ipc::ConnectionListResponse = serde_json::from_slice(&listed.body).unwrap();
         let draft = ipc::PersonalPolicyDraftMeta {
             connections: vec![],

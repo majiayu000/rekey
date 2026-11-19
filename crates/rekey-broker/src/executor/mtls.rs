@@ -191,8 +191,8 @@ pub(super) async fn run(
     let result = async {
         // Screen and connect before loading the identity; TLS never follows redirects.
         #[cfg(test)]
-        let endpoint = match &fixture {
-            Some(fixture) => fixture.endpoint.clone(),
+        let endpoint = match fixture.as_ref().and_then(|f| f.endpoint.clone()) {
+            Some(endpoint) => endpoint,
             None => gate
                 .poll(
                     screen_public_endpoint(action.origin.host(), action.origin.port()),
@@ -500,7 +500,8 @@ struct TestProbe {
 #[cfg(test)]
 #[derive(Clone)]
 pub(super) struct TestFixture {
-    endpoint: ScreenedEndpoint,
+    /// `None` runs the production public-address screening.
+    endpoint: Option<ScreenedEndpoint>,
     ca: rustls::pki_types::CertificateDer<'static>,
     pause: Option<Arc<TestPause>>,
     probe: Arc<TestProbe>,

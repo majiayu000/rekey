@@ -204,7 +204,7 @@ fn connection_and_access_lists_are_public_admin_projections() {
     for (args, opcode, body) in [
         (
             vec!["connection", "list"],
-            admin_msg::PROFILE_LIST,
+            admin_msg::CONNECTION_LIST,
             json!({"connections":[],"ssh_keys":[],"derived_credentials":[],"policy_sha256":null,"expires_at_ms":null}),
         ),
         (

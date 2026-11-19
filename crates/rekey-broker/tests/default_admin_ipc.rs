@@ -385,8 +385,10 @@ mod profile_gating {
         .ok();
         let status = seeded.call(admin_msg::STATUS, json!({}), &[]).await;
         assert_eq!(status.ok()["sessions_active"], 0);
-        // The legacy-named opcode 60 is the default Connection list, not a Profile view.
-        let listed = seeded.call(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+        // Opcode 60 is the default Connection list, not a Profile view.
+        let listed = seeded
+            .call(admin_msg::CONNECTION_LIST, json!({}), &[])
+            .await;
         assert_eq!(listed.ok(), &json!({}));
         let listed: Value = serde_json::from_slice(&listed.body).unwrap();
         assert_eq!(listed["connections"], json!([]));

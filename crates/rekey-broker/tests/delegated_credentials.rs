@@ -246,7 +246,7 @@ impl Fixture {
         connections: Vec<Connection>,
         grants: Vec<DerivedCredentialConnection>,
     ) -> common::WireResponse {
-        let list = self.admin(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+        let list = self.admin(admin_msg::CONNECTION_LIST, json!({}), &[]).await;
         let base: ipc::ConnectionListResponse = serde_json::from_slice(&list.body).unwrap();
         self.admin(
             admin_msg::PERSONAL_POLICY_DRAFT,

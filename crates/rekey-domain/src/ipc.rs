@@ -115,7 +115,7 @@ pub mod admin_msg {
     pub const APPROVAL_LOCAL_REJECT: u16 = 57;
     pub const PROFILE_GET: u16 = 58;
     pub const PROFILE_SESSION_CREATE: u16 = 59;
-    pub const PROFILE_LIST: u16 = 60;
+    pub const CONNECTION_LIST: u16 = 60;
     pub const ROLLBACK_CONFIRM: u16 = 61;
     pub const IMPORT_ENV: u16 = 62;
     pub const SSH_KEY: u16 = 63;

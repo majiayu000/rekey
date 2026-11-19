@@ -216,7 +216,8 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
     }
     let models = llm_models(&request)?;
     let preset = load_preset(state_dir, &request)?;
-    let baseline: ConnectionListResponse = public(state_dir, admin_msg::PROFILE_LIST, json!({}))?;
+    let baseline: ConnectionListResponse =
+        public(state_dir, admin_msg::CONNECTION_LIST, json!({}))?;
     if baseline.connections.iter().any(|item| item.name == name) {
         return Err(CliError::local(
             "USAGE",
