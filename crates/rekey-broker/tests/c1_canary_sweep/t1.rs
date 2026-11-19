@@ -2,6 +2,8 @@
 //! `kubectl-credentials`, `github-token` and the agent socket. The Agent
 //! receives a temporary credential by design; only root material is refused,
 //! including when the issuer echoes it back as the "temporary" value.
+#[cfg(not(feature = "lab"))]
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use data_encoding::BASE64;
@@ -326,16 +328,15 @@ fn github(f: &Fixture, sweep: &mut Sweep, cli: &Cli<'_>, private_key: &[u8]) {
         String::from_utf8_lossy(&issued.stderr)
     );
     assert!(String::from_utf8_lossy(&issued.stdout).contains(INSTALLATION_TOKEN));
-    // The App JWT can mint tokens for the whole installation: it is root
-    // material for every later output.
+    // The App JWT can mint tokens for the whole installation, so it is root
+    // material. It is signed per exchange, so the echo cases reflect the JWT
+    // of the request being answered, and each output is checked again once
+    // that JWT is known.
     let requests = f.fake.take_requests();
     assert_eq!(requests.len(), 1);
-    let jwt = requests[0]
-        .auth_value
-        .strip_prefix(b"Bearer ")
-        .unwrap()
-        .to_vec();
-    sweep.refuse("GitHub App JWT", &jwt);
+    let jwt = requests[0].auth_value.strip_prefix(b"Bearer ").unwrap();
+    sweep.refuse("GitHub App JWT", jwt);
+    sweep.check("cli", "github-token issued", &issued.stdout);
     assert_eq!(
         cli.error(sweep, &["github-token", "github-deny"], false),
         "DENIED"
@@ -343,24 +344,43 @@ fn github(f: &Fixture, sweep: &mut Sweep, cli: &Cli<'_>, private_key: &[u8]) {
     let pending = ["github-token", "github-approve", "--no-wait"];
     assert_eq!(cli.error(sweep, &pending, false), "APPROVAL_REQUIRED");
     assert_eq!(f.upstream_requests(), 0);
-    let jwt = String::from_utf8(jwt).unwrap();
+    type Shape = fn(&str) -> UpstreamResponse;
+    let jwt_echoes: [(&str, Shape); 2] = [
+        ("error echoing the request's App JWT", |jwt| {
+            reply(401, "application/json", json!({"message":jwt}).to_string())
+        }),
+        ("the request's App JWT returned as the token", installation),
+    ];
+    for (name, shape) in jwt_echoes {
+        let seen = Arc::new(Mutex::new(None));
+        let record = seen.clone();
+        f.echo(move |auth| {
+            let jwt = String::from_utf8(auth.strip_prefix(b"Bearer ").unwrap().to_vec()).unwrap();
+            let response = shape(&jwt);
+            *record.lock().unwrap() = Some(jwt);
+            response
+        });
+        let output = cli.run(sweep, &["github-token", "github-allow"], None, false);
+        let jwt = seen
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the exchange reached the upstream");
+        sweep.refuse("GitHub App JWT", jwt.as_bytes());
+        sweep.check("cli", name, &output.stdout);
+        sweep.check("cli", name, &output.stderr);
+        assert!(!output.status.success(), "{name} was issued");
+        assert_eq!(f.upstream_requests(), 1, "{name}");
+    }
     let key = BASE64.encode(private_key);
-    let echoes = [
-        (
-            "error echoing the App JWT",
-            reply(401, "application/json", json!({"message":jwt}).to_string()),
-        ),
-        (
-            "App JWT returned as the installation token",
-            installation(&jwt),
-        ),
+    let key_echoes = [
         ("private key returned as the token", installation(&key)),
         (
             "error echoing the private key",
             reply(422, "application/json", json!({"message":key}).to_string()),
         ),
     ];
-    for (name, response) in echoes {
+    for (name, response) in key_echoes {
         f.fake.push_response(Ok(response));
         let output = cli.run(sweep, &["github-token", "github-allow"], None, false);
         assert!(!output.status.success(), "{name} was issued");
