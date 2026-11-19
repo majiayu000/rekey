@@ -30,6 +30,7 @@ Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需�
 
 - **App 添加入口**：在 macOS 默认目录且已安装 App 时，`rekey add glm` 会打开 App；`--app` 可明确要求该路径。App 复用保险库已有的签名密钥，软件密钥不会变成 Secure Enclave 密钥。
 - **基础模式（仅限测试，不安全）**：无 App、自定义目录或显式 `--stdin-secrets` 时，`rekey add` 在命令行完成：输入保险库密码、粘贴 Key，自动生成并签署规则；`rekey unlock --remember 7d`（最长 30 天）让后台服务重启后自动解锁，`rekey lock --forget-remembered` 取消。
+- **fake-IP 代理下的 DoH 回退**：Clash、Surge 等 TUN 模式下，系统 DNS 会把域名解析成 198.18.0.0/15 的假地址。只有当系统 DNS 的结果全部是这类地址时，daemon 才改用固定 IP 的公共 DoH（先 223.5.5.5，再 1.1.1.1）重新解析，这会把要访问的域名发给这些解析器。为 daemon 设置 `REKEY_DOH_URL`（仅限 https、不带账号或查询参数）后只用该解析器，失败也不再回退到公共解析器。DoH 返回的地址同样必须是公网地址。没有单独的关闭开关；不想用就设置自己信任的解析器或关闭代理的 fake-IP 模式。
 - **中文错误提示**：在终端里直接运行时，出错会显示中文原因和下一步；Agent 和脚本通过管道调用、或设置 `REKEY_OUTPUT=json` 时仍是 JSON。未校验服务签名时，失败 JSON 含 `warnings`，成功命令另在 stderr 输出一个 JSON 警告对象；成功结果的 stdout 不变。`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
 
 > **基础模式仅限测试，不安全。** 软件签名私钥和记住解锁密钥均为同用户可读文件：同用户程序可签出放宽的规则，或结合解封文件离线解密保险库。新 CLI 记住解锁票据不能用于在线审批；旧票据须重新记住或撤销才失去原权限。保护真实密钥请使用由 Secure Enclave 密钥签名的保险库；已安装的信任根不能替换，测试与真实使用应分开。

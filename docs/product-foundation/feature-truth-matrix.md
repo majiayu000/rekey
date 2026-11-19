@@ -132,7 +132,7 @@ actual signed snapshot. No trust replacement, vault-format change, or blanket
 30-day management authorization is included. Implementation/software evidence
 and installed-device prompt counts must be recorded separately.
 
-Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified-experiments.md), using vault27 / policy8. The combined default workspace passed 1,032 tests with 0 failures and 13 explicit ignores. Native App compilation, Connection models (including mTLS and external SSH budget preservation), real Swift/CLI/Broker contracts, connect-on-open and human credential management software checks passed. See [the integration record](../superpowers/plans/2026-10-09-experiment-integration.md) for both configurations, dependency audit and provenance.
+Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified-experiments.md), using vault27 / policy8. On `origin/main` `5f129e0` (2026-11-19) `cargo test --workspace --locked` passed 1,216 tests with 0 failures and 13 explicit ignores; the 1,032 figure in the integration record is the original 2026-10-09 combined-head result. Native App compilation, Connection models (including mTLS and external SSH budget preservation), real Swift/CLI/Broker contracts, connect-on-open and human credential management software checks passed. See [the integration record](../superpowers/plans/2026-10-09-experiment-integration.md) for both configurations, dependency audit and provenance.
 
 | Added capability | Current software evidence | Remaining boundary |
 |---|---|---|
@@ -142,7 +142,7 @@ Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified
 | Collection integrity and allocation changes | Twelve action integrity tests, canonical JSON/SSE equivalence and split/reflection regressions | No combined-head performance improvement claimed |
 | Lab child exit watcher | macOS/Linux PR gate runs the two owned-child/control-channel regressions | Linux result requires that CI run |
 
-Published 0.4 and older installed App evidence do not establish unified-head hardware acceptance. Agent PKI admission remains pending. The single-host Docker recovery controller is integrated; its [disposable live drill](../superpowers/specs/2026-10-09-docker-ha-controller.md#software-acceptance-on-the-current-integration-base) was rerun on 2026-11-17 against the design-completion head `5c249ed8` and passed (18 controller tests, five live checks, no leftover resources). It establishes one trusted-host software behavior only, not deployment or multi-host HA. No candidate installation or public release was performed.
+Published 0.4 and older installed App evidence do not establish unified-head hardware acceptance. Agent PKI admission remains pending. The single-host Docker recovery controller is integrated; its [disposable live drill](../superpowers/specs/2026-10-09-docker-ha-controller.md#software-acceptance-on-the-current-integration-base) was rerun on 2026-11-17 against the design-completion head `5c249ed8` and passed (18 controller tests, five live checks, no leftover resources). It establishes one trusted-host software behavior only, not deployment. Multi-host HA is not implemented. No candidate installation or public release was performed.
 
 ## Basic-mode one-step add (0.5 development, 2026-10-21)
 
