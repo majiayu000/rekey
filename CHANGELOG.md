@@ -47,6 +47,15 @@ everywhere names `approval.challenge_id` as the ID to await and retry with,
 and tests check that shipped Agent guidance only names real MCP tools and
 `rekey` subcommands.
 
+OAuth refusals (2026-11-19): after a provider refuses a refresh
+(`invalid_grant`, revoked token), later calls on the same grant return
+`NEEDS_REAUTH` without contacting the provider, so the dead refresh token and
+client secret are no longer resent on every call. A browser login or
+`CREDENTIAL_ROTATE` clears this; lock/unlock does not. The state is in daemon
+memory only (a restart asks the provider once more), and each refused call is
+still audited as `oauth-needs-reauth`, so the App's re-authorization list is
+unchanged. No vault, policy or audit format change.
+
 Dependency advisories (2026-11-16): update `rusqlite` 0.34 to 0.41, which moves
 the bundled SQLite from 3.49.1 to 3.54.1 (RUSTSEC-2026-0459), and `quinn-udp`
 to 0.5.16 (RUSTSEC-2026-0538). Storage code is unchanged: the `fallible_uint`

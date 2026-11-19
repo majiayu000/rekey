@@ -284,7 +284,7 @@ rekey add google-drive
 rekey oauth login CONNECTION
 ```
 
-支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。提供方撤销授权或拒绝刷新（invalid_grant）时，调用返回 `NEEDS_REAUTH`，App 活动页显示“需重新授权”，可直接打开浏览器重新授权；网络或服务端错误保留授权，不显示此提示。该提示取自当日（UTC）的审计记录。
+支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。提供方撤销授权或拒绝刷新（invalid_grant）时，调用返回 `NEEDS_REAUTH`，App 活动页显示“需重新授权”，可直接打开浏览器重新授权。此后同一授权的调用直接返回 `NEEDS_REAUTH`，不再联系提供方，直到重新授权或轮换该凭据；锁定再解锁不会重试，daemon 重启后的第一次调用会再试一次。网络或服务端错误保留授权，不显示此提示。该提示取自当日（UTC）的审计记录。
 
 临时凭据入口必须逐个签署开启，**Agent 进程会拿到短期有效的凭据**（安全模型里称为 T1，见[安全模型与术语](security/README.md#调用结果与临时凭据)）：
 
