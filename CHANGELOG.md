@@ -1,8 +1,16 @@
 # Changelog
 
 All notable public changes are recorded here. The current source candidate is
-0.5.0-alpha.1 (vault27 / policy8). Actual published downloads are determined by
+0.5.0-alpha.2 (vault27 / policy8). Actual published downloads are determined by
 GitHub Releases. Historical 0.3/v3/v2 entries below remain release history.
+
+## 0.5.0-alpha.2
+
+Distribution retry for the 0.5 prerelease. The `v0.5.0-alpha.1` tag is preserved;
+it has no packaged binaries. Release jobs now use GitHub's macOS 15 ARM64
+runner; the minimum supported macOS version remains 14 on Apple Silicon.
+No application behavior, vault format, or policy format changed since
+`v0.5.0-alpha.1`. See the [release notes](docs/releases/v0.5.0-alpha.2.md).
 
 ## 0.5.0-alpha.1
 
