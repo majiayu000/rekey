@@ -1,6 +1,8 @@
 //! Real UDS/Authority/personal-policy boundary with synthetic provider replies.
 //! Software signing and a synthetic Presence envelope do not attest hardware UI.
 mod common;
+#[path = "delegated_credentials/oauth_reauth.rs"]
+mod oauth_reauth;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
