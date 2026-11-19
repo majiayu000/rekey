@@ -4,7 +4,7 @@ All notable public changes are recorded here. The current source candidate is
 0.5.0-alpha.1 (vault27 / policy8). Actual published downloads are determined by
 GitHub Releases. Historical 0.3/v3/v2 entries below remain release history.
 
-## 0.5.0-alpha.1 (prepared, not yet published)
+## 0.5.0-alpha.1
 
 **Requires a new vault.** One-step `rekey add` with basic-mode
 software signing, `rekey unlock --remember 7d`, background request alerts,
