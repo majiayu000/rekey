@@ -21,7 +21,7 @@ if [[ "$(uname -s)" == Linux ]]; then
     --tmpfs /tmp --chdir /tmp -- /bin/true
 else
   command -v rg >/dev/null || brew install ripgrep
-  # macos-14 ships LibreSSL as /usr/bin/openssl; pkeyutl -rawin needs OpenSSL 3.
+  # pkeyutl -rawin needs OpenSSL 3; select the Homebrew binary explicitly.
   brew install openssl@3
   openssl3_bin="$(brew --prefix openssl@3)/bin"
   export PATH="$openssl3_bin:$PATH"
