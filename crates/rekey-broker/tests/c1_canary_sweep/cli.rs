@@ -31,16 +31,33 @@ fn rekey_bin() -> PathBuf {
     bin
 }
 
-struct Cli<'a> {
+pub(super) struct Cli<'a> {
     f: &'a Fixture,
     bin: PathBuf,
     home: PathBuf,
 }
 
-impl Cli<'_> {
+impl<'a> Cli<'a> {
+    /// The workspace CLI with its own empty home directory.
+    pub(super) fn new(f: &'a Fixture, home: &str) -> Self {
+        let home = f.dir.path().join(home);
+        std::fs::create_dir(&home).unwrap();
+        Self {
+            f,
+            bin: rekey_bin(),
+            home,
+        }
+    }
+
     /// Runs one command and checks both of its streams. `human` selects the
     /// localized error rendering instead of the JSON envelope.
-    fn run(&self, sweep: &mut Sweep, args: &[&str], stdin: Option<&[u8]>, human: bool) -> Output {
+    pub(super) fn run(
+        &self,
+        sweep: &mut Sweep,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+        human: bool,
+    ) -> Output {
         let mut command = Command::new(&self.bin);
         command
             .arg("--state-dir")
@@ -77,7 +94,7 @@ impl Cli<'_> {
         output
     }
 
-    fn ok(&self, sweep: &mut Sweep, args: &[&str]) -> Value {
+    pub(super) fn ok(&self, sweep: &mut Sweep, args: &[&str]) -> Value {
         let output = self.run(sweep, args, None, false);
         assert!(
             output.status.success(),
@@ -89,7 +106,7 @@ impl Cli<'_> {
     }
 
     /// Returns the JSON error code; human mode only checks the exit status.
-    fn error(&self, sweep: &mut Sweep, args: &[&str], human: bool) -> String {
+    pub(super) fn error(&self, sweep: &mut Sweep, args: &[&str], human: bool) -> String {
         let output = self.run(sweep, args, None, human);
         assert!(!output.status.success(), "`rekey {}`", args.join(" "));
         if human {
@@ -107,15 +124,9 @@ impl Cli<'_> {
 }
 
 pub(super) fn sweep(f: &Fixture, sweep: &mut Sweep) {
-    let home = f.dir.path().join("cli-home");
     let project = f.dir.path().join("cli-project");
-    std::fs::create_dir(&home).unwrap();
     std::fs::create_dir(&project).unwrap();
-    let cli = Cli {
-        f,
-        bin: rekey_bin(),
-        home,
-    };
+    let cli = Cli::new(f, "cli-home");
     // Discovery.
     let listed = cli.ok(sweep, &["list", "--json"]);
     assert_eq!(listed["connections"][0]["connection"], "fixture");
