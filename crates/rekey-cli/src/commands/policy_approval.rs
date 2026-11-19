@@ -213,7 +213,7 @@ fn request_personal_draft(state_dir: &Path, request: &[u8]) -> Result<(), CliErr
 
 #[cfg(feature = "lab")]
 pub fn profile_list(state_dir: &Path) -> Result<(), CliError> {
-    let (_, body) = admin(state_dir)?.call(admin_msg::PROFILE_LIST, b"{}", &[])?;
+    let (_, body) = admin(state_dir)?.call(admin_msg::CONNECTION_LIST, b"{}", &[])?;
     let profiles: ipc::ProfileListResponse = serde_json::from_slice(&body)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid Profile list"))?;
     let mut output = serde_json::to_vec(&profiles)

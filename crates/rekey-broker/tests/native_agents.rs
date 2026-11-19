@@ -245,7 +245,7 @@ impl Fixture {
             }
             connections.push(connection);
         }
-        let listed = self.admin(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+        let listed = self.admin(admin_msg::CONNECTION_LIST, json!({}), &[]).await;
         listed.ok();
         let editing: ipc::ConnectionListResponse = serde_json::from_slice(&listed.body).unwrap();
         let draft = self

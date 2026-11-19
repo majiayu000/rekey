@@ -1024,7 +1024,7 @@ async fn dispatch_operation(
                 Zeroizing::new(Vec::new()),
             ))
         }
-        admin_msg::PROFILE_LIST => {
+        admin_msg::CONNECTION_LIST => {
             empty_request(frame)?;
             let response = ctx.profile_list_until(request_deadline).await?;
             Ok((b"{}".to_vec(), Zeroizing::new(json(&response)?)))

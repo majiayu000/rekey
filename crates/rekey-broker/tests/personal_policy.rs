@@ -154,7 +154,7 @@ impl Fixture {
             )
     }
     async fn draft(&self, connections: Vec<Connection>) -> common::WireResponse {
-        let listed = self.call(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+        let listed = self.call(admin_msg::CONNECTION_LIST, json!({}), &[]).await;
         let prior: ipc::ConnectionListResponse = serde_json::from_slice(&listed.body).unwrap();
         self.call(
             admin_msg::PERSONAL_POLICY_DRAFT,
@@ -256,7 +256,7 @@ async fn unsorted_connections_review_matches_signed_snapshot() {
     );
     assert_eq!(draft.metadata["connections"], json!([first, last]));
     f.activate(&draft, &bundle).await.ok();
-    let listed = f.call(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+    let listed = f.call(admin_msg::CONNECTION_LIST, json!({}), &[]).await;
     let active: ipc::ConnectionListResponse = serde_json::from_slice(&listed.body).unwrap();
     assert_eq!(
         serde_json::to_value(active.connections).unwrap(),

@@ -61,7 +61,7 @@ fn public<T: DeserializeOwned + Serialize>(
     super::write_json(&response)
 }
 pub fn list(state_dir: &Path) -> Result<(), CliError> {
-    public::<ConnectionListResponse>(state_dir, admin_msg::PROFILE_LIST, json!({}), None)
+    public::<ConnectionListResponse>(state_dir, admin_msg::CONNECTION_LIST, json!({}), None)
 }
 pub fn preset(
     state_dir: &Path,
