@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::{Fixture, Sweep, common, reflections};
 
-struct Mcp {
+pub(super) struct Mcp {
     child: Child,
     input: ChildStdin,
     lines: Receiver<String>,
@@ -18,6 +18,24 @@ struct Mcp {
 }
 
 impl Mcp {
+    /// Starts `rekey-mcp` and completes the initialize handshake.
+    pub(super) fn initialized(f: &Fixture, sweep: &mut Sweep) -> Self {
+        let mut mcp = Self::start(f);
+        let init = mcp.request(
+            sweep,
+            "initialize",
+            json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"c1-sweep","version":"1"}}),
+        );
+        assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+        writeln!(
+            mcp.input,
+            "{}",
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+        )
+        .unwrap();
+        mcp
+    }
+
     fn start(f: &Fixture) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_rekey-mcp"))
             .arg("--agent-socket")
@@ -55,7 +73,7 @@ impl Mcp {
     }
 
     /// Sends one raw line and returns the checked, parsed answer.
-    fn line(&mut self, sweep: &mut Sweep, what: &str, line: &str) -> Value {
+    pub(super) fn line(&mut self, sweep: &mut Sweep, what: &str, line: &str) -> Value {
         writeln!(self.input, "{line}").unwrap();
         let answer = self
             .lines
@@ -65,13 +83,13 @@ impl Mcp {
         serde_json::from_str(&answer).unwrap()
     }
 
-    fn request(&mut self, sweep: &mut Sweep, method: &str, params: Value) -> Value {
+    pub(super) fn request(&mut self, sweep: &mut Sweep, method: &str, params: Value) -> Value {
         self.next_id += 1;
         let request = json!({"jsonrpc":"2.0","id":self.next_id,"method":method,"params":params});
         self.line(sweep, method, &request.to_string())
     }
 
-    fn tool(&mut self, sweep: &mut Sweep, name: &str, arguments: Value) -> Value {
+    pub(super) fn tool(&mut self, sweep: &mut Sweep, name: &str, arguments: Value) -> Value {
         let answer = self.request(
             sweep,
             "tools/call",
@@ -80,19 +98,19 @@ impl Mcp {
         answer["result"].clone()
     }
 
-    fn ok(&mut self, sweep: &mut Sweep, name: &str, arguments: Value) -> Value {
+    pub(super) fn ok(&mut self, sweep: &mut Sweep, name: &str, arguments: Value) -> Value {
         let result = self.tool(sweep, name, arguments);
         assert_eq!(result["isError"], false, "{name}: {result}");
         result["structuredContent"].clone()
     }
 
-    fn error(&mut self, sweep: &mut Sweep, name: &str, arguments: Value) -> Value {
+    pub(super) fn error(&mut self, sweep: &mut Sweep, name: &str, arguments: Value) -> Value {
         let result = self.tool(sweep, name, arguments);
         assert_eq!(result["isError"], true, "{name}: {result}");
         result["structuredContent"].clone()
     }
 
-    fn finish(mut self, sweep: &mut Sweep) {
+    pub(super) fn finish(mut self, sweep: &mut Sweep) {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let stderr = self.stderr.join().unwrap();
@@ -109,19 +127,7 @@ fn get() -> Value {
 }
 
 pub(super) fn sweep(f: &Fixture, sweep: &mut Sweep) {
-    let mut mcp = Mcp::start(f);
-    let init = mcp.request(
-        sweep,
-        "initialize",
-        json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"c1-sweep","version":"1"}}),
-    );
-    assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
-    writeln!(
-        mcp.input,
-        "{}",
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
-    )
-    .unwrap();
+    let mut mcp = Mcp::initialized(f, sweep);
     // Discovery, generic and named.
     let tools = mcp.request(sweep, "tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"]

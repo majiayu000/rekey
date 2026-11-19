@@ -12,12 +12,18 @@ mod cli;
 mod common;
 #[path = "c1_canary_sweep/mcp.rs"]
 mod mcp;
+#[path = "c1_canary_sweep/paths.rs"]
+mod paths;
 #[path = "c1_canary_sweep/service.rs"]
 mod service;
+#[path = "ssh_support/mod.rs"]
+mod ssh_support;
+#[path = "c1_canary_sweep/stream.rs"]
+mod stream;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_lc_rs::rand::SystemRandom;
@@ -25,7 +31,10 @@ use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, Ed25519
 use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD, HEXLOWER, HEXUPPER};
 use rekey_broker::runtime::{BrokerConfig, serve};
 use rekey_broker::testing::FakeUpstreamTransport;
-use rekey_broker::upstream::UpstreamResponse;
+use rekey_broker::upstream::{
+    UpstreamFuture, UpstreamRequest, UpstreamResponse, UpstreamStreamFuture,
+    UpstreamStreamResponse, UpstreamTransport,
+};
 use rekey_domain::authorization::PolicyMode;
 use rekey_domain::ids::{PolicyRuleId, PolicySignerId};
 use rekey_domain::ipc::{Channel, admin_msg, agent_msg};
@@ -37,18 +46,53 @@ use tokio::net::UnixStream;
 /// percent and JSON form differ from the raw bytes.
 const CANARY: &[u8] = br#"c1-canary/7f3a+"quoted"\path tail=09b2e6"#;
 const SSH_KEY_NAME: &str = "c1-ssh";
+/// Seed of the imported synthetic SSH key, so every sweep can refuse it.
+const SSH_SEED: [u8; 32] = [41; 32];
 const SIGN_PREFIX: &[u8] = b"RKPOLICY\0\x01";
 
 pub(crate) struct Fixture {
     dir: tempfile::TempDir,
     state: PathBuf,
     fake: Arc<FakeUpstreamTransport>,
+    streams: Arc<Mutex<VecDeque<UpstreamStreamResponse>>>,
     task: tokio::task::JoinHandle<Result<(), rekey_broker::error::BrokerError>>,
     service_url: String,
 }
 
+/// Buffered calls use the recording fake; streaming LLM calls take queued
+/// stream responses in order (an unexpected stream call panics the daemon task).
+struct SweepTransport {
+    fake: Arc<FakeUpstreamTransport>,
+    streams: Arc<Mutex<VecDeque<UpstreamStreamResponse>>>,
+}
+
+impl UpstreamTransport for SweepTransport {
+    fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
+        self.fake.send(request)
+    }
+
+    fn open_stream(&self, _request: UpstreamRequest) -> UpstreamStreamFuture<'_> {
+        let next = self.streams.lock().unwrap().pop_front();
+        Box::pin(async move { Ok(next.expect("a queued stream response")) })
+    }
+}
+
+/// Policy additions for the sensitive-path sweep: more Connections and T1 grants.
+#[derive(Default)]
+pub(crate) struct Extra {
+    connections: Vec<Value>,
+    derived_credentials: Vec<Value>,
+}
+
 impl Fixture {
     async fn start() -> Self {
+        let mut f = Self::boot().await;
+        f.activate(Extra::default()).await;
+        f
+    }
+
+    /// Starts and unlocks the daemon; nothing is signed yet.
+    async fn boot() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         rekey_vault::bootstrap::init_vault(
@@ -60,15 +104,20 @@ impl Fixture {
         .unwrap();
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
         let fake = Arc::new(FakeUpstreamTransport::new());
+        let streams = Arc::new(Mutex::new(VecDeque::new()));
         let mut config = BrokerConfig::new(state.clone());
-        config.transport = Some(fake.clone());
+        config.transport = Some(Arc::new(SweepTransport {
+            fake: fake.clone(),
+            streams: streams.clone(),
+        }));
         config.service_port = Some(0);
         config.unlock_backoff_base = Duration::from_millis(20);
         let task = tokio::spawn(serve(config));
-        let mut f = Self {
+        let f = Self {
             dir,
             state,
             fake,
+            streams,
             task,
             service_url: String::new(),
         };
@@ -76,12 +125,19 @@ impl Fixture {
         f.admin(admin_msg::UNLOCK_PASSWORD, json!({}), common::PASSWORD)
             .await
             .ok();
-        f.activate().await;
-        let listed = f.agent(agent_msg::LIST_CAPABILITIES, json!({})).await;
-        listed.ok();
-        let listed: Value = serde_json::from_slice(&listed.body).unwrap();
-        f.service_url = listed["service_url"].as_str().unwrap().to_owned();
         f
+    }
+
+    /// Adds one credential and returns its ID.
+    async fn add_credential(&self, label: &str, kind: &str, secret: &[u8]) -> Value {
+        let credential = self
+            .admin(
+                admin_msg::CREDENTIAL_ADD,
+                json!({"label":label,"kind":kind}),
+                &common::proof_and_secret_body(common::PASSWORD, secret),
+            )
+            .await;
+        credential.ok()["id"].clone()
     }
 
     async fn wait_ready(&self) {
@@ -99,8 +155,10 @@ impl Fixture {
         }
     }
 
-    /// Signs and activates one Connection that holds the canary plus one SSH key.
-    async fn activate(&self) {
+    /// Signs and activates one Connection that holds the canary plus one SSH
+    /// key, and any `extra` rules; then records the local service URL.
+    /// Returns the generated SSH identity.
+    async fn activate(&mut self, extra: Extra) -> Value {
         let proof = common::proof_body(common::PASSWORD);
         let generated =
             EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &SystemRandom::new())
@@ -112,21 +170,20 @@ impl Fixture {
             "algorithm": "secure-enclave-p256", "public_key": HEXLOWER.encode(signer.public_key().as_ref()),
         }), &proof).await.ok();
         let credential = self
-            .admin(
-                admin_msg::CREDENTIAL_ADD,
-                json!({"label":"c1-canary","kind":"opaque-token"}),
-                &common::proof_and_secret_body(common::PASSWORD, CANARY),
-            )
+            .add_credential("c1-canary", "opaque-token", CANARY)
             .await;
-        let credential_id = serde_json::from_value(credential.ok()["id"].clone()).unwrap();
+        let credential_id = serde_json::from_value(credential).unwrap();
         let connection = rekey_policy::presets::builtin_preset("github-pat")
             .unwrap()
             .connection("fixture".into(), credential_id);
+        let mut connections = vec![serde_json::to_value(connection).unwrap()];
+        connections.extend(extra.connections);
+        let derived = (!extra.derived_credentials.is_empty()).then_some(extra.derived_credentials);
         let generated = self
             .admin(
                 admin_msg::SSH_KEY,
-                json!({"action":"generate","label":SSH_KEY_NAME,"mode":"ed25519_software"}),
-                &proof,
+                json!({"action":"import","label":SSH_KEY_NAME}),
+                &common::proof_and_secret_body(common::PASSWORD, &openssh_private()),
             )
             .await;
         generated.ok();
@@ -148,7 +205,7 @@ impl Fixture {
         let draft = self
             .admin(
                 admin_msg::PERSONAL_POLICY_DRAFT,
-                json!({"connections":[connection],"ssh_keys":[ssh_key],"derived_credentials":null,
+                json!({"connections":connections,"ssh_keys":[ssh_key],"derived_credentials":derived,
                     "expected_policy_sha256":null,"expires_at_ms":expires}),
                 &[],
             )
@@ -166,6 +223,11 @@ impl Fixture {
         )
         .await
         .ok();
+        let listed = self.agent(agent_msg::LIST_CAPABILITIES, json!({})).await;
+        listed.ok();
+        let listed: Value = serde_json::from_slice(&listed.body).unwrap();
+        self.service_url = listed["service_url"].as_str().unwrap().to_owned();
+        identity
     }
 
     fn socket(&self, name: &str) -> PathBuf {
@@ -218,6 +280,29 @@ impl Fixture {
     }
 }
 
+/// Unencrypted OpenSSH private key for `SSH_SEED`, as `ssh-keygen` writes it.
+fn openssh_private() -> Vec<u8> {
+    let key = Ed25519KeyPair::from_seed_unchecked(&SSH_SEED).unwrap();
+    let public = key.public_key().as_ref();
+    let blob = ssh_blob(b"ssh-ed25519", &[public]);
+    let mut private = [7_u32.to_be_bytes(), 7_u32.to_be_bytes()].concat();
+    private.extend(ssh_blob(
+        b"ssh-ed25519",
+        &[public, &[&SSH_SEED[..], public].concat(), b"c1-sweep"],
+    ));
+    let padding = 8 - private.len() % 8;
+    private.extend((1..=padding).map(|i| i as u8));
+    let mut binary = b"openssh-key-v1\0".to_vec();
+    binary.extend(ssh_blob(b"none", &[b"none", b""]));
+    binary.extend_from_slice(&1_u32.to_be_bytes());
+    binary.extend(ssh_blob(&blob, &[&private]));
+    format!(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----",
+        BASE64.encode(&binary)
+    )
+    .into_bytes()
+}
+
 /// SSH wire encoding: a sequence of length-prefixed strings.
 fn ssh_blob(kind: &[u8], parts: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -230,7 +315,6 @@ fn ssh_blob(kind: &[u8], parts: &[&[u8]]) -> Vec<u8> {
 
 /// Every refused representation of `secret`, labelled for failure messages.
 fn forms(label: &str, secret: &[u8]) -> Vec<(String, Vec<u8>)> {
-    let text = std::str::from_utf8(secret).unwrap();
     let mut forms = vec![(format!("{label} raw"), secret.to_vec())];
     for (name, encoding) in [
         ("base64", &BASE64),
@@ -270,6 +354,10 @@ fn forms(label: &str, secret: &[u8]) -> Vec<(String, Vec<u8>)> {
             percent_encode(secret, every, upper),
         ));
     }
+    // Binary secrets (an SSH seed) have no JSON string forms.
+    let Ok(text) = std::str::from_utf8(secret) else {
+        return forms;
+    };
     let quoted = serde_json::to_string(text).unwrap();
     let escaped = &quoted[1..quoted.len() - 1];
     forms.push((format!("{label} JSON-escaped"), escaped.as_bytes().to_vec()));
@@ -392,12 +480,22 @@ pub(crate) struct Sweep {
 impl Sweep {
     fn new() -> Self {
         let mut forms = forms("canary", CANARY);
-        // The vault password never travels on a caller surface either.
+        // The vault password and the SSH private key never travel on a caller
+        // surface either.
         forms.extend(self::forms("vault password", common::PASSWORD));
+        forms.extend(self::forms("SSH seed", &SSH_SEED));
+        let key = Ed25519KeyPair::from_seed_unchecked(&SSH_SEED).unwrap();
+        let raw = [&SSH_SEED[..], key.public_key().as_ref()].concat();
+        forms.extend(self::forms("SSH private key", &raw));
         Self {
             forms,
             outputs: BTreeMap::new(),
         }
+    }
+
+    /// Also refuses every form of `secret`.
+    pub(crate) fn refuse(&mut self, label: &str, secret: &[u8]) {
+        self.forms.extend(forms(label, secret));
     }
 
     /// Names the first refused form in `output` or in one of its decoded views.
@@ -552,4 +650,9 @@ async fn c1_no_caller_surface_returns_the_canary_in_any_encoding() {
         assert!(seen >= minimum, "{surface}: {seen} outputs checked");
     }
     f.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c1_t1_oauth_llm_stream_and_ssh_approval_never_return_root_material() {
+    paths::sweep().await;
 }
