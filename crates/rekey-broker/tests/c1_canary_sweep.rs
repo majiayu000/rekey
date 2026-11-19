@@ -20,6 +20,8 @@ mod service;
 mod ssh_support;
 #[path = "c1_canary_sweep/stream.rs"]
 mod stream;
+#[path = "c1_canary_sweep/t1.rs"]
+mod t1;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;

@@ -1,19 +1,15 @@
-//! C1 / I1 for the paths the base sweep leaves out: LLM streaming (see
-//! `stream.rs`), T1
-//! derived credentials, approval-gated SSH signing and OAuth Connections.
-//! Each path holds its own synthetic root material, and every caller surface
-//! that reaches the path must refuse every form of all of it. T1 hands the
-//! Agent a temporary credential by design; only its root material is refused.
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+//! C1 / I1 for the paths the base sweep leaves out: LLM streaming
+//! (`stream.rs`), T1 derived credentials (`t1.rs`), approval-gated SSH
+//! signing and OAuth Connections. Each path holds its own synthetic root
+//! material, and every caller surface that reaches the path must refuse
+//! every form of all of it.
+use std::time::Duration;
 
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use data_encoding::{BASE64, BASE64URL_NOPAD};
 use rekey_broker::upstream::UpstreamResponse;
-use rekey_domain::connection::{
-    ConnectionLlmLimits, DerivedCredentialConnection, DerivedCredentialTarget, OAuthBinding,
-    OAuthProvider, RuleEffect,
-};
-use rekey_domain::ipc::{ProofKind, admin_msg, agent_msg, encode_proof_body};
+use rekey_domain::connection::{ConnectionLlmLimits, OAuthBinding, OAuthProvider};
+use rekey_domain::ipc::{ProofKind, admin_msg, encode_proof_body};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
 
@@ -27,8 +23,6 @@ use super::{Extra, Fixture, Sweep, common, percent_encode, ssh_blob, ssh_support
 const OAUTH_CLIENT_SECRET: &str = "c1-oauth-client/8c+Qz=secret";
 const OAUTH_REFRESH: &str = "c1-oauth-refresh/3b+Wk=token";
 const OAUTH_ACCESS: &str = "c1-oauth-access/6f+Pj=bearer";
-const AWS_ID: &str = "AKIAC1SWEEPROOT00001";
-const AWS_SECRET: &str = "c1/aws+root-secret=4b7e9d2a";
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_PATH: &str = "/drive/v3/files";
 /// Host key registered by the base fixture for `synthetic.example`.
@@ -45,9 +39,7 @@ pub(super) async fn sweep() {
     let oauth = f
         .add_credential("c1-oauth", "oauth-grant", &oauth_payload())
         .await;
-    let aws = f
-        .add_credential("c1-aws", "aws-static", &aws_payload())
-        .await;
+    let t1 = super::t1::setup(&f).await;
     let identity = f
         .activate(Extra {
             connections: vec![
@@ -55,14 +47,7 @@ pub(super) async fn sweep() {
                 llm_connection("openai", "llm-chat", chat_key),
                 drive_connection(oauth),
             ],
-            derived_credentials: [
-                ("aws-allow", RuleEffect::Allow),
-                ("aws-approve", RuleEffect::Approve),
-                ("aws-deny", RuleEffect::Deny),
-            ]
-            .into_iter()
-            .map(|(name, effect)| aws_grant(&aws, name, effect))
-            .collect(),
+            derived_credentials: t1.grants.clone(),
         })
         .await;
     let mut sweep = Sweep::new();
@@ -71,10 +56,11 @@ pub(super) async fn sweep() {
         ("OAuth client secret", OAUTH_CLIENT_SECRET),
         ("OAuth refresh token", OAUTH_REFRESH),
         ("OAuth access token", OAUTH_ACCESS),
-        ("AWS root access key ID", AWS_ID),
-        ("AWS root secret", AWS_SECRET),
     ] {
         sweep.refuse(label, secret.as_bytes());
+    }
+    for (label, secret) in &t1.roots {
+        sweep.refuse(label, secret);
     }
     // The presence ticket is root material too.
     let remembered = f
@@ -92,7 +78,7 @@ pub(super) async fn sweep() {
     let listed = cli.ok(&mut sweep, &["list", "--json"]);
     assert_eq!(listed["connections"].as_array().unwrap().len(), 4);
     llm_stream_sweep(&f, &mut sweep).await;
-    t1_sweep(&f, &mut sweep, &cli, &presence).await;
+    super::t1::sweep(&f, &mut sweep, &cli, &presence, &t1).await;
     ssh_approval_sweep(&f, &mut sweep, &identity, &presence).await;
     let mut mcp = Mcp::initialized(&f, &mut sweep);
     oauth_sweep(&f, &mut sweep, &cli, &mut mcp).await;
@@ -100,7 +86,7 @@ pub(super) async fn sweep() {
     // Every path really ran: a skipped step must not pass as clean.
     for (surface, minimum) in [
         ("stream", 2 * 2 * 8),
-        ("cli", 2 * 12),
+        ("cli", 2 * 18),
         ("agent", 2),
         ("admin", 4),
         ("ssh", 4),
@@ -147,30 +133,7 @@ fn drive_connection(credential: Value) -> Value {
     serde_json::to_value(connection).unwrap()
 }
 
-fn aws_payload() -> Vec<u8> {
-    serde_json::to_vec(
-        &json!({"credential_type":"aws-static-v1","access_key_id":AWS_ID,
-        "secret_access_key":AWS_SECRET}),
-    )
-    .unwrap()
-}
-
-fn aws_grant(credential: &Value, name: &str, effect: RuleEffect) -> Value {
-    serde_json::to_value(DerivedCredentialConnection {
-        name: name.into(),
-        credential_id: serde_json::from_value(credential.clone()).unwrap(),
-        effect,
-        max_ttl_seconds: 900,
-        target: DerivedCredentialTarget::AwsAssumeRole {
-            role_arn: "arn:aws:iam::123456789012:role/synthetic".into(),
-            region: "us-east-1".into(),
-            session_policy: json!({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::synthetic/*"}]}),
-        },
-    })
-    .unwrap()
-}
-
-fn reply(status: u16, content_type: &str, body: impl Into<Vec<u8>>) -> UpstreamResponse {
+pub(super) fn reply(status: u16, content_type: &str, body: impl Into<Vec<u8>>) -> UpstreamResponse {
     UpstreamResponse {
         status,
         headers: vec![("content-type".to_owned(), content_type.to_owned())].into(),
@@ -178,121 +141,14 @@ fn reply(status: u16, content_type: &str, body: impl Into<Vec<u8>>) -> UpstreamR
     }
 }
 
-// ---- T1 derived credentials (CLI credential_process and the agent socket) ----
-
-fn sts_success(access_key: &str, secret: &str, session: &str) -> UpstreamResponse {
-    let expires = time::OffsetDateTime::from_unix_timestamp(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-            + 600,
-    )
-    .unwrap()
-    .format(&time::format_description::well_known::Rfc3339)
-    .unwrap();
-    reply(
-        200,
-        "text/xml",
-        format!(
-            "<AssumeRoleResponse><AssumeRoleResult><Credentials><AccessKeyId>{access_key}</AccessKeyId>\
-             <SecretAccessKey>{secret}</SecretAccessKey><SessionToken>{session}</SessionToken>\
-             <Expiration>{expires}</Expiration></Credentials></AssumeRoleResult></AssumeRoleResponse>"
-        ),
-    )
-}
-
-fn temporary() -> UpstreamResponse {
-    sts_success(
-        "ASIAC1SWEEPTEMP00001",
-        "c1-temporary-secret",
-        "c1-temporary-session",
-    )
-}
-
-async fn t1_sweep(f: &Fixture, sweep: &mut Sweep, cli: &Cli<'_>, presence: &[u8]) {
-    // Issuance returns only the temporary credential.
-    f.fake.push_response(Ok(temporary()));
-    let issued = cli.ok(sweep, &["aws-credentials", "aws-allow"]);
-    assert_eq!(issued["Version"], 1);
-    assert_eq!(issued["AccessKeyId"], "ASIAC1SWEEPTEMP00001");
-    assert_eq!(f.upstream_requests(), 1);
-    // Refusals reach no STS.
-    assert_eq!(
-        cli.error(sweep, &["aws-credentials", "aws-deny"], false),
-        "DENIED"
-    );
-    let pending = ["aws-credentials", "aws-approve", "--no-wait"];
-    assert_eq!(cli.error(sweep, &pending, false), "APPROVAL_REQUIRED");
-    cli.error(sweep, &["aws-credentials", "aws-deny"], true);
-    assert_eq!(f.upstream_requests(), 0);
-    // An STS answer that echoes root material is never handed to the Agent.
-    let root = AWS_SECRET;
-    let echoes = [
-        (
-            "STS error echoing the root key",
-            reply(
-                403,
-                "text/xml",
-                format!(
-                    "<ErrorResponse><Error><Message>bad signature for {AWS_ID} {root}</Message></Error></ErrorResponse>"
-                ),
-            ),
-        ),
-        (
-            "root secret returned as the temporary secret",
-            sts_success("ASIAC1SWEEPTEMP00002", root, "c1-temporary-session"),
-        ),
-        (
-            "base64 root secret in the session token",
-            sts_success(
-                "ASIAC1SWEEPTEMP00003",
-                "c1-temporary-secret",
-                &BASE64.encode(root.as_bytes()),
-            ),
-        ),
-        (
-            "root key ID returned as the temporary key ID",
-            sts_success(AWS_ID, "c1-temporary-secret", "c1-temporary-session"),
-        ),
-    ];
-    for (name, response) in echoes {
-        f.fake.push_response(Ok(response));
-        let output = cli.run(sweep, &["aws-credentials", "aws-allow"], None, false);
-        assert!(!output.status.success(), "{name} was issued");
-        assert_eq!(f.upstream_requests(), 1, "{name}");
-    }
-    // The approval path: agent request, local review and decision, CLI retry.
-    let requested = f
-        .agent(
-            agent_msg::DERIVE_CREDENTIAL,
-            json!({"connection":"aws-approve"}),
-        )
-        .await;
-    sweep.check(
-        "agent",
-        "derive pending metadata",
-        requested.metadata.to_string().as_bytes(),
-    );
-    sweep.check("agent", "derive pending body", &requested.body);
-    assert_eq!(requested.err_code(), "APPROVAL_REQUIRED");
-    let id = requested.metadata["approval"]["challenge_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    approve(f, sweep, &id, presence, admin_msg::APPROVAL_LOCAL_APPROVE).await;
-    assert_eq!(f.upstream_requests(), 0);
-    f.fake.push_response(Ok(temporary()));
-    let issued = cli.ok(
-        sweep,
-        &["aws-credentials", "aws-approve", "--approval", &id],
-    );
-    assert_eq!(issued["AccessKeyId"], "ASIAC1SWEEPTEMP00001");
-    assert_eq!(f.upstream_requests(), 1);
-}
-
 /// Reviews one pending request and decides it with the presence ticket.
-async fn approve(f: &Fixture, sweep: &mut Sweep, id: &str, presence: &[u8], decision: u16) {
+pub(super) async fn approve(
+    f: &Fixture,
+    sweep: &mut Sweep,
+    id: &str,
+    presence: &[u8],
+    decision: u16,
+) {
     let review = f
         .admin(
             admin_msg::APPROVAL_LOCAL_REVIEW,
@@ -326,16 +182,27 @@ async fn approve(f: &Fixture, sweep: &mut Sweep, id: &str, presence: &[u8], deci
 
 // ---- Approval-gated SSH signing (the SSH agent socket) ----
 
-async fn pending_approval(f: &Fixture) -> String {
+async fn pending_ids(f: &Fixture) -> Vec<String> {
+    let reply = f.admin(admin_msg::APPROVAL_PENDING, json!({}), &[]).await;
+    reply.ok()["challenges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|challenge| challenge["approval_request_id"].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The first pending approval not in `before`. Earlier `--no-wait` T1
+/// requests stay pending, so the SSH step must not take theirs.
+async fn new_approval(f: &Fixture, before: &[String]) -> String {
     for _ in 0..250 {
-        let reply = f.admin(admin_msg::APPROVAL_PENDING, json!({}), &[]).await;
-        if let Some(id) = reply.ok()["challenges"]
-            .as_array()
-            .unwrap()
-            .first()
-            .and_then(|challenge| challenge["approval_request_id"].as_str())
+        if let Some(id) = pending_ids(f)
+            .await
+            .into_iter()
+            .find(|id| !before.contains(id))
         {
-            return id.to_owned();
+            return id;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -370,11 +237,12 @@ async fn ssh_approval_sweep(f: &Fixture, sweep: &mut Sweep, identity: &Value, pr
         sweep.check("ssh", "session bind", &bound);
         assert_eq!(bound, [6], "registered host bind");
         let sign = ssh_support::request(&public, &ssh_support::userauth(&public, &session));
+        let before = pending_ids(f).await;
         let waiting = tokio::spawn(async move {
             ssh_support::send(&mut agent, &sign).await;
             ssh_support::response(&mut agent, within).await
         });
-        let id = pending_approval(f).await;
+        let id = new_approval(f, &before).await;
         approve(f, sweep, &id, presence, decision).await;
         let answer = waiting.await.unwrap().expect("SSH agent answered");
         sweep.check("ssh", "approval-gated sign", &answer);
