@@ -134,3 +134,27 @@ OAuth 重新授权使用 App / 浏览器流程，不把 refresh token 发给 Age
 密码丢失而恢复密钥可用时，可用恢复密钥解锁并修改密码；恢复密钥丢失而密码可用时可轮换恢复密钥。两者均丢失时凭据和备份不可解密。个人策略签名私钥丢失也不能替换不可变 trust root，应新建 vault 并重建授权；基础模式的 `policy-signer-p256.p8` 不在备份内，从备份恢复不能找回它。历史备份保留旧因素边界。
 
 旧机构控制面、容器/namespace 故障切换与 Profile 工具仅作为 lab 企业储备保留，默认运维不运行它们；lab 编译与归档脚本语法通过不代表旧 runtime 验收完成。
+
+## Recover a GitHub prerelease workflow
+
+Release workflows use the workflow and code at the tag's commit, not the current main
+branch. Keep an existing tag and its assets unchanged when recovering a failed run.
+
+- If a check or fresh install fails before publication, an Actions retry may run
+  publication in the new attempt only if no release or retained draft exists
+  for that tag. Both public-download smoke jobs must use this publication.
+- If a public-download smoke job fails or is cancelled after publication, the
+  workflow returns that attempt's release to draft. Retrying failed jobs or
+  picking a single smoke job does not publish it again: the stale-attempt guard
+  fails before downloading and will not withdraw or alter the existing draft.
+  If the withdrawal itself did not complete, the owner should verify whether
+  the release is still publicly visible before considering a recovery.
+- Re-running all jobs, the publish job, or an upstream job that causes publish
+  to run is not a way to recover a retained draft. Publish refuses to overwrite
+  a release or draft with the same tag, and Homebrew and withdrawal stay off
+  when this attempt did not publish.
+- To recover after withdrawal, retain the old tag and draft, fix the cause on
+  protected main, prepare a new version and release notes, and push a matching
+  new tag from main. Verify signatures, notarization, fresh installs and
+  public-download smoke on both platforms. A Homebrew job that skipped for
+  lack of a tap token does not establish that Homebrew can download it.
