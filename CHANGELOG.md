@@ -1,8 +1,15 @@
 # Changelog
 
 All notable public changes are recorded here. The current source candidate is
-0.5.0-alpha.2 (vault27 / policy8). Actual published downloads are determined by
+0.5.0-alpha.3 (vault27 / policy8). Actual published downloads are determined by
 GitHub Releases. Historical 0.3/v3/v2 entries below remain release history.
+
+## 0.5.0-alpha.3
+
+Distribution retry for the 0.5 prerelease. Packaged acceptance exercises a
+static public HTTPS endpoint with the signed read path. The existing alpha.2
+tag and draft assets remain available to maintainers. Application behavior and
+vault27 / policy8 are unchanged. See the [release notes](docs/releases/v0.5.0-alpha.3.md).
 
 ## 0.5.0-alpha.2
 

@@ -8,7 +8,7 @@ README、[用户指南](../user-guide.md)和[安装说明](../installation.md)�
 |---|---|---|---|
 | 0.3 | 已发布 | vault25 | policy6 |
 | 0.4.0-alpha.1 | 已发布安装包（2026-10-08） | vault26 | policy7 |
-| 0.5.0-alpha.2 | 0.5 预发布版本线 | vault27 | policy8 |
+| 0.5.0-alpha.3 | 0.5 预发布版本线 | vault27 | policy8 |
 
 每条版本线冻结自己的格式，不做迁移、旧格式双读或回填。新版本线需要新建保险库：保留旧二进制、旧状态目录和备份，在新目录重新添加密钥、签署连接。公开版本与下载以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准；源码检查不代表新版本已经发布或通过真机安装验收。
 
