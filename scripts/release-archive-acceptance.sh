@@ -22,8 +22,9 @@ root, binaries = map(Path, sys.argv[1:])
 # Deliberately synthetic fixtures; no user credentials are accepted here.
 password = b"archive fixture horse battery staple\n"
 secret = b"archive-synthetic-credential-canary"
-origin = os.environ.get("REKEY_ACCEPTANCE_ORIGIN", "https://api.github.com")
-path = os.environ.get("REKEY_ACCEPTANCE_PATH", "/meta")
+# Use a static HTTPS resource so shared runner IPs do not depend on the REST API's anonymous quota.
+origin = os.environ.get("REKEY_ACCEPTANCE_ORIGIN", "https://github.com")
+path = os.environ.get("REKEY_ACCEPTANCE_PATH", "/robots.txt")
 for name in ("rekey", "rekeyd", "rekey-mcp", "rekey-policy-sign", "rekey-approval-sign"):
     if not os.access(binaries / name, os.X_OK):
         raise SystemExit("required archive executable is missing: " + name)
