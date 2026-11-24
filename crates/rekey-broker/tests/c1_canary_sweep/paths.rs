@@ -376,20 +376,18 @@ async fn oauth_sweep(f: &Fixture, sweep: &mut Sweep, cli: &Cli<'_>, mcp: &mut Mc
             .to_string(),
         )
     };
-    // The refusal is not remembered: every call asks the token endpoint again.
+    // The token endpoint is asked once; the refused grant is remembered, so
+    // later calls on every surface return NEEDS_REAUTH without resending it.
     let args = ["http", "drive", "GET", DRIVE_PATH];
     f.fake.push_response(Ok(refusal()));
     assert_eq!(cli.error(sweep, &args, false), "NEEDS_REAUTH");
     assert_eq!(f.upstream_requests(), 1);
-    f.fake.push_response(Ok(refusal()));
     cli.error(sweep, &args, true);
-    assert_eq!(f.upstream_requests(), 1);
-    f.fake.push_response(Ok(refusal()));
+    assert_eq!(f.upstream_requests(), 0);
     let error = mcp.error(sweep, "http", mcp_get);
     assert_eq!(error["code"], "NEEDS_REAUTH");
-    assert_eq!(f.upstream_requests(), 1);
-    f.fake.push_response(Ok(refusal()));
+    assert_eq!(f.upstream_requests(), 0);
     let what = "OAuth after refresh refusal";
     assert_ne!(http_get(sweep, &client, &url, what).await, 200);
-    assert_eq!(f.upstream_requests(), 1);
+    assert_eq!(f.upstream_requests(), 0);
 }
