@@ -2,9 +2,9 @@
 
 ## What is this
 
-Rekey personal-first Credential Authority. Source is the unreleased
-`0.5.0-alpha.1` development line (vault27 / policy8); the latest published
-release is `0.4.0-alpha.1` (vault26 / policy7). Local Agents call signed
+Rekey personal-first Credential Authority. Source is the `0.5.0-alpha.3`
+line (vault27 / policy8), published as a GitHub prerelease; the previous
+line is `0.4.0-alpha.1` (vault26 / policy7). Local Agents call signed
 Connection rules and never see real credentials. Breaking rewrite — no v1 vault, MITM, system CA, dashboard,
 single-port proxy, or TCP passthrough exists anymore.
 

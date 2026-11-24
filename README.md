@@ -4,11 +4,11 @@ Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需�
 
 执行前持久审计，返回时检查凭据反射：上游响应里出现 Key 的原值或支持的可逆编码形式会被遮蔽。检查只覆盖这些明确支持的表示，不能阻止所有数据外泄或授权范围内的误用；同一系统用户下的恶意程序也不在防护范围内。
 
-> 最新公开版本是 0.4.0-alpha.1，以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准；当前源码是未发布的 0.5 开发版。版本格式、保护等级等细节见[安全模型与术语](docs/security/README.md)。
+> 最新公开版本是 **0.5.0-alpha.3**（预发布），以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准。0.5 打不开 0.4 及更早的保险库，也不提供迁移：从 0.4 升级要在新目录新建保险库、重新添加 Key，旧目录保留不动（见[安装说明](docs/installation.md)）。版本格式、保护等级等细节见[安全模型与术语](docs/security/README.md)。
 
-## 快速开始（已发布的 0.4，macOS）
+## 快速开始（macOS）
 
-1. **安装**：从 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 下载签名的 `.pkg` 安装（也可以用随版本发布的 Homebrew cask，见[安装说明](docs/installation.md)）。
+1. **安装**：从 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 下载签名、公证的 `.pkg` 双击安装，需要 macOS 14 及以上的 Apple Silicon。Homebrew tap 尚未上线；Linux（Ubuntu 24.04 x86_64）用发布页的归档，见[安装说明](docs/installation.md)。
 2. **打开 Rekey，创建保险库**：运行 `rekey setup`，在 App 里设置密码并离线保存恢复密钥。
 3. **添加 Key**：
 
@@ -26,7 +26,7 @@ Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需�
    先展示要改的配置，确认后写入（已有文件会备份）。Codex 用 `rekey connect codex`。
 5. **正常使用 Agent**：直接运行 `claude` 或 `codex`。读请求直接返回结果；**要写入时**（例如创建 issue）需要你在 Rekey App 中批准一次或在一段时间内放行，拒绝则不会执行。App 运行且允许通知时会发系统通知提醒；App 没在运行时不会提醒。
 
-## 当前源码（0.5，未发布）的变化
+## 0.5 相对 0.4 的变化
 
 - **App 添加入口**：在 macOS 默认目录且已安装 App 时，`rekey add glm` 会打开 App；`--app` 可明确要求该路径。App 复用保险库已有的签名密钥，软件密钥不会变成 Secure Enclave 密钥。
 - **基础模式（仅限测试，不安全）**：无 App、自定义目录或显式 `--stdin-secrets` 时，`rekey add` 在命令行完成：输入保险库密码、粘贴 Key，自动生成并签署规则；`rekey unlock --remember 7d`（最长 30 天）让后台服务重启后自动解锁，`rekey lock --forget-remembered` 取消。
