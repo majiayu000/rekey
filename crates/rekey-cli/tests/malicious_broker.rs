@@ -595,6 +595,7 @@ fn audit_export_fixture(expire_second_page: bool) {
                     retryable: false,
                     approval: None,
                     next: None,
+                    execution_id: None,
                 })
                 .unwrap()
             } else {

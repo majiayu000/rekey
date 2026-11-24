@@ -501,6 +501,10 @@ pub struct ErrorEnvelope {
     pub approval: Option<ApprovalRequired>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+    /// Set for a call the daemon admitted for execution: its audit rows use
+    /// this as `request_id`. `request_id` above is only the frame ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<RequestId>,
 }
 
 impl ErrorEnvelope {
@@ -512,6 +516,7 @@ impl ErrorEnvelope {
             retryable: false,
             approval: Some(approval),
             next: Some("Call await_approval with request_id set to approval.challenge_id (not this error's request_id), then retry the same call with approval_request_id set to that challenge_id.".into()),
+            execution_id: None,
         }
     }
 }
@@ -529,6 +534,8 @@ impl<'de> Deserialize<'de> for ErrorEnvelope {
             approval: Option<ApprovalRequired>,
             #[serde(default)]
             next: Option<String>,
+            #[serde(default)]
+            execution_id: Option<RequestId>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let valid = if wire.code == "APPROVAL_REQUIRED" {
@@ -548,6 +555,7 @@ impl<'de> Deserialize<'de> for ErrorEnvelope {
             retryable: wire.retryable,
             approval: wire.approval,
             next: wire.next,
+            execution_id: wire.execution_id,
         })
     }
 }
@@ -2405,6 +2413,9 @@ pub struct CallResponseMetadata {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body_encoding: String,
+    /// The daemon's execution ID: audit rows for this call use it as `request_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<RequestId>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

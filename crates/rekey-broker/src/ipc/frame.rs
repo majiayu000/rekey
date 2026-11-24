@@ -158,14 +158,28 @@ pub async fn write_error_with_next<S: AsyncWrite + Unpin>(
     retryable: bool,
     next: &str,
 ) -> Result<(), FrameIoError> {
-    let envelope = ErrorEnvelope {
-        request_id,
-        code: code.to_owned(),
-        message: message.to_owned(),
-        retryable,
-        approval: None,
-        next: Some(next.to_owned()),
-    };
+    write_error_envelope(
+        stream,
+        channel,
+        ErrorEnvelope {
+            request_id,
+            code: code.to_owned(),
+            message: message.to_owned(),
+            retryable,
+            approval: None,
+            next: Some(next.to_owned()),
+            execution_id: None,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn write_error_envelope<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    channel: Channel,
+    envelope: ErrorEnvelope,
+) -> Result<(), FrameIoError> {
+    let request_id = envelope.request_id;
     let metadata =
         serde_json::to_vec(&envelope).map_err(|_| FrameIoError::Frame(FrameError::InvalidField))?;
     write_frame(

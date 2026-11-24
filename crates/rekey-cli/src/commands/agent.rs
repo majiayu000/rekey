@@ -450,14 +450,18 @@ fn execute(
             ));
         }
     };
-    super::write_json(
-        &json!({"status":metadata.status,"headers":metadata.headers,"body":content,"body_encoding":metadata.body_encoding}),
-    )?;
+    let mut output = json!({"status":metadata.status,"headers":metadata.headers,"body":content,"body_encoding":metadata.body_encoding});
+    if let Some(id) = metadata.execution_id {
+        output["execution_id"] = json!(id);
+    }
+    super::write_json(&output)?;
     if !(200..300).contains(&metadata.status) {
-        return Err(CliError::local(
+        let mut error = CliError::local(
             "UPSTREAM_ERROR",
             "upstream returned a non-success status; inspect the sealed response",
-        ));
+        );
+        error.execution_id = metadata.execution_id;
+        return Err(error);
     }
     Ok(())
 }

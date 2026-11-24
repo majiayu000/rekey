@@ -309,6 +309,27 @@ fn public_requests_and_errors_preserve_agent_next_step() {
     assert_eq!(output.status.code(), Some(4));
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["next"], "Call request_access with a reason");
+
+    // The daemon's execution ID (what audit rows use) reaches both the
+    // printed response and the CLI-raised UPSTREAM_ERROR.
+    let execution = "6f1c3a52-7d1e-4b8e-9c2a-1d2e3f405162";
+    let output = exchange(&["call", "github.get_issue"], move |listener| {
+        let (mut stream, _) = listener.accept().unwrap();
+        let (header, _, _) = receive(&mut stream);
+        reply(
+            &mut stream,
+            header,
+            json!({"status":401,"headers":[],"body_encoding":"text","execution_id":execution}),
+            b"{}",
+            false,
+        );
+    });
+    assert!(!output.status.success());
+    assert_eq!(output_json(&output)["execution_id"], execution);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+    assert_eq!(error["code"], "UPSTREAM_ERROR");
+    assert_eq!(error["execution_id"], execution);
 }
 #[test]
 #[cfg(not(feature = "lab"))]

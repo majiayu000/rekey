@@ -163,16 +163,21 @@ pub(super) fn render(err: &CliError) -> String {
     if let Some(approval) = &err.approval {
         out.push_str(&format!("批准请求：{}\n", approval.challenge_id));
     }
-    match &err.request_id {
-        Some(id) => out.push_str(&format!("({code}, request_id={id})")),
-        None => out.push_str(&format!("({code})")),
-    }
+    let ids: String = [
+        ("request_id", &err.request_id),
+        ("execution_id", &err.execution_id),
+    ]
+    .into_iter()
+    .filter_map(|(name, id)| id.map(|id| format!(", {name}={id}")))
+    .collect();
+    out.push_str(&format!("({code}{ids})"));
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rekey_domain::ids::RequestId;
 
     #[test]
     fn renders_localized_hint_and_code() {
@@ -194,6 +199,23 @@ mod tests {
         let text = render(&err);
         assert!(text.contains("下一步：等预算窗口重置后再试"));
         assert!(text.contains("具体建议：Retry after 2026-10-23T00:00:00Z.\n"));
+    }
+
+    #[test]
+    fn execution_id_renders_without_a_frame_request_id() {
+        let execution = RequestId::new_random();
+        let mut err = CliError::local("UPSTREAM_ERROR", "upstream returned a non-success status");
+        err.execution_id = Some(execution);
+        let text = render(&err);
+        assert!(
+            text.ends_with(&format!("(UPSTREAM_ERROR, execution_id={execution})")),
+            "{text}"
+        );
+        let frame = RequestId::new_random();
+        err.request_id = Some(frame);
+        assert!(render(&err).ends_with(&format!(
+            "(UPSTREAM_ERROR, request_id={frame}, execution_id={execution})"
+        )));
     }
 
     #[test]

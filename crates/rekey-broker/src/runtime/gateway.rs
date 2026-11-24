@@ -525,11 +525,13 @@ async fn handle_request(
         .map_err(|_| (503, AuthorityError::Faulted.into()))?
         .map_err(map_error)?;
     match result {
-        HttpExecution::Buffered(outcome) => buffered_response(outcome),
+        HttpExecution::Buffered(outcome) => buffered_response(outcome, request_id),
         HttpExecution::Stream(mut receiver) => loop {
             match receiver.recv().await {
                 Some(TextStreamEvent::Admitted { .. }) => {}
-                Some(TextStreamEvent::Buffered(outcome)) => return buffered_response(outcome),
+                Some(TextStreamEvent::Buffered(outcome)) => {
+                    return buffered_response(outcome, request_id);
+                }
                 Some(TextStreamEvent::Chunk(first)) => {
                     let mut response = Response::new(GatewayBody::Stream {
                         first: Some(Bytes::from(first)),
@@ -540,6 +542,7 @@ async fn handle_request(
                         "content-type",
                         HeaderValue::from_static("text/event-stream; charset=utf-8"),
                     );
+                    insert_request_id(&mut response, request_id);
                     return Ok(response);
                 }
                 Some(TextStreamEvent::AdmissionError(error)) => return Err(map_error(error)),
@@ -548,8 +551,15 @@ async fn handle_request(
         },
     }
 }
+/// The audit rows' execution ID; `insert` replaces any upstream header of that name.
+fn insert_request_id(response: &mut Response<GatewayBody>, request_id: RequestId) {
+    if let Ok(value) = HeaderValue::from_str(&request_id.to_string()) {
+        response.headers_mut().insert("x-rekey-request-id", value);
+    }
+}
 fn buffered_response(
     outcome: crate::executor::ExecuteOutcome,
+    request_id: RequestId,
 ) -> Result<Response<GatewayBody>, (u16, BrokerError)> {
     let mut response = Response::new(GatewayBody::full(outcome.body));
     *response.status_mut() = StatusCode::from_u16(outcome.upstream_status)
@@ -577,6 +587,7 @@ fn buffered_response(
                 .map_err(|_| (502, BrokerError::Upstream("invalid-header")))?,
         );
     }
+    insert_request_id(&mut response, request_id);
     Ok(response)
 }
 
@@ -609,6 +620,8 @@ fn error_response(status: u16, id: RequestId, error: BrokerError) -> Response<Ga
             retryable: other.retryable(),
             approval: None,
             next: Some(other.agent_next()),
+            // Over HTTP `request_id` already is the execution ID.
+            execution_id: None,
         },
     };
     let body = serde_json::to_vec(&envelope).unwrap_or_default();

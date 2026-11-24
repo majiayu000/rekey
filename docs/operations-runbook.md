@@ -101,7 +101,7 @@ rekey --state-dir /absolute/path/rekey-dev rollback-confirm \
 | `SERVICE_PORT_IN_USE`（启动失败，0.5 起） | 本机 HTTP 端口被占用，日志 `service.port_in_use` 含端口号。每个保险库一个端口：在该保险库目录的 `service.json` 写入空闲端口后重启。同一原因写入该目录的 `startup-failure.json`（0.5 开发版，0600，不含密钥），App 据此提示，启动成功后自动删除。 |
 | 启动失败只显示 `ipc unavailable` | 查看同一条 `rekeyd.command_failed` 日志的 `cause`（0.5 起）；`path must be shorter than SUN_LEN` 表示保险库目录过深，Unix socket 路径超过系统上限，换用更短的目录。新建保险库时，`init` 与 `restore` 在读取密码前即检查 socket 路径，过深目录直接以 `USAGE` 拒绝并给出路径长度。0.5 开发版中该日志另带稳定字符串错误码 `error_code`；拿到服务锁后的启动失败也写在 `startup-failure.json` 的 `code` 中。 |
 | `POLICY_INVALID` / version conflict | 保留拒绝的工件和当前签名摘要，重新审阅并签署合法下一版本；不要直接编辑数据库或上传未签名快照。 |
-| 执行后审计失败或结果未知 | 上游副作用可能已经发生。用 request ID 和上游结果核对，不能自动重复写操作或派生签发。 |
+| 执行后审计失败或结果未知 | 上游副作用可能已经发生。用执行 ID 在 `rekey audit list` 中找到该次执行（审计的 `request_id`），再与上游结果核对，不能自动重复写操作或派生签发。执行 ID 是 CLI / MCP 输出中的 `execution_id`（0.5 起），本机服务为响应头 `x-rekey-request-id` 或错误的 `request_id`；错误顶层的 `request_id` 在 CLI / MCP 中只是传输帧 ID，不对应审计。 |
 | `ENOSPC` / I/O 错误 | 停止新请求，检查 `df -h`、`df -i`，在 state directory 之外释放空间，保留 WAL 和 incomplete markers。 |
 
 ## 审计与授权变更

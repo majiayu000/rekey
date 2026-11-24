@@ -6,6 +6,8 @@ mod caller_labels;
 mod common;
 #[path = "personal_policy/env_import.rs"]
 mod env_import;
+#[path = "personal_policy/execution_id.rs"]
+mod execution_id;
 #[path = "personal_policy/gateway.rs"]
 mod gateway;
 #[path = "personal_policy/gateway_edges.rs"]
