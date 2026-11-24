@@ -118,6 +118,8 @@ pub struct CliError {
     pub next: Option<String>,
     pub approval: Option<Box<rekey_domain::ipc::ApprovalRequired>>,
     pub request_id: Option<RequestId>,
+    /// The daemon's execution ID for an admitted call; audit rows use it.
+    pub execution_id: Option<RequestId>,
     pub retryable: bool,
 }
 
@@ -148,6 +150,7 @@ impl CliError {
             next: Some(local_next(code).to_owned()),
             approval: None,
             request_id: None,
+            execution_id: None,
             retryable: false,
         }
     }
@@ -159,6 +162,7 @@ impl CliError {
             next: envelope.next,
             approval: envelope.approval.map(Box::new),
             request_id: Some(envelope.request_id),
+            execution_id: envelope.execution_id,
             retryable: envelope.retryable,
         }
     }
@@ -176,6 +180,9 @@ impl CliError {
             "retryable": self.retryable,
             "approval": self.approval,
         });
+        if let Some(id) = self.execution_id {
+            envelope["execution_id"] = serde_json::json!(id);
+        }
         if WARNED_L1_DEV.load(std::sync::atomic::Ordering::Relaxed) {
             envelope["warnings"] = serde_json::json!(["L1_DEV_UNVERIFIED_SERVICE"]);
         }

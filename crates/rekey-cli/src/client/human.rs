@@ -163,9 +163,12 @@ pub(super) fn render(err: &CliError) -> String {
     if let Some(approval) = &err.approval {
         out.push_str(&format!("批准请求：{}\n", approval.challenge_id));
     }
-    match &err.request_id {
-        Some(id) => out.push_str(&format!("({code}, request_id={id})")),
-        None => out.push_str(&format!("({code})")),
+    match (&err.request_id, &err.execution_id) {
+        (Some(id), Some(execution)) => out.push_str(&format!(
+            "({code}, request_id={id}, execution_id={execution})"
+        )),
+        (Some(id), None) => out.push_str(&format!("({code}, request_id={id})")),
+        _ => out.push_str(&format!("({code})")),
     }
     out
 }

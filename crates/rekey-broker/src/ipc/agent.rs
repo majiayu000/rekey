@@ -13,8 +13,7 @@ use tokio::sync::watch;
 use crate::error::BrokerError;
 use crate::executor::ExecuteRequest;
 use crate::ipc::frame::{
-    IncomingFrame, read_frame, write_approval_required, write_error, write_error_with_next,
-    write_ok,
+    IncomingFrame, read_frame, write_approval_required, write_error, write_error_envelope, write_ok,
 };
 use crate::runtime::BrokerCtx;
 
@@ -144,17 +143,18 @@ pub async fn handle_agent_conn(
             continue;
         }
         let caller = super::caller::unix_caller(&stream).await;
+        let mut execution_id = None;
         let response = if frame.header.message_type == agent_msg::AWAIT_APPROVAL {
             let mut extra = [0u8; 1];
             tokio::select! {
                 _ = shutdown.changed() => return,
                 _ = stream.read(&mut extra) => return,
-                response = dispatch_local(&frame, &ctx, &caller, &scan_peer) => response,
+                response = dispatch_local(&frame, &ctx, &caller, &scan_peer, &mut execution_id) => response,
             }
         } else {
             tokio::select! {
                 _ = shutdown.changed() => return,
-                response = dispatch_local(&frame, &ctx, &caller, &scan_peer) => response,
+                response = dispatch_local(&frame, &ctx, &caller, &scan_peer, &mut execution_id) => response,
             }
         };
         #[cfg(feature = "lab")]
@@ -168,14 +168,18 @@ pub async fn handle_agent_conn(
                     write_approval_required(&mut stream, Channel::Agent, request_id, approval).await
                 }
                 Err(err) => {
-                    write_error_with_next(
+                    write_error_envelope(
                         &mut stream,
                         Channel::Agent,
-                        request_id,
-                        local_agent_code(&err),
-                        &err.agent_message(),
-                        err.retryable(),
-                        &err.agent_next(),
+                        ipc::ErrorEnvelope {
+                            request_id,
+                            code: local_agent_code(&err).to_owned(),
+                            message: err.agent_message(),
+                            retryable: err.retryable(),
+                            approval: None,
+                            next: Some(err.agent_next()),
+                            execution_id,
+                        },
                     )
                     .await
                 }
@@ -495,11 +499,14 @@ async fn dispatch_stream(
     Err(BrokerError::Upstream("stream-terminal-missing"))
 }
 
+/// `execution_id` is set once a CALL is submitted for execution, so its
+/// response or error can name the ID its audit rows use.
 async fn dispatch_local(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
     caller: &str,
     scan_peer: &super::scan::ScanPeer,
+    execution_id: &mut Option<RequestId>,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
         agent_msg::LIST_CAPABILITIES => {
@@ -532,16 +539,19 @@ async fn dispatch_local(
                     serde_json::to_vec(&dry).map_err(|_| ipc::FrameError::InvalidField)?,
                 ));
             }
+            // As for Actions: the frame ID only correlates transport.
+            let id = crate::random_id(RequestId::from_random_bytes)?;
             let receiver = ctx
                 .executions
                 .submit_local(crate::executor::LocalExecuteRequest {
-                    // As for Actions: the frame ID only correlates transport.
-                    request_id: crate::random_id(RequestId::from_random_bytes)?,
+                    request_id: id,
                     meta,
                     body: frame.body.clone(),
                     caller: caller.to_owned(),
                 })
                 .await?;
+            // Admitted: from here on the outcome has audit rows under `id`.
+            *execution_id = Some(id);
             let result = receiver
                 .await
                 .map_err(|_| rekey_vault::AuthorityError::Faulted)??;
@@ -559,7 +569,7 @@ async fn dispatch_local(
                                 body.extend_from_slice(&bytes);
                             }
                             crate::executor::text_stream::TextStreamEvent::Buffered(outcome) => {
-                                return call_response(outcome);
+                                return call_response(outcome, id);
                             }
                             crate::executor::text_stream::TextStreamEvent::AdmissionError(
                                 error,
@@ -567,15 +577,18 @@ async fn dispatch_local(
                             crate::executor::text_stream::TextStreamEvent::Terminal(
                                 ipc::TextStreamStatus::Completed,
                             ) => {
-                                return call_response(crate::executor::ExecuteOutcome {
-                                    stream_status: None,
-                                    upstream_status: 200,
-                                    headers: vec![(
-                                        "content-type".into(),
-                                        "text/event-stream".into(),
-                                    )],
-                                    body,
-                                });
+                                return call_response(
+                                    crate::executor::ExecuteOutcome {
+                                        stream_status: None,
+                                        upstream_status: 200,
+                                        headers: vec![(
+                                            "content-type".into(),
+                                            "text/event-stream".into(),
+                                        )],
+                                        body,
+                                    },
+                                    id,
+                                );
                             }
                             crate::executor::text_stream::TextStreamEvent::Terminal(_) => {
                                 return Err(BrokerError::Upstream("stream-incomplete"));
@@ -586,7 +599,7 @@ async fn dispatch_local(
                     return Err(BrokerError::Upstream("stream-incomplete"));
                 }
             };
-            call_response(result)
+            call_response(result, id)
         }
         agent_msg::REQUEST_ACCESS => {
             if !frame.body.is_empty() {
@@ -682,6 +695,7 @@ fn require_empty(frame: &IncomingFrame) -> Result<(), BrokerError> {
 }
 fn call_response(
     outcome: crate::executor::ExecuteOutcome,
+    execution_id: RequestId,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     let encoding = if std::str::from_utf8(&outcome.body).is_ok() {
         "text"
@@ -692,6 +706,7 @@ fn call_response(
         status: outcome.upstream_status,
         headers: outcome.headers,
         body_encoding: encoding.into(),
+        execution_id: Some(execution_id),
     };
     Ok((
         serde_json::to_vec(&metadata).map_err(|_| ipc::FrameError::InvalidField)?,

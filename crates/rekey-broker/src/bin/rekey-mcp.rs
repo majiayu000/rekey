@@ -202,7 +202,11 @@ fn text_result(result: Value) -> Value {
     json!({"content":[{"type":"text","text":result.to_string()}],"structuredContent":result,"isError":false})
 }
 fn public_error(error: &client::CliError) -> Value {
-    json!({"code":error.code,"message":error.message,"next":error.next,"retryable":error.retryable,"request_id":error.request_id,"approval":error.approval})
+    let mut result = json!({"code":error.code,"message":error.message,"next":error.next,"retryable":error.retryable,"request_id":error.request_id,"approval":error.approval});
+    if let Some(id) = error.execution_id {
+        result["execution_id"] = json!(id);
+    }
+    result
 }
 fn broker_error(error: &client::CliError) -> Value {
     let result = public_error(error);
@@ -231,6 +235,9 @@ fn execution_result(
         .map(|(_, v)| v.clone())
         .unwrap_or_else(|| "application/octet-stream".into());
     let mut result = json!({"status":metadata.status,"headers":metadata.headers,"body":encoded,"body_encoding":metadata.body_encoding,"mime_type":mime});
+    if let Some(id) = metadata.execution_id {
+        result["execution_id"] = json!(id);
+    }
     if !(200..300).contains(&metadata.status) {
         result["code"] = json!("UPSTREAM_ERROR");
         result["next"] = json!(
@@ -861,11 +868,13 @@ mod tests {
     }
     #[test]
     fn sealed_binary_response_preserves_status_mime_and_next_step() {
+        let execution_id = RequestId::new_random();
         let response = execution_result(
             CallResponseMetadata {
                 status: 403,
                 headers: vec![("Content-Type".into(), "application/octet-stream".into())],
                 body_encoding: "base64".into(),
+                execution_id: Some(execution_id),
             },
             &[255, 254],
         )
@@ -876,6 +885,10 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(response["isError"], true);
+        assert_eq!(
+            response["structuredContent"]["execution_id"],
+            json!(execution_id)
+        );
         let mut failure = client::CliError::local("DENIED", "Rule denied");
         failure.next = Some("Call request_access".into());
         assert_eq!(

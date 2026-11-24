@@ -640,7 +640,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
   - 审批 ID、状态码、LLM token 数。
 - **（2026-11-17 修订）** 每次调用的请求 / 响应字节数不再是 0.5 的要求：已发布的 0.4 和 0.5 开发线都不记录这两项，0.5 的审计格式（vault27）已冻结，补字段属于格式变更。需要时须另行规划后续发布线，并先修订本 SPEC。
 - **不记录**：正文、查询值、头的值。
-- 执行审计的 `request_id` 由 daemon 为每次执行生成。Agent 帧里的 `request_id` 只做传输关联（错误信封回显它），重复使用既不得合并两次执行的审计配对，也不得触发 `one_execution_started_per_request` 唯一约束而使运行时故障。
+- 执行审计的 `request_id` 由 daemon 为每次执行生成。Agent 帧里的 `request_id` 只做传输关联（错误信封回显它），重复使用既不得合并两次执行的审计配对，也不得触发 `one_execution_started_per_request` 唯一约束而使运行时故障。（2026-11-24 修订，0.5 开发线）该执行 ID 返回给调用方，供其在审计中定位：Agent CALL 受理执行后，成功响应元数据（`CallResponseMetadata`，含上游非 2xx）与错误信封各带可选字段 `execution_id`；准入前即被拒的调用不带，`APPROVAL_REQUIRED` 也不带（批准后的重提是新的执行）。本机服务的请求 ID 就是执行 ID：错误信封的 `request_id` 即是，转发上游的响应（含流式）带 `x-rekey-request-id` 头，覆盖上游的同名头。CLI 输出的 JSON 与错误、MCP 的 `structuredContent` 原样给出 `execution_id`。带该 ID 的调用若有审计行，均以它为 `request_id`；在执行器写入 `execution.started` 之前被拒的调用可能没有审计行。两个字段都是可选新增，帧 `request_id` 的含义不变。
 - 新增事件类型：
   - `call.dry_run`
   - `access_request.created` / `.resolved` / `.block_changed`（字段与上下文见 §7.2）
