@@ -20,6 +20,8 @@ mod service;
 mod ssh_support;
 #[path = "c1_canary_sweep/stream.rs"]
 mod stream;
+#[path = "c1_canary_sweep/t1.rs"]
+mod t1;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -55,19 +57,32 @@ pub(crate) struct Fixture {
     state: PathBuf,
     fake: Arc<FakeUpstreamTransport>,
     streams: Arc<Mutex<VecDeque<UpstreamStreamResponse>>>,
+    /// Used by the GitHub App echo cases, which the lab build skips.
+    #[cfg_attr(feature = "lab", allow(dead_code))]
+    echoes: Arc<Mutex<VecDeque<Echo>>>,
     task: tokio::task::JoinHandle<Result<(), rekey_broker::error::BrokerError>>,
     service_url: String,
 }
 
-/// Buffered calls use the recording fake; streaming LLM calls take queued
-/// stream responses in order (an unexpected stream call panics the daemon task).
+/// Builds one buffered response from the credential value the request
+/// carries, for upstreams that echo a per-request credential (an App JWT).
+type Echo = Box<dyn FnOnce(&[u8]) -> UpstreamResponse + Send>;
+
+/// Buffered calls use the recording fake (a queued echo answers first);
+/// streaming LLM calls take queued stream responses in order (an
+/// unexpected stream call panics the daemon task).
 struct SweepTransport {
     fake: Arc<FakeUpstreamTransport>,
     streams: Arc<Mutex<VecDeque<UpstreamStreamResponse>>>,
+    echoes: Arc<Mutex<VecDeque<Echo>>>,
 }
 
 impl UpstreamTransport for SweepTransport {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
+        if let Some(echo) = self.echoes.lock().unwrap().pop_front() {
+            self.fake
+                .push_response(Ok(echo(request.auth_header.1.as_slice())));
+        }
         self.fake.send(request)
     }
 
@@ -105,10 +120,12 @@ impl Fixture {
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
         let fake = Arc::new(FakeUpstreamTransport::new());
         let streams = Arc::new(Mutex::new(VecDeque::new()));
+        let echoes = Arc::new(Mutex::new(VecDeque::new()));
         let mut config = BrokerConfig::new(state.clone());
         config.transport = Some(Arc::new(SweepTransport {
             fake: fake.clone(),
             streams: streams.clone(),
+            echoes: echoes.clone(),
         }));
         config.service_port = Some(0);
         config.unlock_backoff_base = Duration::from_millis(20);
@@ -118,6 +135,7 @@ impl Fixture {
             state,
             fake,
             streams,
+            echoes,
             task,
             service_url: String::new(),
         };
@@ -126,6 +144,13 @@ impl Fixture {
             .await
             .ok();
         f
+    }
+
+    /// Answers the next buffered upstream request from its credential value.
+    /// Only meaningful while no other buffered response is queued.
+    #[cfg_attr(feature = "lab", allow(dead_code))]
+    fn echo(&self, echo: impl FnOnce(&[u8]) -> UpstreamResponse + Send + 'static) {
+        self.echoes.lock().unwrap().push_back(Box::new(echo));
     }
 
     /// Adds one credential and returns its ID.
