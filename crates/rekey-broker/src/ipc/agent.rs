@@ -44,7 +44,10 @@ pub(crate) fn local_agent_code(err: &BrokerError) -> &'static str {
         "POLICY_INVALID"
             if matches!(
                 err,
-                BrokerError::Policy(rekey_policy::PolicyError::InvalidParameters)
+                BrokerError::Policy(
+                    rekey_policy::PolicyError::InvalidParameters
+                        | rekey_policy::PolicyError::UnknownParameter(_)
+                )
             ) =>
         {
             "INVALID_INPUT"

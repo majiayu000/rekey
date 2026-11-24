@@ -225,6 +225,21 @@ fn operation_path_matches(pattern: &str, path: &str) -> bool {
             .all(|(a, b)| *a == b || a.starts_with('{') && a.ends_with('}'))
 }
 
+/// Names an undefined argument only when it is a short plain identifier, so
+/// arbitrary caller input is never echoed back.
+fn unknown_parameter(key: &str) -> PolicyError {
+    if !key.is_empty()
+        && key.len() <= 64
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        PolicyError::UnknownParameter(key.to_owned())
+    } else {
+        PolicyError::InvalidParameters
+    }
+}
+
 fn normalize_call(
     connection: &Connection,
     request: &CallMeta,
@@ -255,7 +270,7 @@ fn normalize_call(
             .parameters
             .get("properties")
             .and_then(|p| p.get(key))
-            .ok_or(PolicyError::InvalidParameters)?;
+            .ok_or_else(|| unknown_parameter(key))?;
         let value = match schema.get("type").and_then(Value::as_str) {
             Some("integer" | "number" | "boolean" | "object" | "array") => {
                 crate::ensure_json_number_fidelity(value.as_bytes())?;
