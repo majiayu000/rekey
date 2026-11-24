@@ -547,7 +547,9 @@ async fn failed_started_audit_never_decrypts_or_sends_upstream() {
     assert!(f.fake.take_requests().is_empty());
     db.execute_batch("DROP TRIGGER reject_started;").unwrap();
     // Fault admission may already have stopped; no successful shutdown claim.
-    let _ = tokio::time::timeout(Duration::from_secs(5), f.task)
+    // The runtime notices the faulted Authority on its next idle poll, which
+    // runs every 5 s by default, so wait past one full poll interval.
+    let _ = tokio::time::timeout(Duration::from_secs(15), f.task)
         .await
         .unwrap()
         .unwrap();
