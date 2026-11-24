@@ -124,7 +124,7 @@ pub(super) fn install(project: &Path, vault: &Vault) -> Result<Vec<Edit>, CliErr
     );
     let wrapper = format!("{}{block}{}", WRAPPER[0], WRAPPER[1]);
     if vault.custom.is_some() && committable {
-        hook.warning = Some(LOCAL_PATH_WARNING);
+        hook.warning = Some(LOCAL_PATH_WARNING.into());
     }
     hook.mode = Some(0o700);
     let (own, managed, mode) = match &hook.original {

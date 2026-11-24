@@ -71,6 +71,8 @@ impl Fixture {
             .arg("--project")
             .arg(self.project())
             .env("HOME", self.home())
+            // PATH finds the fixture's own binaries first, never a host install.
+            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             // Keep hook discovery inside the fixture, including Git spawned by the CLI.
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "true")
