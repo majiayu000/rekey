@@ -912,7 +912,7 @@ async fn run_attempt(config: BrokerConfig, attempt: &startup::Attempt) -> Result
         0o600
     };
     let agent_listener = bind_socket(&agent_socket, agent_mode, config.agent_socket_gid)?;
-    let ssh_socket = config.state_dir.join("ssh-agent.sock");
+    let ssh_socket = paths::ssh_agent_socket(&config.state_dir);
     let ssh_listener = bind_socket(&ssh_socket, 0o600, None)?;
 
     let sessions = Arc::new(SessionRegistry::new());

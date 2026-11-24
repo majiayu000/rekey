@@ -256,7 +256,7 @@ impl BrokerCtx {
 /// Unlinks the three Unix endpoints after a stop or a failed start.
 pub(super) fn remove_sockets(state_dir: &std::path::Path, agent_socket: &std::path::Path) {
     let _ = std::fs::remove_file(rekey_vault::paths::admin_socket(state_dir));
-    let _ = std::fs::remove_file(state_dir.join("ssh-agent.sock"));
+    let _ = std::fs::remove_file(rekey_vault::paths::ssh_agent_socket(state_dir));
     let _ = std::fs::remove_file(agent_socket);
 }
 

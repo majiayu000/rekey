@@ -8,6 +8,7 @@ pub const RESTORE_INCOMPLETE_FILE: &str = ".restore-incomplete";
 pub const RUNTIME_DIR: &str = "runtime";
 pub const ADMIN_SOCKET_FILE: &str = "admin.sock";
 pub const AGENT_SOCKET_FILE: &str = "agent.sock";
+pub const SSH_AGENT_SOCKET_FILE: &str = "ssh-agent.sock";
 
 pub fn vault_db(state_dir: &Path) -> PathBuf {
     state_dir.join(VAULT_DB_FILE)
@@ -39,4 +40,17 @@ pub fn admin_socket(state_dir: &Path) -> PathBuf {
 
 pub fn agent_socket(state_dir: &Path) -> PathBuf {
     runtime_dir(state_dir).join(AGENT_SOCKET_FILE)
+}
+
+pub fn ssh_agent_socket(state_dir: &Path) -> PathBuf {
+    state_dir.join(SSH_AGENT_SOCKET_FILE)
+}
+
+/// Every socket `serve` binds under the state directory by default.
+pub fn default_sockets(state_dir: &Path) -> [PathBuf; 3] {
+    [
+        admin_socket(state_dir),
+        agent_socket(state_dir),
+        ssh_agent_socket(state_dir),
+    ]
 }

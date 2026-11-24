@@ -418,9 +418,7 @@ mod path_tests {
         std::fs::create_dir_all(&other).unwrap();
         binary(&here, "rekey-mcp");
         binary(&other, "rekey-mcp");
-        let path = |dirs: &[&std::path::Path]| -> OsString {
-            std::env::join_paths(dirs).unwrap()
-        };
+        let path = |dirs: &[&std::path::Path]| -> OsString { std::env::join_paths(dirs).unwrap() };
 
         let same = path(&[&here, &other]);
         assert_eq!(path_warning("rekey-mcp", Some(&here), Some(&same)), None);
@@ -436,6 +434,9 @@ mod path_tests {
         assert!(warning.contains("not on PATH"), "{warning}");
 
         // No sibling (for example a test binary): nothing to compare.
-        assert_eq!(path_warning("rekey-mcp", Some(root.path()), Some(&same)), None);
+        assert_eq!(
+            path_warning("rekey-mcp", Some(root.path()), Some(&same)),
+            None
+        );
     }
 }
