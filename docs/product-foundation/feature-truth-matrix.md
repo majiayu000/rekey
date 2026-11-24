@@ -15,7 +15,7 @@
 | 访问请求 / 等待 / App | runtime/local_calls、macOS Model/Forms、ConnectionContract；agent_discovery 与 mcp_stdio 的限速回归，local_calls 拒绝/屏蔽/10 分钟过期测试 | 同一调用方每分钟第 4 次请求返回 RATE_LIMITED（2026-11-17 修复，此前误为 BUDGET_EXCEEDED）；真实 Touch ID次数与C16仍待设备验收 |
 | dotenv / 精确 scan / hook | vault/hygiene；CLI tests/hygiene、scan_hook，scan_daemon（真实 rekeyd + `git commit` 钩子）；broker tests/scan_ipc | 0600备份与有界扫描；每系统用户每分钟共享 600 MiB 扫描额度，超额 RATE_LIMITED；钩子在 daemon 未运行、锁定、无有效策略或额度用完时告警放行，`--strict` 阻止；暂存扫描包含类型变化，跳过子模块指针（2026-11-17） |
 | SSH agent / Git HTTP | broker/ssh_agent、SSH UDS tests、ssh_agent_lifecycle、github-git preset、git_smart_http（真实 git 2.50.1 + http-backend） | 软件SSH签名及真实OpenSSH git push通过；Git 智能 HTTP v2 与 gzip 请求体只对 github-git 放行，此前签署的 github-git Connection 须重新签署（2026-11-17）；App/SE设备签名另行验收 |
-| OAuth 4 providers | broker/oauth、vault/authority/tokens、OAuth scopes presets | 专项合成测试通过；供应商拒绝刷新记为 `oauth-needs-reauth`，App 提示重新授权（2026-11-17）；供应商grant/登录与账户权限另行验收 |
+| OAuth 4 providers | broker/oauth、vault/authority/tokens、OAuth scopes presets | 专项合成测试通过；供应商拒绝刷新记为 `oauth-needs-reauth`，App 提示重新授权（2026-11-17）；同一 grant 版本不再重发 refresh，直到重新授权或轮换（2026-11-19，仅内存）；供应商grant/登录与账户权限另行验收 |
 | 显式 T1 | domain DerivedCredentialTarget、broker/derived、runtime/derived、delegated_credentials；CLI t1_approval_wait、tests/t1_approval_cli | Agent收到临时值；需审批时 CLI 默认等待本机审批至多120秒，批准后用同一ID重试一次（2026-11-17）；目标/权限/TTL签名固定；9项合成合同通过，真实云服务待验 |
 | 人类凭据管理 | App保存/轮转、scripts/test-human-vault.py | 默认App/CLI不显示、复制或导出长期密钥；保存与轮转通过签名Connection扫描验证，逐次A2及审计故障仍验 |
 | run / Profile / 本机capability | Removed in default | 仅lab工作负载代码保留，不提供旧vault迁移 |

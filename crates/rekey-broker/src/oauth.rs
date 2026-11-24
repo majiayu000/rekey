@@ -22,6 +22,7 @@ use crate::error::BrokerError;
 use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::upstream::{UpstreamRequest, UpstreamTransport};
 mod refresh_audit;
+mod refusals;
 fn secret<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Zeroizing<String>>, D::Error> {
     Option::<String>::deserialize(d).map(|v| v.map(Zeroizing::new))
 }
@@ -326,6 +327,7 @@ pub(crate) struct Bearer {
 #[derive(Default)]
 pub(crate) struct Manager {
     cache: Mutex<BTreeMap<CredentialId, Cached>>,
+    refused: refusals::Refusals,
     refresh: tokio::sync::Mutex<()>,
     flows: Mutex<Vec<tokio::task::AbortHandle>>,
     epoch: AtomicU64,
@@ -410,6 +412,11 @@ impl Manager {
             .as_ref()
             .ok_or_else(needs_reauth)?
             .clone();
+        // Never resend a refused refresh token and client secret. The audit row
+        // repeats so the App keeps listing the Connection as needing login.
+        if self.refused.refused(c.credential_id, version) {
+            return Err(refresh_audit::record(authority, c, active, needs_reauth()).await?);
+        }
         crate::executor::try_begin_remote_effect(lifecycle, started, deadline).await?;
         // Preserve any earlier effect if this refresh is refused before send.
         let prior_remote_effect = started.remote_effect_started();
@@ -438,7 +445,12 @@ impl Manager {
         }
         let access = match result {
             Ok(Ok(access)) => access,
-            Ok(Err(error)) => return Err(refresh_audit::record(authority, c, active, error).await?),
+            Ok(Err(error)) => {
+                if error.code() == "NEEDS_REAUTH" {
+                    self.refused.remember(c.credential_id, version);
+                }
+                return Err(refresh_audit::record(authority, c, active, error).await?);
+            }
             Err(_) => {
                 let timeout = BrokerError::Upstream("oauth-refresh-timeout");
                 return Err(refresh_audit::record(authority, c, active, timeout).await?);
