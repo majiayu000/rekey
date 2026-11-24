@@ -116,7 +116,7 @@ xcrun swiftc -warnings-as-errors -swift-version 5 \
 
 本机审批使用 `approval review/approve/reject`：面板验证完整原始 UTF-8 正文的 RKREVIEW 哈希，默认焦点与 Return 都是拒绝。明确决定时才逐次读取 presence key，后台通知和收件箱轮询不触发认证，取消认证不发送决定。通知使用固定文案并在本次 App 会话中去重；`/tmp/rekey-ui-contract --privacy-only` 用合成 CLI 覆盖后台提醒、权限选择持久化与角标回退。`/tmp/rekey-ui-contract --local-approval-boundary-only` 运行合成边界检查；它不访问真实 Keychain、Secure Enclave 或通知权限，不能替代签名设备验收。
 
-## 0.5 开发版界面隐私锁
+## 0.5 界面隐私锁
 
 打开和重开窗口时，界面保持锁定；服务已解锁也需要显式输入密码或选择系统认证。设置可选电脑空闲 1/5/15/30/60 分钟或禁用，默认五分钟；锁屏、休眠和切换用户默认锁定界面。隐私锁立即清除展示内容并撤销 A1 管理会话，已有 Agent 工作继续。“锁定整个保险库”另行撤销 Agent 授权。服务端撤销未确认时，界面保持锁定并提供重试。
 

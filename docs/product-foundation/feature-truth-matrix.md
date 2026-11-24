@@ -1,6 +1,6 @@
 # Rekey 功能事实矩阵
 
-当前源码为 0.5.0-alpha.1 开发整合候选，vault27 / policy8；[整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)约束下述新增实验能力，2026-11-17 设计补齐集成头（代码 `5c249ed8`）默认 workspace 1,216 项通过 / 0 失败 / 13 忽略，见[设计补齐记录](../evidence/2026-11-17-design-completion.md)；其余检查与边界见[整合记录](../superpowers/plans/2026-10-09-experiment-integration.md)。已发布 0.4.0-alpha.1 为 vault26 / policy7，以下 0.4 表保留原始证据。[当前 SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)与[实施记录](../superpowers/plans/2026-10-05-agent-call-implementation.md)为行为与验收来源。各项发布状态仍为 Pending，完成代码与软件检查不等同真实设备、Agent 或公开安装验收。
+当前版本为 0.5.0-alpha.3（2026-11-20 GitHub 预发布，签名公证 pkg 与 Linux 归档经发布流程的公开下载检查），vault27 / policy8；[整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)约束下述新增实验能力，2026-11-17 设计补齐集成头（代码 `5c249ed8`）默认 workspace 1,216 项通过 / 0 失败 / 13 忽略，见[设计补齐记录](../evidence/2026-11-17-design-completion.md)；其余检查与边界见[整合记录](../superpowers/plans/2026-10-09-experiment-integration.md)。已发布 0.4.0-alpha.1 为 vault26 / policy7，以下 0.4 表保留原始证据。[当前 SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)与[实施记录](../superpowers/plans/2026-10-05-agent-call-implementation.md)为行为与验收来源。下表各项的设备验收仍为 Pending：公开发布与下载检查通过，不等同真实设备、Agent 或新用户安装验收。
 
 2026-10-06 整合 `main` @ `0828fca` 的 SSE 安全回收、首次 HTTP handoff 和认证账本优化，同时保留下列 Connection 准入/审批合同。整合头的软件验证与性能复测另行记录；下方 0.3 数据及此前 0.4 历史规模 debug 测量不代表新头已通过或具有相同时延。
 

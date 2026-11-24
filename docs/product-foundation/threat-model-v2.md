@@ -1,6 +1,6 @@
 # Rekey 0.5 开发整合威胁模型
 
-当前开发线为 vault27 / policy8，新增能力以[统一整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)为准。已发布 0.4 的 vault26 / policy7 不迁移、不双读。以下通用边界继续适用。
+当前版本线为 0.5（vault27 / policy8，0.5.0-alpha.3 已预发布），新增能力以[统一整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)为准。已发布 0.4 的 vault26 / policy7 不迁移、不双读。以下通用边界继续适用。
 
 行为来源为 [Agent call SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)。0.4 默认本机调用没有 capability token，连接和权限由用户签名决定。以下边界不继承旧版设备验收。
 
