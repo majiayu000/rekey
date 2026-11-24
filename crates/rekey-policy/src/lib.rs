@@ -51,6 +51,8 @@ pub enum PolicyError {
     Invalid,
     #[error("request parameters are invalid")]
     InvalidParameters,
+    #[error("request parameter `{0}` is not defined by this operation")]
+    UnknownParameter(String),
     #[error("signature verification failed")]
     InvalidSignature,
 }

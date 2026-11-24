@@ -286,6 +286,40 @@ fn stable_command_does_not_depend_on_a_developer_binary_path() {
 }
 
 #[test]
+fn preview_warns_when_path_starts_another_rekey_mcp() {
+    let f = Fixture::new();
+    let other = f.root.join("other");
+    fs::create_dir(&other).unwrap();
+    fs::copy(f.bin.join("rekey-mcp"), other.join("rekey-mcp")).unwrap();
+    fs::set_permissions(other.join("rekey-mcp"), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = format!("{}:{}:/usr/bin:/bin", other.display(), f.bin.display());
+    let output = f
+        .command("claude-code")
+        .arg("--print")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    let text = output_text(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains(other.join("rekey-mcp").to_str().unwrap()),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"command\": \"rekey-mcp\"") || text.contains("\"command\":\"rekey-mcp\""),
+        "{text}"
+    );
+
+    let output = f
+        .command("claude-code")
+        .arg("--print")
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(output_text(&output).contains("`rekey-mcp` is not on PATH"));
+}
+
+#[test]
 fn default_project_is_cwd_and_no_confirmation_shortcut_exists() {
     let f = Fixture::new();
     let output = Command::new(f.bin.join("rekey"))

@@ -240,6 +240,9 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
             "Installed basic-mode policy trust: software P-256 key {} (mode 0600, not Secure Enclave).",
             key_file.display()
         );
+        eprintln!(
+            "Vault backups do not include this key. Keep an offline copy: without it a restored vault cannot sign or renew rules."
+        );
     }
     let credential_id = match (reuse, secret) {
         (Some(id), _) => id,

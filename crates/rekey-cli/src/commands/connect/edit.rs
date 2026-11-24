@@ -255,7 +255,7 @@ pub(super) struct Edit {
     pub(super) before: String,
     pub(super) after: String,
     /// Shown after the preview, e.g. when a project file names a local path.
-    pub(super) warning: Option<&'static str>,
+    pub(super) warning: Option<String>,
 }
 impl Edit {
     pub(super) fn load(
@@ -427,7 +427,7 @@ pub(super) fn review(
         for line in edit.after.lines() {
             writeln!(output, "+ {line}").map_err(|e| io_error("cannot write preview", e))?;
         }
-        if let Some(warning) = edit.warning {
+        if let Some(warning) = &edit.warning {
             writeln!(output, "{warning}").map_err(|e| io_error("cannot write preview", e))?;
         }
     }

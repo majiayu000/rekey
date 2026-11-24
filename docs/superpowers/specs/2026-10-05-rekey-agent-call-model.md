@@ -331,7 +331,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 | `LOCKED` | vault 已锁定 | `已通知用户解锁；调用 await_unlock() 后重试` |
 | `BUDGET_EXCEEDED` | 预算或限速 | `在 <time> 之后重试` |
 | `RATE_LIMITED` | 防滥用限速：访问请求过于频繁（§7.2）或 SCAN 字节额度用完（§9.1） | 访问请求：`在 <time> UTC 之后再发起访问请求`；SCAN：`在 <time> UTC 之后重试` |
-| `INVALID_INPUT` | 参数不合法；具名操作被多个 Connection 共享而未指定 connection | `传 connection（可选：qwen, qwen-intl）` |
+| `INVALID_INPUT` | 参数不合法（具名操作未定义的参数名写在 message 中，通用 `next` 指向 `describe`）；具名操作被多个 Connection 共享而未指定 connection | `传 connection（可选：qwen, qwen-intl）` |
 | `UPSTREAM_ERROR` | 上游非 2xx | 透传状态码和已遮蔽的正文 |
 | `RESPONSE_BLOCKED` | 响应里检测到密钥反射，或上游返回了无法遮蔽的压缩编码（§5.1） | `该响应包含凭据回显或无法检查的编码，已拦截；不要重试同一请求` |
 
@@ -445,7 +445,7 @@ OPENAI_API_KEY=rekey
    - Claude Code：`.mcp.json`；
    - Codex：`.codex/config.toml` 中的 `mcp_servers.rekey`；
    - Cursor：`.cursor/mcp.json`。
-   - 不写 env，不写令牌。`command` 固定为 `rekey-mcp`，由客户端按 PATH 找到 Homebrew 或 pkg 安装的稳定位置（如 `/usr/local/bin/rekey-mcp`），不写开发机上的二进制绝对路径；`args` 只在非默认 vault 时出现（见上）。
+   - 不写 env，不写令牌。`command` 固定为 `rekey-mcp`，由客户端按 PATH 找到 Homebrew 或 pkg 安装的稳定位置（如 `/usr/local/bin/rekey-mcp`），不写开发机上的二进制绝对路径；`args` 只在非默认 vault 时出现（见上）。预览时若 PATH 找到的 `rekey-mcp` / `rekey` 不是当前 `rekey` 旁边的同名文件（例如旧安装版遮住了源码构建），或 PATH 中找不到它们，预览给出警告并写明 Agent 实际会启动的路径；写入内容不变。
 2. **Agent 说明书**：在 `AGENTS.md` 或 `CLAUDE.md` 中写入一个带标记的段落，再次执行时替换而不是追加。下例为默认 vault；非默认 vault 时其中的 `rekey` 带 `--state-dir`：
 
 ```markdown

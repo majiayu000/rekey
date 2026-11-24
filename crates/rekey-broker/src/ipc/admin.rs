@@ -2029,7 +2029,7 @@ async fn ssh_admin(
         return Ok((
             b"{}".to_vec(),
             Zeroizing::new(json(
-                &serde_json::json!({"socket":ctx.state_dir.join("ssh-agent.sock"),"ssh_keys":keys}),
+                &serde_json::json!({"socket":rekey_vault::paths::ssh_agent_socket(&ctx.state_dir),"ssh_keys":keys}),
             )?),
         ));
     }

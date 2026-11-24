@@ -1,5 +1,6 @@
 //! Project MCP configuration and marked instructions. No credentials are involved.
 use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -68,6 +69,45 @@ impl Vault {
             rekey,
         })
     }
+}
+/// Generated files name `rekey` and `rekey-mcp` for PATH lookup (SPEC §6.5).
+/// Warn when PATH would start a different binary than the one beside this
+/// CLI, e.g. an older installed release next to a source build.
+fn path_warning(name: &str, beside: Option<&Path>, path: Option<&OsStr>) -> Option<String> {
+    let here = beside?.join(name).canonicalize().ok()?;
+    let found = path.and_then(|path| {
+        std::env::split_paths(path)
+            .filter(|directory| directory.is_absolute())
+            .find_map(|directory| {
+                let candidate = directory.join(name).canonicalize().ok()?;
+                candidate.is_file().then_some(candidate)
+            })
+    });
+    match found {
+        Some(found) if found == here => None,
+        Some(found) => Some(format!(
+            "Warning: Agents will start `{name}` from PATH, which is {}, not {} beside this rekey. Use the matching rekey, or put {} first on PATH.",
+            found.display(),
+            here.display(),
+            here.parent().unwrap_or(&here).display(),
+        )),
+        None => Some(format!(
+            "Warning: `{name}` is not on PATH, so Agents cannot start it. Add {} to PATH.",
+            here.parent().unwrap_or(&here).display(),
+        )),
+    }
+}
+fn warnings(local_path: bool, name: &str, beside: Option<&Path>) -> Option<String> {
+    let lines: Vec<String> = local_path
+        .then(|| LOCAL_PATH_WARNING.to_owned())
+        .into_iter()
+        .chain(path_warning(
+            name,
+            beside,
+            std::env::var_os("PATH").as_deref(),
+        ))
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 fn project_dir(project: Option<PathBuf>) -> Result<PathBuf, CliError> {
     let project = match project {
@@ -262,7 +302,10 @@ pub fn connect(args: ConnectArgs, state_dir: &Path) -> Result<(), CliError> {
     let client = args.client;
     let vault = Vault::resolve(state_dir)?;
     let state = vault.custom.as_deref();
-    let warning = state.map(|_| LOCAL_PATH_WARNING);
+    let beside = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let instruction_text = INSTRUCTIONS.replace("{rekey}", &vault.rekey);
     let project_path = project_dir(args.project)?;
     let (subdir, filename) = client.location();
@@ -282,7 +325,7 @@ pub fn connect(args: ConnectArgs, state_dir: &Path) -> Result<(), CliError> {
     config.before = before;
     config.after =
         String::from_utf8(prepare(client, &[], "rekey-mcp", state)?.0).expect("generated UTF-8");
-    config.warning = warning;
+    config.warning = warnings(state.is_some(), "rekey-mcp", beside.as_deref());
     let mut instructions = Edit::load(project_path.clone(), None, client.instruction_file())?;
     instructions.updated = marked(
         instructions.bytes(),
@@ -302,7 +345,7 @@ pub fn connect(args: ConnectArgs, state_dir: &Path) -> Result<(), CliError> {
     }
     .into();
     instructions.after = instruction_text;
-    instructions.warning = warning;
+    instructions.warning = warnings(state.is_some(), "rekey", beside.as_deref());
     let mut edits = vec![config, instructions];
     if args.with_hooks {
         edits.extend(hooks::install(&project_path, &vault)?);
@@ -356,4 +399,44 @@ fn ssh_config(hosts: &[String], state_dir: &Path) -> Result<Edit, CliError> {
     ssh.before = "<existing SSH configuration retained outside Rekey markers>".into();
     ssh.after = block;
     Ok(ssh)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::path_warning;
+    use std::ffi::OsString;
+
+    fn binary(dir: &std::path::Path, name: &str) {
+        std::fs::write(dir.join(name), b"").unwrap();
+    }
+
+    #[test]
+    fn path_warning_names_a_different_or_missing_binary() {
+        let root = tempfile::tempdir().unwrap();
+        let (here, other) = (root.path().join("here"), root.path().join("other"));
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        binary(&here, "rekey-mcp");
+        binary(&other, "rekey-mcp");
+        let path = |dirs: &[&std::path::Path]| -> OsString { std::env::join_paths(dirs).unwrap() };
+
+        let same = path(&[&here, &other]);
+        assert_eq!(path_warning("rekey-mcp", Some(&here), Some(&same)), None);
+
+        let shadowed = path(&[&other, &here]);
+        let warning = path_warning("rekey-mcp", Some(&here), Some(&shadowed)).unwrap();
+        let other = other.canonicalize().unwrap();
+        assert!(warning.contains(&other.join("rekey-mcp").display().to_string()));
+        assert!(warning.contains("not "), "{warning}");
+
+        let missing = path(&[root.path()]);
+        let warning = path_warning("rekey-mcp", Some(&here), Some(&missing)).unwrap();
+        assert!(warning.contains("not on PATH"), "{warning}");
+
+        // No sibling (for example a test binary): nothing to compare.
+        assert_eq!(
+            path_warning("rekey-mcp", Some(root.path()), Some(&same)),
+            None
+        );
+    }
 }

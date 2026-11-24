@@ -219,6 +219,9 @@ pub(crate) fn agent_next(code: &str) -> &'static str {
         "AUTHORITY_BUSY" => {
             "Rekey is busy, for example at its concurrent-call limit. Retry shortly; before retrying a write, check whether it already took effect."
         }
+        "INVALID_INPUT" => {
+            "Check the request against describe for this operation (parameter names, types, path and body), then retry with corrected input."
+        }
         "DRAINING" => "Rekey is stopping. Retry after the user starts it again.",
         "FAULTED" | "AUDIT_COMMIT_FAILED" => {
             "Do not retry: Rekey closed call admission after an internal failure. Ask the user to check disk space and restart Rekey."

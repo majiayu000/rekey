@@ -229,6 +229,21 @@ fn read_bounded_stdin_line(mut reader: impl Read) -> Result<SecretInput, RekeydE
     Ok(SecretInput::new(std::mem::take(&mut *buf)))
 }
 
+/// `serve` binds these sockets. Refuse a directory whose socket paths the OS
+/// cannot address before any secret is read or vault state is created.
+fn check_socket_paths(state_dir: &std::path::Path) -> Result<(), RekeydError> {
+    for socket in rekey_vault::paths::default_sockets(state_dir) {
+        if std::os::unix::net::SocketAddr::from_pathname(&socket).is_err() {
+            return Err(usage(format!(
+                "state directory is too deep: socket path {} ({} bytes) exceeds the Unix socket path limit; choose a shorter directory",
+                socket.display(),
+                socket.as_os_str().len()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn prompt_secret(prompt: &str) -> Result<SecretInput, RekeydError> {
     let value = Zeroizing::new(
         rpassword::prompt_password(prompt)
@@ -255,6 +270,7 @@ fn cmd_init(
         }
     };
     let state_dir = resolve_state_dir(state_dir)?;
+    check_socket_paths(&state_dir)?;
     let password = if password_stdin {
         read_stdin_secret_line()?
     } else {
@@ -322,6 +338,7 @@ fn cmd_restore(
         })
         .transpose()?;
     let state_dir = resolve_state_dir(state_dir)?;
+    check_socket_paths(&state_dir)?;
     let secret = if password_stdin {
         read_stdin_secret_line()?
     } else if recovery {
@@ -612,6 +629,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_and_restore_refuse_a_state_dir_whose_sockets_cannot_bind() {
+        let short = std::path::Path::new("/tmp/rk");
+        assert!(check_socket_paths(short).is_ok());
+        let deep = std::path::PathBuf::from(format!("/tmp/{}", "d".repeat(120)));
+        let RekeydError::Usage(message) = check_socket_paths(&deep).unwrap_err() else {
+            panic!("expected a usage error");
+        };
+        assert!(message.contains("too deep"), "{message}");
+        assert!(message.contains("admin.sock"), "{message}");
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]

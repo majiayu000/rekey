@@ -737,6 +737,25 @@ fn signed_external_preset_path_arguments_cannot_expand_semantic_read_segments() 
         evaluate_connection(&s, &request, b"", "unknown", Timestamp::from_unix_ms(2)),
         Err(PolicyError::InvalidParameters)
     ));
+
+    // An undefined argument is named when it is a plain identifier only.
+    let unknown = |key: &str| {
+        let request = CallMeta::operation(
+            "team.lookup".into(),
+            BTreeMap::from([(key.to_owned(), "a".to_owned())]),
+        );
+        evaluate_connection(&s, &request, b"", "unknown", Timestamp::from_unix_ms(2))
+    };
+    assert!(matches!(
+        unknown("issue_number"),
+        Err(PolicyError::UnknownParameter(name)) if name == "issue_number"
+    ));
+    for key in ["a b", "a\nb", &"k".repeat(65)] {
+        assert!(
+            matches!(unknown(key), Err(PolicyError::InvalidParameters)),
+            "{key}"
+        );
+    }
 }
 
 #[test]
