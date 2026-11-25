@@ -2,6 +2,9 @@
 #[allow(dead_code)]
 #[path = "../../../rekey-cli/src/client.rs"]
 mod client;
+#[path = "rekey-mcp/tools.rs"]
+mod tools;
+use tools::{annotations, generic_tools};
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read, Write};
@@ -23,6 +26,8 @@ use serde_json::{Value, json};
 const LIMIT: usize = 1024 * 1024;
 const VERSION: &str = "2025-11-25";
 const GENERIC_TOOL_COUNT: usize = 9;
+/// Shown to the user by the Agent; covers both the App and basic-mode CLI.
+const ACCESS_USER_HINT: &str = "Rekey is waiting for the user to add the key or grant the permission: in the Rekey App inbox, or with `rekey access list` and `rekey access resolve REQUEST_ID --granted true` (add a missing key first with `rekey add PRESET`). The request expires in 10 minutes.";
 
 #[derive(Parser)]
 #[command(
@@ -48,67 +53,6 @@ struct Server {
     ready: bool,
 }
 
-fn descriptor(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
-    json!({"name":name,"description":format!("{description} This tool never returns secrets."),"inputSchema":{"type":"object","additionalProperties":false,"properties":properties,"required":required}})
-}
-fn generic_tools() -> Vec<Value> {
-    vec![
-        descriptor(
-            "list_capabilities",
-            "List connections, named operations, read/write decisions and T0/T1 grades.",
-            json!({}),
-            &[],
-        ),
-        descriptor(
-            "describe",
-            "Describe a named operation's parameters, example arguments, rules and the rule its example matches. Pass connection when several Connections share the operation name.",
-            json!({"operation":{"type":"string"},"connection":{"type":"string"}}),
-            &["operation"],
-        ),
-        descriptor(
-            "call",
-            "Call a named operation under signed rules; pass connection when several Connections share the operation name. After approval, repeat the original request with approval_request_id; never retry a completed or indeterminate write.",
-            json!({"operation":{"type":"string"},"connection":{"type":"string"},"args":{"type":"object"},"body":{},"dry_run":{"type":"boolean"},"approval_request_id":{"type":"string","format":"uuid"}}),
-            &["operation", "args"],
-        ),
-        descriptor(
-            "http",
-            "Call a Connection's HTTP path under signed rules; dry_run previews without executing.",
-            json!({"connection":{"type":"string"},"method":{"type":"string","enum":["GET","HEAD","POST","PUT","PATCH","DELETE"]},"path":{"type":"string"},"query":{"type":"object","additionalProperties":{"type":"string"}},"headers":{"type":"array","items":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":2}},"body":{},"dry_run":{"type":"boolean"},"approval_request_id":{"type":"string","format":"uuid"}}),
-            &["connection", "method", "path"],
-        ),
-        descriptor(
-            "request_access",
-            "Ask the user to add a Connection or permission in the App. Specify either provider (a preset name or family, such as github for github-pat or github-oauth) or connection, and a full operation name if needed. Do not ask the user for a key. Wait for the returned request ID with await_access.",
-            json!({"provider":{"type":"string"},"connection":{"type":"string"},"operation":{"type":"string"},"reason":{"type":"string","maxLength":500}}),
-            &["reason"],
-        ),
-        descriptor(
-            "await_access",
-            "Wait for an access request to be granted, rejected or expired. This never grants permission or executes a call; after GRANTED, explicitly retry the original request.",
-            json!({"request_id":{"type":"string","format":"uuid"},"timeout_s":{"type":"integer","minimum":1,"maximum":120,"default":120}}),
-            &["request_id"],
-        ),
-        descriptor(
-            "await_approval",
-            "Wait for a user's approval. Pass approval.challenge_id from the APPROVAL_REQUIRED error as request_id, not the error's top-level request_id. This does not approve or execute the request; afterwards retry the same call with approval_request_id set to that challenge_id.",
-            json!({"request_id":{"type":"string","format":"uuid"},"timeout_s":{"type":"integer","minimum":1,"maximum":120,"default":120}}),
-            &["request_id"],
-        ),
-        descriptor(
-            "cancel_approval",
-            "Cancel a pending approval request. Pass approval.challenge_id from the APPROVAL_REQUIRED error as request_id. This does not execute the request.",
-            json!({"request_id":{"type":"string","format":"uuid"}}),
-            &["request_id"],
-        ),
-        descriptor(
-            "await_unlock",
-            "Wait for the user to unlock the vault, then explicitly retry the original request.",
-            json!({"timeout_s":{"type":"integer","minimum":1,"maximum":120,"default":120}}),
-            &[],
-        ),
-    ]
-}
 fn named_tools(
     inventory: ListCapabilitiesResponse,
 ) -> Result<BTreeMap<String, NamedTool>, client::CliError> {
@@ -143,7 +87,9 @@ fn named_tools(
                 "approval_request_id".into(),
                 json!({"type":"string","format":"uuid"}),
             );
-            let descriptor = json!({"name":name,"description":format!("{} This tool never returns secrets. After approval, repeat the same request with approval_request_id.",operation.description),"inputSchema":schema});
+            let read_only = matches!(operation.method, FixedMethod::Get | FixedMethod::Head)
+                || operation.read_semantics.is_some();
+            let descriptor = json!({"name":name,"description":format!("{} This tool never returns secrets. After approval, repeat the same request with approval_request_id.",operation.description),"inputSchema":schema,"annotations":annotations(read_only,!read_only,true)});
             if tools
                 .insert(
                     name,
@@ -240,9 +186,7 @@ fn execution_result(
     }
     if !(200..300).contains(&metadata.status) {
         result["code"] = json!("UPSTREAM_ERROR");
-        result["next"] = json!(
-            "Inspect the returned status and sealed response body. Do not automatically repeat a write."
-        );
+        result["next"] = json!(client::upstream_status_next(metadata.status));
     }
     Ok(
         json!({"content":[{"type":"text","text":if metadata.body_encoding == "text" {result["body"].as_str().unwrap().to_owned()} else {result.to_string()}}],"structuredContent":result,"isError":!(200..300).contains(&metadata.status)}),
@@ -393,8 +337,8 @@ impl Server {
                 self.public(agent_msg::REQUEST_ACCESS, &request, 30)
                     .and_then(checked::<RequestAccessResponse>)
                     .map(|mut value| {
-                        value["next"] = json!(format!("Call await_access with request_id {}. After GRANTED, explicitly retry the original request.", value["request_id"].as_str().unwrap()));
-                        value["user_hint"] = json!("Rekey App shows this request in its inbox. Tell the user to open Rekey to add the key or grant the permission there; it expires in 10 minutes.");
+                        value["next"] = json!(format!("Tell the user what you asked for and why, then call await_access with request_id {}. If it is still pending after one wait, ask the user whether to keep waiting instead of polling until it expires. After GRANTED, explicitly retry the original request.", value["request_id"].as_str().unwrap()));
+                        value["user_hint"] = json!(ACCESS_USER_HINT);
                         text_result(value)
                     })
             }

@@ -145,7 +145,11 @@ fn codex_retains_comments_other_tables_and_supports_inline_servers() {
         );
         assert_eq!(
             doc["mcp_servers"]["rekey"].as_table_like().unwrap().len(),
-            2
+            3
+        );
+        assert_eq!(
+            doc["mcp_servers"]["rekey"]["default_tools_approval_mode"].as_str(),
+            Some("approve")
         );
         assert_eq!(
             fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
@@ -434,7 +438,7 @@ fn selected_vault_codex_config_is_a_semantic_noop_after_instructions_installed()
     assert!(status.success(), "{text}");
     let state = f.root.join("vault");
     let old = format!(
-        "# preserve this exact layout\n[mcp_servers.rekey]\ncommand='rekey-mcp'\nargs=['--state-dir','{}']\n",
+        "# preserve this exact layout\n[mcp_servers.rekey]\ncommand='rekey-mcp'\nargs=['--state-dir','{}']\ndefault_tools_approval_mode='approve'\n",
         state.display()
     );
     let path = f.write(".codex/config.toml", old.as_bytes());
@@ -583,7 +587,13 @@ fn default_vault_writes_only_the_stable_command_and_plain_rekey() {
         if client == "codex" {
             let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
             let server = doc["mcp_servers"]["rekey"].as_table_like().unwrap();
-            assert_eq!(server.len(), 1, "{config}");
+            assert_eq!(server.len(), 2, "{config}");
+            assert_eq!(
+                server
+                    .get("default_tools_approval_mode")
+                    .and_then(|c| c.as_str()),
+                Some("approve")
+            );
             assert_eq!(
                 server.get("command").and_then(|c| c.as_str()),
                 Some("rekey-mcp")

@@ -17,7 +17,7 @@ rekey call github.create_issue --owner example --repo project --title "Bug repor
 
 多个连接共享同一操作名时（例如连接 qwen 与 qwen-intl 都有 `qwen.chat`），给 `describe` / `call` 传 `connection`（命令行用 `--connection`）；错误提示会列出可选的连接名。
 
-缺少权限或连接时调用 `request_access` 并说明理由（provider 写预设名或家族，如 github；已有连接时传 connection；操作写完整名称，如 `github.list_issues`），再用返回的请求 ID 调用 `await_access`；等到 `GRANTED` 后显式重试原请求，不要要求用户把 Key 交给 Agent。收到 `APPROVAL_REQUIRED` 时，用错误里的 `approval.challenge_id`（不是顶层的 `request_id`）作为 `await_approval` 的 `request_id`，批准后把同一个 ID 作为 `approval_request_id` 重试原请求；不要自动重试已完成或执行结果不确定的写操作。收到 `LOCKED` 时调用 `await_unlock` 后重试。
+缺少权限或连接时调用 `request_access` 并说明理由（provider 写预设名或家族，如 github；已有连接时传 connection；操作写完整名称，如 `github.list_issues`），先告诉用户在等什么，再用返回的请求 ID 调用 `await_access`；等一次仍未处理就问用户是否继续等，不要轮询到请求过期。等到 `GRANTED` 后显式重试原请求，不要要求用户把 Key 交给 Agent。上游返回 401/403 说明保存的 Key 无效、过期或权限不足，请用户在 Rekey 里更换 Key，`request_access` 解决不了。沙箱里 `rekey` 命令连不上 Rekey（Operation not permitted）时改用 MCP 工具。收到 `APPROVAL_REQUIRED` 时，用错误里的 `approval.challenge_id`（不是顶层的 `request_id`）作为 `await_approval` 的 `request_id`，批准后把同一个 ID 作为 `approval_request_id` 重试原请求；不要自动重试已完成或执行结果不确定的写操作。收到 `LOCKED` 时调用 `await_unlock` 后重试。
 
 Agent 写的程序使用 `list_capabilities` 给出的本机服务地址和占位 Key `rekey`。程序收到 HTTP `APPROVAL_REQUIRED` 时，等用户批准后，带请求头 `x-rekey-approval-challenge` 和 `approval.challenge_id` 原样重发同一请求一次。T0 连接永不返回密钥；T1 派生连接会把短期派生凭证交给进程，必须明确区分。
 

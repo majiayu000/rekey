@@ -30,7 +30,7 @@ rekey add glm
 
 **0.5 起**，无 App、自定义目录或显式 `--stdin-secrets` 使用 CLI 基础模式，仍以原密码操作。CLI 的 `rekey unlock --remember 7d`（最长 30d）让 daemon 重启后自动解锁：0600 的 `remembered-unlock.key` 同用户可读，不等于 App 的受保护系统认证，也不能代替敏感操作证明。它与 App 的系统认证授权共用 daemon 中同一份记住票据（`desktop-unlock.bin`），任一方新建都会替换另一方：CLI 记住后 App 的系统认证随之失效，App 重新启用后 CLI 的记住解锁也失效。任何完整锁定（`rekey lock`、App 的“锁定整个保险库”）和 daemon 空闲自动锁定都会删除这份票据，之后重启保持锁定；所以 30d 同样只在期间没有完整锁定或空闲锁定时才能用满。`rekey lock --forget-remembered` 另外删除本地的 `remembered-unlock.key`。这把密钥**只能用于解锁**：它不能批准写操作，也不能代替任何二次验证（明文查看、关机等）。2026-10-22 之前用 `--remember` 写下的文件不会自动降级，请重新执行一次 `rekey unlock --remember` 或 `rekey lock --forget-remembered`。
 
-**不用 App 批准（基础模式，0.5 起）**：写操作进入审批后，先用 `rekey approval pending` 找到请求，用 `rekey approval review ID` 查看完整请求和 `review_sha256`，确认后执行 `rekey approval approve ID --review-sha256 HASH --password`，在隐藏输入里填保险库密码（脚本用 `--password-stdin`）；拒绝用 `reject`。连续输错会触发与解锁相同的限速。
+**不用 App 批准（基础模式，0.5 起）**：写操作进入审批后，先用 `rekey approval pending` 找到请求，用 `rekey approval review ID` 查看完整请求和 `review_sha256`（在终端里显示为可读摘要并给出可直接复制的批准和拒绝命令；管道或 `REKEY_OUTPUT=json` 时输出原 JSON），确认后执行 `rekey approval approve ID --review-sha256 HASH --password`，在隐藏输入里填保险库密码（脚本用 `--password-stdin`）；拒绝用 `reject`。连续输错会触发与解锁相同的限速。
 
 `rekey add` 的常用选项（0.5 起）：`--name` 设置连接名，`--credential-id` 复用已保存密钥，`--model` 可重复，`--valid-days` 设置规则有效期（默认 90 天）。`--app` 明确要求走 App，不能与 `--stdin-secrets` 合用。OAuth 的 client 参数在 App 表单中填写。取消或草案失败后，可在凭据来源中选择已保存条目继续，无需再次粘贴 Key。
 
@@ -65,6 +65,12 @@ rekey connect claude-code
 rekey connect codex --project /absolute/path/project --print
 rekey connect codex --project /absolute/path/project
 ```
+
+**Codex 注意事项**（0.5 源码起）：
+
+- Codex 只在受信任的项目里读取 `.codex/config.toml`。在项目目录第一次运行 `codex` 时，它会问是否信任这个文件夹，选“是”；否则 Rekey 的 MCP 服务根本不会启动。
+- `connect codex` 会给 `mcp_servers.rekey` 写上 `default_tools_approval_mode = "approve"`，Codex 不再对每次 Rekey 工具调用单独询问；写操作仍由 Rekey 按签名规则要求你批准。想让 Codex 也逐次确认，可删掉这一行（再次执行 `connect` 会写回）。
+- Codex 默认的 `workspace-write` 沙箱不允许连接本机 Unix socket，沙箱里的 `rekey` 命令会报 `IPC_UNAVAILABLE`（Operation not permitted），这时 Rekey 本身是正常运行的。Agent 应使用 Rekey 的 MCP 工具（MCP 服务在沙箱外运行）；Agent 写的程序在沙箱里也连不上 Rekey 的本机服务地址。
 
 命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
 
