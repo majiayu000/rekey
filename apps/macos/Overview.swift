@@ -201,7 +201,7 @@ struct ConnectCommands: View {
             Text("命令会先显示要写入的 MCP 配置和说明，确认后才写入，不含任何 Key。Codex 第一次在项目里运行时会问是否信任该文件夹，选择信任才会加载 Rekey。")
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             command("验证：在 Agent 里输入", "用 Rekey 列出你能调用的服务和操作")
-            Text("Agent 应该列出上面签署的连接；随后在“活动”页能看到这次调用。没有反应时先确认 Agent 是在运行命令的项目目录里启动的。")
+            Text("Agent 应该列出上面签署的连接。再让它做一次读取（比如列出某个仓库的 issue），“活动”页会出现这次调用。没有反应时，确认 Agent 是在运行命令的项目目录里启动的。")
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
