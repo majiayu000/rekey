@@ -21,6 +21,21 @@ extension AppModel {
               let rule = connection.rules.first(where: { $0.id == review.challenge.policy_rule_id }) else { return "此规则" }
         return "\(methodLabel(rule.methods)) \(rule.path)"
     }
+    /// One plain sentence for well-known operations; nil when Rekey cannot say it exactly.
+    func plainSentence(_ review: LocalApprovalDetails.Review) -> String? {
+        guard review.ssh == nil, let operation = operation(for: review) else { return nil }
+        var values = Dictionary(pathParameters(template: operation.path, path: review.requestPath ?? ""), uniquingKeysWith: { first, _ in first })
+        if review.canonical_request?["body_encoding"]?.stringValue == "text", let text = review.canonical_request?["body"]?.stringValue,
+           let body = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] {
+            for (key, value) in body { if let value = value as? String { values[key] = values[key] ?? value } else if let value = value as? Int { values[key] = values[key] ?? String(value) } }
+        }
+        let templates = ["github.create_issue": "在 {owner}/{repo} 创建 Issue：“{title}”",
+                         "github.create_comment": "在 {owner}/{repo} 的 #{number} 下发表评论",
+                         "github.merge_pull": "合并 {owner}/{repo} 的 Pull Request #{number}"]
+        guard var sentence = templates[operation.name] else { return nil }
+        for (key, value) in values { sentence = sentence.replacingOccurrences(of: "{\(key)}", with: value) }
+        return sentence.contains("{") ? nil : sentence
+    }
     /// Pending decisions: local approvals plus access requests.
     var inboxCount: Int { approvals.count + (accessInbox?.requests.filter { $0.status == "PENDING" }.count ?? 0) }
 }
@@ -174,13 +189,15 @@ func methodLabel(_ methods: ConnectionRule.Methods) -> String {
 struct ConnectionRulesSummary: View {
     let connection: ConnectionDefinition
     var compact = false
+    /// A draft that is not signed yet.
+    var pending = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(connection.name).font(.system(size: compact ? 13 : 15, weight: .semibold))
                 if !compact { Text(connection.origin).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary) }
                 Spacer()
-                StatusPill(active: connection.enabled, text: connection.enabled ? "已启用" : "已停用")
+                StatusPill(active: connection.enabled && !pending, text: pending ? "待签署" : connection.enabled ? "已生效" : "已停用", warning: pending)
             }
             if compact { Text(connection.origin).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary) }
             ForEach(connection.rules) { rule in
@@ -212,7 +229,15 @@ struct ConnectCommands: View {
             step(2, "在同一目录启动 Agent，输入", "Codex 第一次会问是否信任该文件夹，选择信任才会加载 Rekey。Agent 应该列出你签署的连接。") {
                 command("验证接入", "用 Rekey 列出你能调用的服务和操作，然后做一次只读调用")
             }
-            step(3, "到“活动”页确认", "只读调用完成后，“最近调用”里会出现这一条。没有出现时，确认 Agent 是在第 1 步的目录里启动的。") { EmptyView() }
+            step(3, "到“活动”页确认", "只读调用完成后，“最近调用”里会出现这一条。") { EmptyView() }
+            DisclosureGroup("Agent 里没有 Rekey 工具？") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("• 配置写在项目里：Claude Code 是 .mcp.json，Codex 是 .codex/config.toml。确认 Agent 是在这个目录启动的，已经开着的会话要重新启动。")
+                    Text("• Codex 只在受信任的文件夹读取项目配置；之前选了不信任，就在 Codex 里重新信任该文件夹。")
+                    Text("• 终端提示找不到 rekey 或 rekey-mcp：按 connect 预览里的路径警告处理，或重新安装 Rekey。")
+                    Text("• Codex 沙箱里运行 rekey 命令会报 Operation not permitted，这是沙箱限制，Agent 应改用 Rekey 的 MCP 工具。")
+                }.font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+            }.font(.system(size: 13))
         }
     }
     private func step<Content: View>(_ number: Int, _ title: String, _ note: String, @ViewBuilder content: () -> Content) -> some View {
@@ -264,7 +289,7 @@ struct ConnectAgentGuide: View {
 struct AccessRequestsPanel:View {
     @EnvironmentObject var model:AppModel
     var body:some View {
-        SectionCard(title:"Agent 的访问申请",icon:"person.crop.circle.badge.questionmark") {
+        SectionCard(title:"Agent 的访问申请" + (model.accessInbox.map { inbox in let n = inbox.requests.filter { $0.status == "PENDING" }.count; return n > 0 ? "（\(n)）" : "" } ?? ""),icon:"person.crop.circle.badge.questionmark") {
             Text("Agent 缺少某个服务或权限时会在这里申请。理由由 Agent 自己填写，仅供参考；调用方名称不是身份认证。").font(.system(size:12)).foregroundStyle(.secondary)
             if let inbox=model.accessInbox {
                 let pending=inbox.requests.filter{$0.status=="PENDING"}
@@ -388,7 +413,7 @@ struct RecentCalls: View {
                     Text(context?.caller ?? "未知 Agent")
                     Text("\(context?.connection ?? "—") \(event.request_context?.normalized_path ?? "")").font(.system(size: 12, design: .monospaced)).lineLimit(1)
                     Spacer()
-                    Text(waiting ? "请求批准" : auditLabels[event.event_type] ?? event.event_type).foregroundStyle(ok ? Color.secondary : waiting ? .orange : .red)
+                    Text(waiting ? "待批准" : ok ? "已完成" : event.outcome == "indeterminate" ? "结果未知" : event.outcome == "denied" ? "被拒绝" : "失败").foregroundStyle(ok ? Color.secondary : waiting || event.outcome == "indeterminate" ? .orange : .red)
                 }.font(.system(size: 13))
             }
         }

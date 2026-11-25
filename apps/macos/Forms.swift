@@ -780,8 +780,8 @@ struct PersonalPolicyDraftForm:View {
                         Button("放弃草稿，继续编辑"){clear()}.disabled(model.busy)
                     } else if baseline != nil {
                         if let seed, !editRules {
-                            Text("新连接“\(seed.name)”将按服务预设生效：").font(.headline)
-                            ConnectionRulesSummary(connection: connections.first { $0.name == seed.name } ?? seed)
+                            Text("Key 已保存。新连接“\(seed.name)”将按服务预设生效，签署后 Agent 才能使用：").font(.headline)
+                            ConnectionRulesSummary(connection: connections.first { $0.name == seed.name } ?? seed, pending: true)
                                 .padding(12).background(surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
                             Button("修改规则（可选）") { editRules = true; selectedIndex = connections.firstIndex { $0.name == seed.name } }.disabled(model.busy)
                         } else {

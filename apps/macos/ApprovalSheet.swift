@@ -23,7 +23,14 @@ struct LocalApprovalView: View {
                             } else {
                                 Text(details.state.label).font(.system(size: 13)).foregroundStyle(.secondary)
                             }
+                            if details.state == .approved {
+                                HStack {
+                                    Label("已批准，等待 Agent 带同一个审批 ID 重试并执行。", systemImage: "checkmark.seal").foregroundStyle(green)
+                                    Button("查看活动") { model.clearNativeFlow(); dismiss(); model.page = .activity; model.clearActivity(); Task { await model.refresh() } }
+                                }.font(.system(size: 14, weight: .medium))
+                            }
                             if let review = details.review {
+                                if let sentence = model.plainSentence(review) { Text(sentence).font(.system(size: 16, weight: .medium)).textSelection(.enabled) }
                                 if let ssh = review.ssh {
                                     Text("用途：\(ssh.purposeLabel) · 用户：\(ssh.use.username ?? "不适用")").textSelection(.enabled)
                                     Text("host：\(ssh.host)").textSelection(.enabled)
@@ -38,10 +45,14 @@ struct LocalApprovalView: View {
                             if details.review?.windowAllowed == true {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("批准范围").font(.system(size: 14, weight: .semibold))
+                                    let rule = model.ruleSummary(details.review)
                                     Picker("批准范围", selection: $limited) {
                                         Text("仅这一个请求（推荐）").tag(false)
-                                        Text("限时放行同一规则…").tag(true)
-                                    }.pickerStyle(.radioGroup).labelsHidden()
+                                        Text("限时放行之后匹配“\(rule)”的请求").tag(true)
+                                    }.pickerStyle(.radioGroup).labelsHidden().disabled(rule == "此规则")
+                                    if !limited {
+                                        Text(rule == "此规则" ? "读不到匹配的规则，只能批准这一次。" : "限时放行会覆盖同一连接上匹配这条规则的其他请求\(rule.contains("**") ? "，例如其他仓库" : "")。").font(.system(size: 12)).foregroundStyle(.secondary)
+                                    }
                                     if limited {
                                         HStack {
                                             Picker("时长", selection: $minutes) { Text("15 分钟").tag("15"); Text("30 分钟").tag("30"); Text("1 小时").tag("60"); Text("2 小时").tag("120"); Text("自定义").tag("custom") }.frame(width: 200)
@@ -62,8 +73,13 @@ struct LocalApprovalView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         if let failure {
                             Text(failure).font(.system(size: 13)).foregroundStyle(.red).textSelection(.enabled)
-                            Button("重新解锁并启用系统认证") { model.clearNativeFlow(); dismiss(); model.requestDesktopLogin() }
-                                .help("在 App 里批准需要系统认证；解锁时勾选“启用系统认证”即可")
+                            if failure.contains("尚无系统认证授权") {
+                                Button("重新解锁并启用系统认证") { model.clearNativeFlow(); dismiss(); model.requestDesktopLogin() }
+                            } else if failure.contains("未确认") {
+                                Text("结果未知：先点“查询最新状态”，不要重复决定。").font(.system(size: 12, weight: .medium))
+                            } else if failure.contains("未完成或已取消") {
+                                Text("没有提交任何决定，可以再次认证。").font(.system(size: 12)).foregroundStyle(.secondary)
+                            }
                         }
                         PeerSecurityWarning()
                         if windowed { Text(scopeText(details)).font(.system(size: 12)).foregroundStyle(.orange).lineLimit(2) }

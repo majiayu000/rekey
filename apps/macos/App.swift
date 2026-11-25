@@ -211,7 +211,7 @@ struct RootView: View {
                     Button("\(model.inboxCount) 项待你处理") { model.page = .approvals }.font(.caption)
                 }
                 Spacer()
-                Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("刷新").accessibilityLabel("刷新").keyboardShortcut("r").disabled(model.busy)
+                if model.page != .activity { Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("刷新").accessibilityLabel("刷新").keyboardShortcut("r").disabled(model.busy) }
             }
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -238,7 +238,7 @@ struct RootView: View {
         switch model.page {
         case .credentials: return "保存在 Rekey 的 API Key；Agent 只能通过已签署的连接使用，读不到 Key 本身"
         case .actions: return "明确每个 Agent 可以执行的请求"
-        case .policy: return lab ? "让权限范围、使用次数和有效期都清晰可见" : "每个连接允许 Agent 做什么：读取直接放行，写入需要你批准"
+        case .policy: return lab ? "让权限范围、使用次数和有效期都清晰可见" : "每个连接允许 Agent 做什么，按你签署的规则执行"
         case .approvals: return lab ? "查看审批绑定信息，再通过独立工具核对原始请求并签名" : "Agent 的写操作和访问申请在这里等你决定"
         case .activity: return "今天（UTC）各 Agent 通过 Rekey 发出的调用"
         case .audit: return "Rekey 记录的每一次解锁、调用、审批和改动"
@@ -338,6 +338,8 @@ struct RootView: View {
                                     Text(credential.typeName).font(.system(size: 12)).frame(width: 120, alignment: .leading)
                                     Text("v\(credential.current_version)").font(.system(size: 12, design: .monospaced)).frame(width: 50)
                                     keyStatus(credential).frame(width: 92)
+                                        .onTapGesture { if !lab && credential.active && !model.connections.contains(where: { $0.credential_id == credential.id }) { model.addCredentialID = credential.id; if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } }
+                                        .help("待签署连接：点这里继续设置，Key 已保存，不用重新粘贴")
                                 }.padding(.horizontal, 16).frame(minHeight: 76).background(model.selectedCredential == credential.id ? sage.opacity(0.8) : Color.clear).contentShape(Rectangle())
                             }.buttonStyle(.plain)
                             Divider()
@@ -349,8 +351,12 @@ struct RootView: View {
             Label("密钥已保存在 Rekey，可通过连接调用", systemImage: "lock").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 18)
             Divider()
             HStack(spacing: 16) {
-                step(1, "添加 API Key", model.credentials.isEmpty ? "选择服务并粘贴 Key" : "已添加 \(model.credentials.count) 个", done: !model.credentials.isEmpty) {
-                    if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() }
+                if model.policy?.mode == .personal && model.policy?.trust_installed == false {
+                    step(1, "设置本机规则签名", "只需一次，之后才能添加 Key") { model.beginPersonalPolicySetup() }
+                } else {
+                    step(1, "添加 API Key", model.credentials.isEmpty ? "选择服务并粘贴 Key" : "已添加 \(model.credentials.count) 个", done: !model.credentials.isEmpty) {
+                        if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() }
+                    }
                 }
                 if lab {
                     step(2, "配置固定操作", "注册允许执行的请求") { model.page = .actions }
@@ -520,7 +526,11 @@ struct RootView: View {
     private var approvalsPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
-                ForEach(model.approvals.filter { if case .localPresence = $0.approver { return !lab }; return false }) { item in
+                let local = model.approvals.filter { if case .localPresence = $0.approver { return !lab }; return false }
+                if !lab {
+                    Text(local.isEmpty ? "没有待决定的写操作" : "待决定的写操作（\(local.count)）").font(.system(size: 15, weight: .semibold)).foregroundStyle(local.isEmpty ? .secondary : ink)
+                }
+                ForEach(local) { item in
                     ApprovalSummaryCard(item: item)
                 }
                 AccessRequestsPanel()
@@ -531,7 +541,7 @@ struct RootView: View {
                     Text("后台每 15 秒检查一次；提醒不含请求内容，也不会自动批准。").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 if let message = model.approvalNotificationMessage { Text(message).font(.system(size: 12)).foregroundStyle(.secondary) }
-                if model.approvals.isEmpty { EmptyState(icon: "tray", title: "没有待审批请求", detail: "Agent 提交的有效审批请求会出现在这里。") }
+                if model.approvals.isEmpty && lab { EmptyState(icon: "tray", title: "没有待审批请求", detail: "Agent 提交的有效审批请求会出现在这里。") }
                 ForEach(model.approvals.filter { item in if case .localPresence = item.approver { return lab }; return true }) { item in
                     SectionCard(title: model.actions.first { $0.id == item.action_id }?.name ?? "固定操作", icon: "doc.text.magnifyingglass") {
                         info("会话", item.session_id)
@@ -558,6 +568,9 @@ struct RootView: View {
                     HStack { Text("UTC 当日 · 更新于 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary); Button("刷新活动") { Task { model.clearActivity(); await model.refresh() } }.disabled(model.busy) }
                     if activity.complete {
                         if !activity.reauthorization.connections.isEmpty { reauthorization(activity.reauthorization.connections) }
+                        RecentCalls(rows: activity.rows)
+                        Divider()
+                        Text("今日汇总").font(.system(size: 14, weight: .semibold))
                         HStack(spacing: 28) {
                             activityMetric("已开始执行", activity.totals.admitted)
                             activityMetric("被拒绝", activity.totals.denied)
@@ -567,8 +580,6 @@ struct RootView: View {
                                 activityMetric("预估 token（未测得）", activity.totals.estimatedTokens)
                             }
                         }
-                        RecentCalls(rows: activity.rows)
-                        Divider()
                         if activity.rows.isEmpty { Text("今天还没有调用。让 Agent 做一次读取，然后点“刷新活动”。").foregroundStyle(.secondary) }
                         let tokens = activity.totals.measuredTokens + activity.totals.estimatedTokens > 0
                         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 15) {
