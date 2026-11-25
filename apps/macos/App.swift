@@ -189,10 +189,12 @@ struct RootView: View {
         }.padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 20).frame(width: 210).background(sage.opacity(0.45))
     }
     private func nav(_ page: Page) -> some View {
-        Button { model.page = page } label: {
+        let needsVault = model.status == nil && ![.credentials, .settings, .backup].contains(page)
+        return Button { model.page = page } label: {
             HStack(spacing: 12) {
                 Image(systemName: page.icon).font(.system(size: 17)).frame(width: 22)
                 Text(page.rawValue).font(.system(size: 14, weight: model.page == page ? .semibold : .regular)).lineLimit(1).fixedSize()
+                    .foregroundStyle(needsVault ? Color.secondary : Color.primary)
                 Spacer(minLength: 4)
                 if page == .approvals, !model.desktopLocked, model.inboxCount > 0 {
                     Text(String(model.inboxCount)).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
@@ -202,6 +204,7 @@ struct RootView: View {
             }.padding(.horizontal, 12).frame(height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).background(model.page == page ? sage : Color.clear, in: RoundedRectangle(cornerRadius: 7)).foregroundStyle(model.page == page ? green : ink).padding(.bottom, 5)
             .accessibilityAddTraits(model.page == page ? .isSelected : [])
+            .disabled(needsVault).help(needsVault ? "创建或连接保险库后可用" : "")
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -280,7 +283,7 @@ struct RootView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("三步开始").font(.system(size: 13, weight: .semibold))
                     Label("设置保险库密码，保存好只显示一次的恢复密钥；再设置一次本机规则签名", systemImage: "1.circle")
-                    Label("添加 API Key，审阅并签署它的规则（读取放行、写入需批准）", systemImage: "2.circle")
+                    Label("添加 API Key，审阅并签署它的规则（按服务预设，可修改）", systemImage: "2.circle")
                     Label("在项目里运行 rekey connect codex 或 claude-code 接入 Agent，让它试一次读取", systemImage: "3.circle")
                 }.font(.system(size: 13)).foregroundStyle(.secondary).padding(.top, 8)
             }
@@ -337,9 +340,10 @@ struct RootView: View {
                                     Text(credential.label).font(.system(size: 14, weight: .medium)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                     Text(credential.typeName).font(.system(size: 12)).frame(width: 120, alignment: .leading)
                                     Text("v\(credential.current_version)").font(.system(size: 12, design: .monospaced)).frame(width: 50)
-                                    keyStatus(credential).frame(width: 92)
-                                        .onTapGesture { if !lab && credential.active && !model.connections.contains(where: { $0.credential_id == credential.id }) { model.addCredentialID = credential.id; if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } }
-                                        .help("待签署连接：点这里继续设置，Key 已保存，不用重新粘贴")
+                                    if !lab && credential.active && !model.connectionsUnavailable && !model.connections.contains(where: { $0.credential_id == credential.id }) {
+                                        Button { model.addCredentialID = credential.id; if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } label: { keyStatus(credential) }
+                                            .buttonStyle(.plain).frame(width: 92).help("Key 已保存，点这里继续设置连接，不用重新粘贴")
+                                    } else { keyStatus(credential).frame(width: 92) }
                                 }.padding(.horizontal, 16).frame(minHeight: 76).background(model.selectedCredential == credential.id ? sage.opacity(0.8) : Color.clear).contentShape(Rectangle())
                             }.buttonStyle(.plain)
                             Divider()
@@ -361,7 +365,7 @@ struct RootView: View {
                 if lab {
                     step(2, "配置固定操作", "注册允许执行的请求") { model.page = .actions }
                 } else {
-                    let active = model.connections.filter(\.enabled).count
+                    let active = model.policy?.status == "expired" ? 0 : model.connections.filter(\.enabled).count
                     step(2, "审阅连接规则", active == 0 ? "签署后 Agent 才能调用" : "\(active) 个连接已生效", done: active > 0) { model.page = .policy }
                 }
                 step(3, "接入 Agent", "在项目里运行 rekey connect") { showConnectGuide = true }
@@ -380,7 +384,8 @@ struct RootView: View {
     /// Saved is not the same as usable: a key works for Agents only through a signed Connection.
     private func keyStatus(_ item: Credential) -> some View {
         let mine = model.connections.filter { $0.credential_id == item.id }
-        let text = !item.active ? "已撤销" : lab ? "可用" : model.connectionsUnavailable ? "连接状态未知" : mine.contains(where: \.enabled) ? "可调用" : mine.isEmpty ? "待签署连接" : "连接已停用"
+        let expired = model.policy?.status == "expired"
+        let text = !item.active ? "已撤销" : lab ? "可用" : model.connectionsUnavailable ? "连接状态未知" : mine.isEmpty ? "待签署连接" : expired ? "规则已过期" : mine.contains(where: \.enabled) ? "可调用" : "连接已停用"
         return StatusPill(active: text == "可用" || text == "可调用", text: text, warning: item.active)
     }
     private func credentialDetail(_ item: Credential) -> some View {
@@ -401,7 +406,7 @@ struct RootView: View {
                             Text("无法读取连接列表，请刷新。").font(.system(size: 12)).foregroundStyle(.red)
                         } else if linked.isEmpty {
                             Text("还没有生效的连接，Agent 暂时不能用这个 Key。").font(.system(size: 12)).foregroundStyle(.secondary)
-                            Button("为此 Key 添加连接") { model.addCredentialID = item.id; if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } }.buttonStyle(PrimaryButton())
+                            Button("继续设置连接") { model.addCredentialID = item.id; if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } }.buttonStyle(PrimaryButton())
                         }
                         ForEach(linked) { connection in
                             ConnectionRulesSummary(connection: connection, compact: true).padding(12)
@@ -464,8 +469,11 @@ struct RootView: View {
                         } else if model.connections.isEmpty {
                             Text("还没有生效的连接。先在“凭证”页添加 API Key，再在这里审阅并签署它的规则。").font(.system(size: 13)).foregroundStyle(.secondary)
                         }
+                        if model.policy?.status == "expired" {
+                            Label("规则已过期，Agent 的调用都会被拒绝。点“编辑并签署规则”重新签署即可恢复。", systemImage: "clock.badge.exclamationmark").foregroundStyle(.orange).font(.system(size: 13, weight: .medium))
+                        }
                         ForEach(model.connections) { connection in
-                            ConnectionRulesSummary(connection: connection)
+                            ConnectionRulesSummary(connection: connection, pending: model.policy?.status == "expired")
                             if connection.id != model.connections.last?.id { Divider() }
                         }
                         HStack {
@@ -568,7 +576,7 @@ struct RootView: View {
                     HStack { Text("UTC 当日 · 更新于 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary); Button("刷新活动") { Task { model.clearActivity(); await model.refresh() } }.disabled(model.busy) }
                     if activity.complete {
                         if !activity.reauthorization.connections.isEmpty { reauthorization(activity.reauthorization.connections) }
-                        RecentCalls(rows: activity.rows)
+                        RecentCalls(rows: activity.rows) { row in if !row.recent.isEmpty { activityDetail = row } }
                         Divider()
                         Text("今日汇总").font(.system(size: 14, weight: .semibold))
                         HStack(spacing: 28) {

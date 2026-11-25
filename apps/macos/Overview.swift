@@ -226,15 +226,16 @@ struct ConnectCommands: View {
                 command("Claude Code", "rekey\(stateFlag) connect claude-code")
                 command("Codex", "rekey\(stateFlag) connect codex")
             }
-            step(2, "在同一目录启动 Agent，输入", "Codex 第一次会问是否信任该文件夹，选择信任才会加载 Rekey。Agent 应该列出你签署的连接。") {
-                command("验证接入", "用 Rekey 列出你能调用的服务和操作，然后做一次只读调用")
+            step(2, "在同一目录启动 Agent，依次输入", "Codex 第一次会问是否信任该文件夹，选择信任才会加载 Rekey。第一句应列出你签署的连接；没有列出就是没加载 Rekey，看下方排查。") {
+                command("先确认接入", "用 Rekey 列出你能调用的服务和操作")
+                command("再试一次调用", "用 Rekey 做一次只读调用，告诉我结果和 execution_id")
             }
             step(3, "到“活动”页确认", "只读调用完成后，“最近调用”里会出现这一条。") { EmptyView() }
             DisclosureGroup("Agent 里没有 Rekey 工具？") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("• 配置写在项目里：Claude Code 是 .mcp.json，Codex 是 .codex/config.toml。确认 Agent 是在这个目录启动的，已经开着的会话要重新启动。")
                     Text("• Codex 只在受信任的文件夹读取项目配置；之前选了不信任，就在 Codex 里重新信任该文件夹。")
-                    Text("• 终端提示找不到 rekey 或 rekey-mcp：按 connect 预览里的路径警告处理，或重新安装 Rekey。")
+                    Text("• 终端提示找不到 rekey：安装版的命令在 /usr/local/bin/rekey，可以直接用这个完整路径运行第 1 步；仍找不到就重新安装 Rekey。")
                     Text("• Codex 沙箱里运行 rekey 命令会报 Operation not permitted，这是沙箱限制，Agent 应改用 Rekey 的 MCP 工具。")
                 }.font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
             }.font(.system(size: 13))
@@ -273,7 +274,7 @@ struct ConnectAgentGuide: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("接入 Agent").font(.system(size: 22, weight: .semibold))
-            Text("接入后，Agent 读数据直接返回，写操作会出现在审批收件箱等你决定。")
+            Text("接入后，Agent 按你签署的连接规则调用；需要批准的请求会出现在审批收件箱。")
                 .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             ConnectCommands()
             HStack {
@@ -392,30 +393,46 @@ struct DraftChangeSummary: View {
     }
 }
 
-/// The latest finished or refused calls across all rows, newest first.
+/// The latest call events across all rows, newest first. Each row opens the
+/// existing per-connection detail; labels follow the event type, not only its outcome.
 struct RecentCalls: View {
     let rows: [ActivityRow]
+    var open: (ActivityRow) -> Void = { _ in }
     var body: some View {
-        let events = rows.flatMap { row in row.recent.map { (row.context, $0) } }
+        let events = rows.flatMap { row in row.recent.map { (row, $0) } }
             .filter { $0.1.event_type != "execution.started" }
             .sorted { $0.1.created_at_ms > $1.1.created_at_ms }.prefix(6)
         VStack(alignment: .leading, spacing: 8) {
             Text("最近调用").font(.system(size: 14, weight: .semibold))
             if events.isEmpty { Text("今天还没有完成的调用。").font(.system(size: 13)).foregroundStyle(.secondary) }
             ForEach(Array(events.enumerated()), id: \.offset) { _, item in
-                let (context, event) = item
-                let waiting = event.event_type == "approval.requested"
-                let ok = event.outcome == "success" && !waiting
-                HStack(spacing: 10) {
-                    Image(systemName: waiting ? "hourglass" : ok ? "checkmark.circle.fill" : event.outcome == "indeterminate" ? "questionmark.circle" : "xmark.circle.fill")
-                        .foregroundStyle(ok ? green : waiting || event.outcome == "indeterminate" ? .orange : .red)
-                    Text(displayDate(event.created_at_ms)).foregroundStyle(.secondary)
-                    Text(context?.caller ?? "未知 Agent")
-                    Text("\(context?.connection ?? "—") \(event.request_context?.normalized_path ?? "")").font(.system(size: 12, design: .monospaced)).lineLimit(1)
-                    Spacer()
-                    Text(waiting ? "待批准" : ok ? "已完成" : event.outcome == "indeterminate" ? "结果未知" : event.outcome == "denied" ? "被拒绝" : "失败").foregroundStyle(ok ? Color.secondary : waiting || event.outcome == "indeterminate" ? .orange : .red)
-                }.font(.system(size: 13))
+                let (row, event) = item
+                let (icon, text, color) = Self.result(event)
+                Button { open(row) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: icon).foregroundStyle(color)
+                        Text(displayDate(event.created_at_ms)).foregroundStyle(.secondary)
+                        Text(row.context?.caller ?? "未知 Agent")
+                        Text(row.context?.connection ?? "—").font(.system(size: 12, design: .monospaced))
+                        if let path = event.request_context?.normalized_path { Text("规则 " + path).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1) }
+                        Spacer()
+                        Text(text).foregroundStyle(color)
+                        Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }.font(.system(size: 13)).contentShape(Rectangle())
+                }.buttonStyle(.plain).help("查看这个连接的最近调用明细")
             }
+        }
+    }
+    static func result(_ event: AuditEvent) -> (String, String, Color) {
+        switch (event.event_type, event.outcome) {
+        case ("execution.finished", "success"): return ("checkmark.circle.fill", "调用完成", green)
+        case ("approval.requested", _): return ("hourglass", "曾请求批准", .orange)
+        case ("approval.approved", _): return ("checkmark.seal", "已批准，等待执行", green)
+        case ("approval.rejected", _): return ("xmark.seal", "已拒绝批准", .red)
+        case (_, "indeterminate"): return ("questionmark.circle", "结果未知", .orange)
+        case (_, "denied"): return ("hand.raised.fill", "被规则拒绝", .red)
+        case (_, "success"): return ("circle", auditLabels[event.event_type] ?? event.event_type, .secondary)
+        default: return ("xmark.circle.fill", "失败", .red)
         }
     }
 }

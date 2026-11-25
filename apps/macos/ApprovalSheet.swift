@@ -18,7 +18,7 @@ struct LocalApprovalView: View {
                     ScrollView(.vertical) {
                         VStack(alignment: .leading, spacing: 14) {
                             Text(title(details)).font(.system(size: 22, weight: .semibold))
-                            if details.state == .pending && !details.canDecide(at: timeline.date) {
+                            if details.state == .expired || details.state == .pending && !details.canDecide(at: timeline.date) {
                                 Label("请求已过期，不能再批准。请让 Agent 重新发起。", systemImage: "clock.badge.exclamationmark").font(.system(size: 14, weight: .medium)).foregroundStyle(.orange)
                             } else {
                                 Text(details.state.label).font(.system(size: 13)).foregroundStyle(.secondary)

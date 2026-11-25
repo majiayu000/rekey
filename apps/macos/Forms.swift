@@ -181,7 +181,8 @@ struct AddCredentialForm: View {
     private var modelList:[String] {models.split(separator:"\n").map{$0.trimmingCharacters(in:.whitespaces)}.filter{!$0.isEmpty}}
     var body:some View {
         VStack(alignment:.leading,spacing:18) {
-            Text("添加 API Key").font(.system(size:24,weight:.semibold))
+            Text(existingID.isEmpty || saved != nil ? "添加 API Key" : "继续设置连接").font(.system(size:24,weight:.semibold))
+            if !existingID.isEmpty && saved == nil {Label("Key 已保存，签署连接规则后 Agent 才能使用。先确认服务和连接名称。",systemImage:"checkmark.shield").foregroundStyle(green)}
             Text("Key 只交给 Rekey。选好服务、审阅规则并签署后，再用 rekey connect 接入 Agent。").foregroundStyle(.secondary)
             Picker("服务",selection:$preset) {
                 ForEach(ConnectionPreset.apiKeyPresets+OAuthSetup.presets,id:\.self) {Text(presetDisplayName($0)).tag($0)}
@@ -673,7 +674,7 @@ struct ConnectionEditor:View {
                 }
             }
             HStack { TextField("路径参数名（如 owner）",text:$bindingName);Button("添加允许值"){connection.bindings[bindingName]=[];bindingName=""}.disabled(bindingName.isEmpty || connection.bindings[bindingName] != nil) }
-            HStack {TextField("调用方标注",text:$caller);Button("限制此调用方为只读"){connection.caller_overrides[caller]=[.init(id:UUID().uuidString.lowercased(),methods:.category("write"),path:"/**",effect:"deny")]}}
+            HStack {TextField("调用方标注",text:$caller);Button("对此标注的调用方拒绝写入"){connection.caller_overrides[caller]=[.init(id:UUID().uuidString.lowercased(),methods:.category("write"),path:"/**",effect:"deny")]}}
             ForEach(connection.caller_overrides.keys.sorted(),id:\.self) {label in
                 HStack {Text("\(label)：\(connection.caller_overrides[label]?.map{"\($0.methods.text) \($0.path) → \($0.effect)"}.joined(separator:"；") ?? "")");Spacer();Button("移除"){connection.caller_overrides.removeValue(forKey:label)}}.font(.caption)
             }
@@ -764,6 +765,11 @@ struct PersonalPolicyDraftForm:View {
             if let signerMode {Text(signerMode.label).font(.caption).foregroundStyle(.secondary)}
             ScrollView {
                 VStack(alignment:.leading,spacing:14) {
+                    if activated {
+                        Label(message ?? "规则已签署生效。", systemImage: "checkmark.seal.fill").font(.system(size:15,weight:.semibold)).foregroundStyle(green)
+                        ConnectCommands()
+                        Divider()
+                    }
                     if let draft {
                         DraftChangeSummary(before: baseline?.connections ?? [], after: draft.connections)
                         ForEach(draft.connections){ConnectionSummary(connection:$0)}
@@ -818,8 +824,7 @@ struct PersonalPolicyDraftForm:View {
                             }
                         }
                     } else {Text("先加载已认证连接列表。");Button("重新加载"){Task{await load()}}.disabled(model.busy)}
-                    if let message{Text(message).foregroundStyle(activated ? green : .red).textSelection(.enabled)}
-                    if activated {ConnectCommands()}
+                    if let message, !activated {Text(message).foregroundStyle(.red).textSelection(.enabled)}
                 }.frame(maxWidth:.infinity,alignment:.leading)
             }
             Text("未确认或认证取消时不激活。签名与激活失败不会自动重试。").font(.caption).foregroundStyle(.secondary)
