@@ -287,3 +287,63 @@ let auditLabels: [String: String] = [
     "policy.activated": "规则已签署生效",
 ]
 let auditOutcomeLabels = ["success": "成功", "denied": "拒绝", "failure": "失败", "indeterminate": "结果未知"]
+
+/// Service names people recognize; the preset ID stays visible for the CLI.
+func presetDisplayName(_ preset: String) -> String {
+    let names = ["github-pat": "GitHub 个人访问令牌", "github-git": "GitHub Git（HTTPS 推送）", "anthropic": "Anthropic", "openai": "OpenAI",
+                 "glm": "智谱 GLM", "glm-responses": "智谱 GLM（Responses）", "deepseek": "DeepSeek", "moonshot": "Moonshot", "moonshot-intl": "Moonshot 国际",
+                 "qwen": "通义千问", "qwen-intl": "通义千问 国际", "qwen-us": "通义千问 美国", "qwen-hk": "通义千问 香港", "openrouter": "OpenRouter",
+                 "gemini": "Google Gemini", "stripe": "Stripe", "generic-bearer": "其他服务（Bearer）", "generic-header": "其他服务（自定义请求头）",
+                 "google-drive": "Google Drive", "google-gmail": "Gmail", "google-calendar": "Google 日历", "github-oauth": "GitHub OAuth", "slack": "Slack", "notion": "Notion"]
+    return names[preset].map { "\($0) · \(preset)" } ?? preset
+}
+
+/// What a draft changes, by Connection name, above the full before/after text.
+struct DraftChangeSummary: View {
+    let before: [ConnectionDefinition]
+    let after: [ConnectionDefinition]
+    var body: some View {
+        let old = Dictionary(uniqueKeysWithValues: before.map { ($0.name, $0) })
+        let new = Dictionary(uniqueKeysWithValues: after.map { ($0.name, $0) })
+        let added = after.filter { old[$0.name] == nil }.map(\.name)
+        let removed = before.filter { new[$0.name] == nil }.map(\.name)
+        let changed = after.filter { current in old[current.name].map { $0 != current } ?? false }.map(\.name)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("本次改动").font(.headline)
+            if added.isEmpty && removed.isEmpty && changed.isEmpty { Text("连接没有变化（可能只更新了有效期、SSH 或 T1）。") }
+            if !added.isEmpty { Label("新增连接：" + added.joined(separator: "、"), systemImage: "plus.circle").foregroundStyle(green) }
+            if !changed.isEmpty { Label("修改了规则：" + changed.joined(separator: "、") + "（详见下方 before / after）", systemImage: "pencil.circle").foregroundStyle(.orange) }
+            if !removed.isEmpty { Label("删除连接：" + removed.joined(separator: "、") + "（Agent 将不能再调用）", systemImage: "minus.circle").foregroundStyle(.red) }
+            let unchanged = after.count - added.count - changed.count
+            if unchanged > 0 { Text("其余 \(unchanged) 个连接不变。").foregroundStyle(.secondary) }
+        }.font(.system(size: 13)).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(sage.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// The latest finished or refused calls across all rows, newest first.
+struct RecentCalls: View {
+    let rows: [ActivityRow]
+    var body: some View {
+        let events = rows.flatMap { row in row.recent.map { (row.context, $0) } }
+            .filter { $0.1.event_type != "execution.started" }
+            .sorted { $0.1.created_at_ms > $1.1.created_at_ms }.prefix(6)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("最近调用").font(.system(size: 14, weight: .semibold))
+            if events.isEmpty { Text("今天还没有完成的调用。").font(.system(size: 13)).foregroundStyle(.secondary) }
+            ForEach(Array(events.enumerated()), id: \.offset) { _, item in
+                let (context, event) = item
+                let waiting = event.event_type == "approval.requested"
+                let ok = event.outcome == "success" && !waiting
+                HStack(spacing: 10) {
+                    Image(systemName: waiting ? "hourglass" : ok ? "checkmark.circle.fill" : event.outcome == "indeterminate" ? "questionmark.circle" : "xmark.circle.fill")
+                        .foregroundStyle(ok ? green : waiting || event.outcome == "indeterminate" ? .orange : .red)
+                    Text(displayDate(event.created_at_ms)).foregroundStyle(.secondary)
+                    Text(context?.caller ?? "未知 Agent")
+                    Text("\(context?.connection ?? "—") \(event.request_context?.normalized_path ?? "")").font(.system(size: 12, design: .monospaced)).lineLimit(1)
+                    Spacer()
+                    Text(waiting ? "请求批准" : auditLabels[event.event_type] ?? event.event_type).foregroundStyle(ok ? Color.secondary : waiting ? .orange : .red)
+                }.font(.system(size: 13))
+            }
+        }
+    }
+}

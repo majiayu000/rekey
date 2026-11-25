@@ -230,7 +230,7 @@ struct Credential: Decodable, Identifiable {
     var active: Bool { state == "active" }
     var typeName: String {
         switch kind {
-        case "opaque-token": return "固定令牌"
+        case "opaque-token": return "API Key"
         case "github-app-installation": return "GitHub App"
         case "vault-kv-v2-source": return "Vault KV v2"
         case "vault-dynamic-source": return "动态租约"
@@ -979,6 +979,8 @@ final class AppModel: ObservableObject {
     /// Signed Connections for the personal overview; empty when locked or not loaded.
     @Published var connections: [ConnectionDefinition] = []
     @Published var connectionsUnavailable = false
+    /// A saved key the add form should reuse instead of asking for it again.
+    @Published var addCredentialID: String?
     /// Read-only local approval reviews shown as inbox summaries, keyed by request ID.
     @Published var approvalReviews: [String: LocalApprovalDetails] = [:]
     @Published var approvalDetails: ApprovalDetails?

@@ -181,10 +181,10 @@ struct AddCredentialForm: View {
     private var modelList:[String] {models.split(separator:"\n").map{$0.trimmingCharacters(in:.whitespaces)}.filter{!$0.isEmpty}}
     var body:some View {
         VStack(alignment:.leading,spacing:18) {
-            Text("添加密钥与连接").font(.system(size:24,weight:.semibold))
+            Text("添加 API Key").font(.system(size:24,weight:.semibold))
             Text("Key 只交给 Rekey。选好服务、审阅规则并签署后，再用 rekey connect 接入 Agent。").foregroundStyle(.secondary)
             Picker("服务",selection:$preset) {
-                ForEach(ConnectionPreset.apiKeyPresets+OAuthSetup.presets,id:\.self) {Text($0).tag($0)}
+                ForEach(ConnectionPreset.apiKeyPresets+OAuthSetup.presets,id:\.self) {Text(presetDisplayName($0)).tag($0)}
             }.disabled(saved != nil || model.busy)
                 .onChange(of:preset){old,new in if connectionName.isEmpty || connectionName==old {connectionName=new}}
             if !OAuthSetup.presets.contains(preset) {
@@ -203,7 +203,7 @@ struct AddCredentialForm: View {
                 Text("LLM 连接必须签署模型白名单与每日额度（100 次 / 10 万输出 token）。").font(.caption).foregroundStyle(.secondary)
             }
             if saved==nil {
-                Picker("凭据来源",selection:$existingID) {
+                Picker("Key 来源",selection:$existingID) {
                     Text("保存新的 API Key").tag("")
                     ForEach(model.credentials.filter{$0.active && $0.kind=="opaque-token"}) {Text("使用已保存："+$0.label).tag($0.id)}
                 }
@@ -222,6 +222,7 @@ struct AddCredentialForm: View {
         .task {
             preset=model.addPreset
             if connectionName.isEmpty {connectionName=preset}
+            if let id=model.addCredentialID {existingID=id;model.addCredentialID=nil}
             if case .add(let request)=model.onboardingRoute {
                 connectionName=request.name ?? request.provider;label=request.label ?? connectionName
                 existingID=request.credentialID ?? "";origin=request.origin ?? "";header=request.header ?? "x-api-key";prefix=request.prefix ?? ""
@@ -531,11 +532,15 @@ struct LocalApprovalView: View {
                             Text("连接：\(review.challenge.resource.id)").font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
                             Text("有效期至 \(displayDate(review.challenge.max_expires_at_ms))").font(.system(size: 12)).foregroundStyle(.secondary)
                         }
-                        Text("请完整审阅下方请求。批准后由 Agent 继续调用。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        if details.state == .pending && !details.canDecide(at: timeline.date) {
+                            Text("请求已过期，不能再批准。请让 Agent 重新发起。").font(.system(size: 13, weight: .medium)).foregroundStyle(.orange)
+                        } else {
+                            Text("请完整审阅下方请求。批准后由 Agent 继续调用。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
                         if details.review?.windowAllowed == true {
                             Picker("批准范围",selection:$window) { Text("仅这次").tag("once");Text("此规则 30 分钟内都放行").tag("30");Text("自定义时长").tag("custom") }.pickerStyle(.segmented)
                             if window == "custom" { TextField("分钟（1–480）",text:$customMinutes).textFieldStyle(.roundedBorder) }
-                            Text(window == "once" ? "只放行这一个请求。" : "接下来 \(windowMinutes) 分钟内，同一调用方经 \(details.review?.challenge.resource.id ?? "此连接") 发出、匹配规则“\(model.ruleSummary(details.review))”的请求都会直接放行；锁定保险库或改规则后失效，拒绝规则始终有效。")
+                            Text(window == "once" ? "只放行这一个请求。" : "接下来 \(windowMinutes) 分钟内，同一调用方经 \(details.review?.challenge.resource.id ?? "此连接") 发出、匹配规则“\(model.ruleSummary(details.review))”的请求都会直接放行\(model.ruleSummary(details.review).contains("**") ? "，包括这个连接上其他地址（例如其他仓库）的同类写入" : "")；锁定保险库或改规则后失效，拒绝规则始终有效。")
                                 .font(.system(size:12)).foregroundStyle(window == "once" ? .secondary : Color.orange).fixedSize(horizontal:false,vertical:true)
                         }
                         if !details.raw.isEmpty {
@@ -556,7 +561,7 @@ struct LocalApprovalView: View {
                             Button("关闭") { model.clearNativeFlow(); dismiss() }.keyboardShortcut(.cancelAction)
                             Button("查询最新状态") { failure = nil; Task { await model.reviewLocalApproval(details.id) } }.disabled(model.busy)
                             Spacer()
-                            Button("拒绝") { decide(details, approve: false) }.focused($rejectFocused)
+                            Button("认证并拒绝") { decide(details, approve: false) }.focused($rejectFocused)
                                 .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh)
                             Button(details.review?.windowAllowed == true && window != "once" ? "认证并放行 \(windowMinutes) 分钟" : "认证并批准这一次") { decide(details, approve: true) }.buttonStyle(PrimaryButton())
                                 .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh || (details.review?.windowAllowed == true && window == "custom" && !(1...480).contains(Int(customMinutes) ?? 0)))
@@ -565,7 +570,6 @@ struct LocalApprovalView: View {
                 }
             }
         }.padding(28).frame(width: 820, height: 720).background(canvas)
-            .onAppear { rejectFocused = true }
             .onDisappear { model.clearNativeFlow() }
     }
     private func decide(_ details: LocalApprovalDetails, approve: Bool) {
@@ -840,6 +844,7 @@ struct PersonalPolicyDraftForm:View {
             ScrollView {
                 VStack(alignment:.leading,spacing:14) {
                     if let draft {
+                        DraftChangeSummary(before: baseline?.connections ?? [], after: draft.connections)
                         ForEach(draft.connections){ConnectionSummary(connection:$0)}
                         ForEach(draft.sshKeys){key in SSHKeySummary(key:key)}
                         ForEach(draft.derivedCredentials){grant in Text("T1 · Agent会拿到 \(grant.max_ttl_seconds/60) 分钟临时值：\n"+grant.publicDescription).font(.system(size:12,design:.monospaced)).foregroundStyle(.orange).textSelection(.enabled)}
@@ -848,7 +853,6 @@ struct PersonalPolicyDraftForm:View {
                         Text(draft.changesText).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
                         Text("HTTP / SSH / T1 完整签名定义与参数 schema").font(.headline)
                         Text(draft.actionsText).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
-                        Toggle("我已审阅完整变化，确认替换连接规则",isOn:$confirmed).disabled(model.busy || attempted)
                         Toggle("使用系统认证签署并激活",isOn:$presence).disabled(model.busy || attempted)
                         PeerSecurityWarning()
                         if !presence {Toggle("使用恢复密钥",isOn:$recovery);SecureField(recovery ? "恢复密钥":"保险库密码",text:$proof)}
@@ -900,6 +904,7 @@ struct PersonalPolicyDraftForm:View {
             Text("未确认或认证取消时不激活。签名与激活失败不会自动重试。").font(.caption).foregroundStyle(.secondary)
             HStack {if model.busy{ProgressView()};Spacer();Button("关闭"){clear();model.showPolicyDraft=false;dismiss();Task{await model.refresh()}}.keyboardShortcut(.cancelAction).disabled(model.busy)
                 if draft==nil && baseline != nil && !activated {Button("下一步：审阅全部改动"){generate()}.buttonStyle(PrimaryButton()).disabled(model.busy || expiry<=Date())}
+                if draft != nil, !activated {Toggle("我已审阅完整变化",isOn:$confirmed).disabled(model.busy || attempted)}
                 if let draft, !activated {Button(model.personalPolicySigning ? "等待系统认证…" : confirmed ? "签署并激活" : "先勾选“已审阅”"){activate(draft)}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || attempted || !presence && proof.isEmpty)}}
         }.padding(28).frame(width:780,height:720).background(canvas).interactiveDismissDisabled(model.busy)
         .task{await load()}
