@@ -976,6 +976,11 @@ final class AppModel: ObservableObject {
     @Published var actions: [FixedAction] = []
     @Published var policy: PolicyStatus?
     @Published var approvals: [PendingApproval] = []
+    /// Signed Connections for the personal overview; empty when locked or not loaded.
+    @Published var connections: [ConnectionDefinition] = []
+    @Published var connectionsUnavailable = false
+    /// Read-only local approval reviews shown as inbox summaries, keyed by request ID.
+    @Published var approvalReviews: [String: LocalApprovalDetails] = [:]
     @Published var approvalDetails: ApprovalDetails?
     @Published var localApprovalDetails: LocalApprovalDetails?
     @Published private(set) var localApprovalNeedsRefresh = false
@@ -1291,6 +1296,26 @@ final class AppModel: ObservableObject {
         busy = false
         if injectedClient == nil { await refresh() }
     }
+    /// Loads the signed Connections shown on the credentials and policy pages.
+    /// A failure only empties the overview; it never blocks the refresh.
+    func loadOverviewConnections(client: CLI) async {
+        let list = try? await Task.detached { try client.decode(ConnectionList.self, ["connection", "list"]) }.value
+        guard client.stateDirectory == stateDirectory, unlocked else { return }
+        connections = list?.connections ?? []; connectionsUnavailable = list == nil
+    }
+    /// Reads the immutable review of up to 10 pending local approvals so the inbox can
+    /// say what each one would send. Reviews are cached by ID; finished ones are dropped.
+    func loadApprovalReviews(client: CLI) async {
+        let pending = approvals.filter { if case .localPresence = $0.approver { return true }; return false }.prefix(10)
+        let wanted = Set(pending.map(\.id))
+        approvalReviews = approvalReviews.filter { wanted.contains($0.key) }
+        let revision = nativeFlowRevision
+        for item in pending where approvalReviews[item.id] == nil {
+            guard let details = try? await Task.detached(operation: { try client.localApprovalReview(item.id, revision: revision) }).value,
+                  client.stateDirectory == stateDirectory, unlocked else { continue }
+            approvalReviews[item.id] = details
+        }
+    }
     func loadConnectionEditor(client injectedClient:CLI?=nil) async throws -> ConnectionList {
         guard !busy,unlocked else {throw UIError(message:"请先解锁并等待当前操作完成。")}
         busy=true;defer{busy=false};let client=injectedClient ?? cli,revision=nativeFlowRevision
@@ -1480,6 +1505,7 @@ final class AppModel: ObservableObject {
         oidcSessionFile = nil; oidcIdentity = nil
         desktopToken = nil
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
+        connections = []; approvalReviews = [:]
         if let token, let owner { revokeDesktop(token, client: owner) }
     }
     func changeDirectory(_ path: String) {
@@ -1530,12 +1556,13 @@ final class AppModel: ObservableObject {
                 guard currentRefresh(), !desktopLocked else { return }
                 credentials=lists.0.credentials;actions=lists.1;policy=loadedPolicy
                 if !credentials.contains(where: { $0.id == selectedCredential }) { selectedCredential = credentials.first?.id }
+                await loadOverviewConnections(client: client)
             }
             switch page {
             case .policy: break
             case .approvals where unlocked:
                 let items = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
-                if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items);try await loadAccessInbox(client:client) }
+                if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items);try await loadAccessInbox(client:client);await loadApprovalReviews(client:client) }
             case .audit:
                 var args = ["audit", "list", "--limit", "50"]
                 if !auditOutcome.isEmpty { args += ["--outcome", auditOutcome] }
@@ -1781,7 +1808,7 @@ final class AppModel: ObservableObject {
             // Drain stderr while the service lives; only bounded diagnostics remain in memory.
             let captured = ServiceDiagnostic()
             errors.fileHandleForReading.readabilityHandler = { file in captured.append(file.availableData) }
-            child.terminationHandler = { process in
+            child.terminationHandler = { [weak self] process in
                 errors.fileHandleForReading.readabilityHandler = nil
                 Task { @MainActor [weak self] in
                     guard let self, self.stateDirectory == serviceDirectory else { return }

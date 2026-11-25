@@ -463,7 +463,8 @@ async fn access_request_waits_pending_and_resolves_without_a_token_or_implicit_e
     );
     let access = successful(&requested);
     assert!(access["next"].as_str().unwrap().contains("await_access"));
-    assert!(access["user_hint"].as_str().unwrap().contains("open Rekey"));
+    let hint = access["user_hint"].as_str().unwrap();
+    assert!(hint.contains("Rekey App inbox") && hint.contains("rekey access resolve"));
     let wait = json!({"request_id":access["request_id"],"timeout_s":1});
     assert_eq!(
         successful(&mcp.call("await_access", wait.clone()))["status"],
@@ -574,7 +575,7 @@ async fn response_status_mime_base64_and_reflected_secret_remain_public_safe() {
                 response["result"]["structuredContent"]["next"]
                     .as_str()
                     .unwrap()
-                    .contains("sealed response")
+                    .contains("replace the key")
             );
         } else if mime == "application/octet-stream" {
             let result = successful(&response);

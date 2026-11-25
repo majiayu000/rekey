@@ -2,10 +2,20 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
-let ink = Color(red: 0.10, green: 0.17, blue: 0.15)
-let green = Color(red: 0.10, green: 0.36, blue: 0.24)
-let canvas = Color(red: 0.975, green: 0.98, blue: 0.966)
-let sage = Color(red: 0.92, green: 0.95, blue: 0.92)
+/// One color per appearance; the App follows the system light or dark setting.
+func adaptive(_ light: (CGFloat, CGFloat, CGFloat), _ dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+    Color(nsColor: NSColor(name: nil) { appearance in
+        let c = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+    })
+}
+let ink = adaptive((0.10, 0.17, 0.15), (0.90, 0.93, 0.91))
+let green = adaptive((0.10, 0.36, 0.24), (0.45, 0.78, 0.60))
+let canvas = adaptive((0.975, 0.98, 0.966), (0.11, 0.12, 0.115))
+let sage = adaptive((0.92, 0.95, 0.92), (0.17, 0.23, 0.20))
+let surface = adaptive((1, 1, 1), (0.15, 0.165, 0.158))
+/// Filled buttons keep white text readable in both appearances.
+let buttonFill = adaptive((0.10, 0.36, 0.24), (0.16, 0.48, 0.33))
 
 /// Opening a request notification only brings the inbox forward; it never approves anything.
 final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
@@ -33,7 +43,6 @@ struct RekeyApp: App {
         WindowGroup("rekey") {
             RootView().environmentObject(model)
                 .frame(minWidth: 1040, minHeight: 700)
-                .preferredColorScheme(.light)
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .handlesExternalEvents(matching: ["*"])
@@ -50,17 +59,20 @@ struct RootView: View {
     @State private var type = "全部类型"
     @State private var showActionForm = false
     @State private var activityDetail:ActivityRow?
+    @State private var showConnectGuide = false
+    private var lab: Bool { model.status?.lab_enabled == true }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Spacer(); Text("rekey").font(.system(size: 12, weight: .semibold)); Spacer()
+                Spacer(); Text("Rekey").font(.system(size: 12, weight: .semibold)); Spacer()
             }.frame(height: 30).background(canvas)
             Divider()
             HStack(spacing: 0) {
                 sidebar
                 Divider()
                 VStack(alignment: .leading, spacing: 0) {
-                    header
+                    // Before a vault exists the page header has nothing to act on.
+                    if model.status != nil || model.page == .settings || model.page == .backup { header }
                     if let error = model.error {
                         HStack(alignment: .top) {
                             Image(systemName: "exclamationmark.circle")
@@ -128,6 +140,7 @@ struct RootView: View {
         .sheet(isPresented: $showActionForm) { ActionForm().environmentObject(model) }
         .sheet(isPresented: $model.showTemplate) { TemplateForm().environmentObject(model) }
         .sheet(isPresented: $model.showSession) { SessionForm().environmentObject(model) }
+        .sheet(isPresented: $showConnectGuide) { ConnectAgentGuide().environmentObject(model) }
         .sheet(item: $model.result, onDismiss: { model.result = nil }) { ResultView(result: $0).environmentObject(model) }
         .sheet(item: $model.approvalDetails) { ApprovalDetailView(details: $0).environmentObject(model) }
         .sheet(item: $model.localApprovalDetails) { _ in LocalApprovalView().environmentObject(model) }
@@ -153,7 +166,7 @@ struct RootView: View {
             Text("本机凭证管理").font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 43).padding(.top, 3)
             Button { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } } label: {
                 HStack { Image(systemName: "person.crop.square"); Text("个人工作区"); Spacer(); Image(systemName: "chevron.down").font(.system(size: 10)) }.padding(12)
-            }.buttonStyle(.plain).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 7)).overlay(RoundedRectangle(cornerRadius: 7).stroke(.gray.opacity(0.2))).padding(.vertical, 28).help(model.stateDirectory).disabled(model.busy)
+            }.buttonStyle(.plain).background(surface.opacity(0.65), in: RoundedRectangle(cornerRadius: 7)).overlay(RoundedRectangle(cornerRadius: 7).stroke(.gray.opacity(0.2))).padding(.vertical, 28).help(model.stateDirectory).disabled(model.busy)
             ForEach(Page.allCases.filter { $0 != .settings && ($0 != .actions || model.status?.lab_enabled == true) }) { page in nav(page) }
             Spacer()
             nav(.settings)
@@ -168,30 +181,35 @@ struct RootView: View {
                 }.font(.system(size: 11, weight: .medium)).disabled(model.busy || model.status == nil || model.pendingDesktopLocks > 0)
             }
             if let status = model.status {
-                Text(status.protectionLabel).font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 7)
+                Text(status.protectionLabel).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 7)
                     .help(status.protectionDetail)
-                Text(status.identityLabel).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(status.identityLabel).font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }.padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 20).frame(width: 210).background(sage.opacity(0.45))
     }
     private func nav(_ page: Page) -> some View {
         Button { model.page = page } label: {
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 Image(systemName: page.icon).font(.system(size: 17)).frame(width: 22)
-                Text(page.rawValue).font(.system(size: 14, weight: model.page == page ? .semibold : .regular))
-                Spacer()
+                Text(page.rawValue).font(.system(size: 14, weight: model.page == page ? .semibold : .regular)).lineLimit(1).fixedSize()
+                Spacer(minLength: 4)
+                if page == .approvals, !model.desktopLocked, model.inboxCount > 0 {
+                    Text(String(model.inboxCount)).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 2).background(Color.orange, in: Capsule())
+                }
             }.padding(.horizontal, 12).frame(height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).background(model.page == page ? sage : Color.clear, in: RoundedRectangle(cornerRadius: 7)).foregroundStyle(model.page == page ? green : ink).padding(.bottom, 5)
+            .accessibilityAddTraits(model.page == page ? .isSelected : [])
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 Text("个人工作区  /  \(model.page.rawValue)").font(.system(size: 12)).foregroundStyle(.secondary)
-                if !model.desktopLocked && !model.approvals.isEmpty {
-                    Button("\(model.approvals.count) 项待审批") { model.page = .approvals }.font(.caption)
+                if !model.desktopLocked && model.inboxCount > 0 && model.page != .approvals {
+                    Button("\(model.inboxCount) 项待你处理") { model.page = .approvals }.font(.caption)
                 }
                 Spacer()
-                Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("刷新真实服务状态").disabled(model.busy)
+                Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("刷新").accessibilityLabel("刷新").keyboardShortcut("r").disabled(model.busy)
             }
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -200,6 +218,7 @@ struct RootView: View {
                 }
                 Spacer()
                 if model.page == .credentials {
+                    if !lab { Button { showConnectGuide = true } label: { Label("接入 Agent", systemImage: "terminal") }.buttonStyle(SecondaryButton()) }
                     Button { if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } label: { Label("添加 API Key", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
                 } else if model.page == .actions {
                     Button("固定操作") { showActionForm = true }.disabled(!model.unlocked || model.busy)
@@ -210,12 +229,12 @@ struct RootView: View {
     }
     private var subtitle: String {
         switch model.page {
-        case .credentials: return "管理 Agent 使用的凭证与关联操作"
+        case .credentials: return "保存在 Rekey 的 API Key；Agent 只能通过已签署的连接使用，读不到 Key 本身"
         case .actions: return "明确每个 Agent 可以执行的请求"
-        case .policy: return "让权限范围、使用次数和有效期都清晰可见"
-        case .approvals: return "查看审批绑定信息，再通过独立工具核对原始请求并签名"
-        case .activity: return "今日 UTC 的已保留审计记录，按当时的授权范围汇总"
-        case .audit: return "查询本机服务已记录的操作与结果"
+        case .policy: return lab ? "让权限范围、使用次数和有效期都清晰可见" : "每个连接允许 Agent 做什么：读取直接放行，写入需要你批准"
+        case .approvals: return lab ? "查看审批绑定信息，再通过独立工具核对原始请求并签名" : "Agent 的写操作和访问申请在这里等你决定"
+        case .activity: return "今天（UTC）各 Agent 通过 Rekey 发出的调用"
+        case .audit: return "Rekey 记录的每一次解锁、调用、审批和改动"
         case .backup: return "备份加密数据，验证并恢复到新的目录"
         case .settings: return "管理本机服务与解锁方式"
         }
@@ -250,8 +269,16 @@ struct RootView: View {
                 }
 
             }.disabled(model.busy)
+            if model.needsSetup {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("三步开始").font(.system(size: 13, weight: .semibold))
+                    Label("设置保险库密码，保存好只显示一次的恢复密钥", systemImage: "1.circle")
+                    Label("添加 API Key，审阅并签署它的规则（读取放行、写入需批准）", systemImage: "2.circle")
+                    Label("在项目里运行 rekey connect codex 或 claude-code 接入 Agent", systemImage: "3.circle")
+                }.font(.system(size: 13)).foregroundStyle(.secondary).padding(.top, 8)
+            }
             if let error = model.connectionError {
-                DisclosureGroup("连接详情") { Text(error).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled) }.font(.system(size: 12))
+                DisclosureGroup("技术详情") { Text(error).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled) }.font(.system(size: 12))
             }
             Spacer()
         }.padding(42).frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
@@ -287,7 +314,7 @@ struct RootView: View {
     private var credentialsPage: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 16) {
-                HStack { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("搜索凭证名称", text: $search).textFieldStyle(.plain) }.padding(11).background(.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.22)))
+                HStack { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("搜索凭证名称", text: $search).textFieldStyle(.plain) }.padding(11).background(surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.22)))
                 Picker("类型", selection: $type) { Text("全部类型").tag("全部类型"); ForEach(Array(Set(model.credentials.map(\.typeName))).sorted(), id: \.self) { Text($0).tag($0) } }.labelsHidden().frame(width: 140)
             }.padding(.bottom, 22)
             HStack { Text("名称").frame(maxWidth: .infinity, alignment: .leading); Text("类型").frame(width: 120, alignment: .leading); Text("版本").frame(width: 50); Text("状态").frame(width: 62) }.font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).padding(16).background(Color.gray.opacity(0.035))
@@ -315,38 +342,56 @@ struct RootView: View {
             Label("密钥已保存在 Rekey，可通过连接调用", systemImage: "lock").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 18)
             Divider()
             HStack(spacing: 16) {
-                step(1, "添加 API Key", "接入所需的凭证") {
+                step(1, "添加 API Key", model.credentials.isEmpty ? "选择服务并粘贴 Key" : "已添加 \(model.credentials.count) 个", done: !model.credentials.isEmpty) {
                     if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() }
                 }
-                step(2, "配置固定操作", "注册允许执行的请求") { model.page = .actions }
-                step(3, "授予 Agent 权限", "设置范围与有效期") { model.page = .policy }
+                if lab {
+                    step(2, "配置固定操作", "注册允许执行的请求") { model.page = .actions }
+                } else {
+                    step(2, "审阅连接规则", model.connections.isEmpty ? "签署后 Agent 才能调用" : "\(model.connections.count) 个连接已生效", done: !model.connections.isEmpty) { model.page = .policy }
+                }
+                step(3, "接入 Agent", "在项目里运行 rekey connect") { showConnectGuide = true }
             }.padding(.vertical, 24)
         }.padding(.horizontal, 28)
     }
-    private func step(_ number: Int, _ title: String, _ detail: String, action: @escaping () -> Void) -> some View {
+    private func step(_ number: Int, _ title: String, _ detail: String, done: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 9) {
-                Text(String(number)).font(.system(size: 13, weight: .medium)).frame(width: 26, height: 26).overlay(Circle().stroke(.gray.opacity(0.5)))
-                VStack(alignment: .leading, spacing: 5) { Text(title).font(.system(size: 12, weight: .medium)); Text(detail).font(.system(size: 10)).foregroundStyle(.secondary) }
+                Group { if done { Image(systemName: "checkmark").foregroundStyle(green) } else { Text(String(number)) } }
+                    .font(.system(size: 13, weight: .medium)).frame(width: 26, height: 26).overlay(Circle().stroke(done ? green : .gray.opacity(0.5)))
+                VStack(alignment: .leading, spacing: 5) { Text(title).font(.system(size: 13, weight: .medium)); Text(detail).font(.system(size: 12)).foregroundStyle(.secondary) }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }.buttonStyle(.plain).disabled(model.busy)
     }
     private func credentialDetail(_ item: Credential) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack { Text("凭证详情").font(.system(size: 15, weight: .semibold)); Spacer(); Button { model.selectedCredential = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.secondary) }
+            HStack { Text("凭证详情").font(.system(size: 15, weight: .semibold)); Spacer(); Button { model.selectedCredential = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("关闭详情").keyboardShortcut(.cancelAction) }
             HStack { Image(systemName: item.icon).font(.system(size: 24)); Text(item.label).font(.system(size: 22, weight: .semibold)).lineLimit(3) }.padding(.top, 10)
             StatusPill(active: item.active, text: item.active ? "可用" : "已撤销")
             info("类型", item.typeName)
             info("当前版本", "v\(item.current_version)")
             Text("密钥已保存在 Rekey，可通过连接调用").font(.system(size: 12)).foregroundStyle(.secondary)
             Divider().padding(.vertical, 4)
-            Text("关联操作").font(.system(size: 14, weight: .semibold))
+            Text(lab ? "关联操作" : "使用此 Key 的连接").font(.system(size: 14, weight: .semibold))
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    let linked = model.actions.filter { $0.credential_id == item.id }
-                    if linked.isEmpty { Text("尚未配置关联操作").font(.system(size: 12)).foregroundStyle(.secondary) }
+                    if !lab {
+                        let linked = model.connections.filter { $0.credential_id == item.id }
+                        if model.connectionsUnavailable {
+                            Text("无法读取连接列表，请刷新。").font(.system(size: 12)).foregroundStyle(.red)
+                        } else if linked.isEmpty {
+                            Text("还没有生效的连接，Agent 暂时不能用这个 Key。").font(.system(size: 12)).foregroundStyle(.secondary)
+                            Button("去签署连接规则") { model.page = .policy }
+                        }
+                        ForEach(linked) { connection in
+                            ConnectionRulesSummary(connection: connection, compact: true).padding(12)
+                                .background(surface.opacity(0.4), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.18)))
+                        }
+                    }
+                    let linked = lab ? model.actions.filter { $0.credential_id == item.id } : []
+                    if lab && linked.isEmpty { Text("尚未配置关联操作").font(.system(size: 12)).foregroundStyle(.secondary) }
                     ForEach(linked) { action in
-                        VStack(alignment: .leading, spacing: 8) { Text(action.name).font(.system(size: 13, weight: .medium)); Text("\(action.method) \(action.target.summary)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.white.opacity(0.4), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.18)))
+                        VStack(alignment: .leading, spacing: 8) { Text(action.name).font(.system(size: 13, weight: .medium)); Text("\(action.method) \(action.target.summary)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(surface.opacity(0.4), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.18)))
                     }
                 }
             }
@@ -379,7 +424,7 @@ struct RootView: View {
                         HStack { Text(action.name).font(.system(size: 17, weight: .medium)); Text("v\(action.version)").foregroundStyle(.secondary); Spacer(); StatusPill(active: action.enabled, text: action.enabled ? "已启用" : "已禁用") }
                         Text("\(action.method) \(action.origin)\(action.target.summary)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                         HStack { Text(model.credentials.first { $0.id == action.credential_id }?.label ?? action.credential_id).font(.system(size: 12)).foregroundStyle(.secondary); Spacer(); Button("更新定义") { importAction(action.id) }; Button("禁用", role: .destructive) { model.operation = Operation(title: "禁用操作", detail: "禁止后续执行“\(action.name)”。", arguments: ["action", "disable", action.id]) }.disabled(!action.enabled) }.disabled(model.busy)
-                    }.padding(20).background(.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(.gray.opacity(0.16)))
+                    }.padding(20).background(surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(.gray.opacity(0.16)))
                 }
             }.padding(.horizontal, 28).padding(.bottom, 28)
         }
@@ -393,10 +438,21 @@ struct RootView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
                 if model.policy?.mode == .personal {
-                    SectionCard(title: "个人策略", icon: "doc.text") {
-                        Text("按连接的 host、路径与读写规则授权。读操作可自动允许，写操作默认审批；调用方覆盖只能收紧。审阅完整变化后，使用此保险库已有的签名密钥签署激活。")
-                        Button("管理连接与规则") { model.showPolicyDraft = true }
-                            .disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true)
+                    SectionCard(title: "连接与规则", icon: "point.3.connected.trianglepath.dotted") {
+                        if model.connectionsUnavailable {
+                            HStack { Text("无法读取连接列表。").foregroundStyle(.red); Button("重试") { Task { await model.refresh() } } }.font(.system(size: 13))
+                        } else if model.connections.isEmpty {
+                            Text("还没有生效的连接。先在“凭证”页添加 API Key，再在这里审阅并签署它的规则。").font(.system(size: 13)).foregroundStyle(.secondary)
+                        }
+                        ForEach(model.connections) { connection in
+                            ConnectionRulesSummary(connection: connection)
+                            if connection.id != model.connections.last?.id { Divider() }
+                        }
+                        HStack {
+                            Button("编辑并签署规则") { model.showPolicyDraft = true }.buttonStyle(PrimaryButton())
+                                .disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true)
+                            Text("改动会先完整展示，签署后才生效；规则只能比预设更严格。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
                     }
                 } else if model.policy?.mode == .team {
                     SectionCard(title: "团队连接与外部签名", icon: "doc.text") {
@@ -404,17 +460,17 @@ struct RootView: View {
                         Button("查看连接与外部草稿") { model.showPolicyDraft = true }.disabled(model.busy)
                     }
                 }
-                SectionCard(title: "当前策略", icon: "checkmark.shield") {
+                SectionCard(title: lab ? "当前策略" : "签署状态", icon: "checkmark.shield") {
                     if let policy = model.policy {
                         info("签名模式", policy.mode == .personal ? "个人" : policy.mode == .team ? "团队" : "解锁后验证")
                         info("状态", policy.status == "active" ? "已生效" : policy.status == "expired" ? "已过期" : policy.bundle_persisted ? "已保存，解锁后加载" : "尚未激活")
-                        info("信任根", policy.trust_installed ? "已安装" : "未安装")
-                        if let version = policy.version { info("生效版本", "v\(version)") }
-                        if let expires = policy.expires_at_ms { info("有效期至", displayDate(expires)) }
+                        info(lab ? "信任根" : "签名密钥", policy.trust_installed ? "已安装" : "未安装")
+                        if let version = policy.version { info("规则版本", "v\(version)") }
+                        if let expires = policy.expires_at_ms { info("有效期至", displayDate(expires) + "（到期后需重新签署）") }
                     }
                     HStack {
                         if model.policy?.mode == .personal {
-                            Button("创建本机签名密钥") { model.beginPersonalPolicySetup() }.disabled(model.policy?.trust_installed != false)
+                            if model.policy?.trust_installed == false { Button("创建本机签名密钥") { model.beginPersonalPolicySetup() }.buttonStyle(PrimaryButton()) }
                         } else if model.policy?.mode == .team {
                             Button("安装信任根") { importPolicy(trust: true) }
                             Button("激活签名策略") { importPolicy(trust: false) }
@@ -450,6 +506,9 @@ struct RootView: View {
     private var approvalsPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
+                ForEach(model.approvals.filter { if case .localPresence = $0.approver { return !lab }; return false }) { item in
+                    ApprovalSummaryCard(item: item)
+                }
                 AccessRequestsPanel()
                 HStack {
                     Button(model.approvalNotificationsEnabled ? "关闭请求提醒" : "启用请求提醒") {
@@ -459,7 +518,7 @@ struct RootView: View {
                 }
                 if let message = model.approvalNotificationMessage { Text(message).font(.system(size: 12)).foregroundStyle(.secondary) }
                 if model.approvals.isEmpty { EmptyState(icon: "tray", title: "没有待审批请求", detail: "Agent 提交的有效审批请求会出现在这里。") }
-                ForEach(model.approvals) { item in
+                ForEach(model.approvals.filter { item in if case .localPresence = item.approver { return lab }; return true }) { item in
                     SectionCard(title: model.actions.first { $0.id == item.action_id }?.name ?? "固定操作", icon: "doc.text.magnifyingglass") {
                         info("会话", item.session_id)
                         info("审批方式", item.approver.summary)
@@ -471,7 +530,7 @@ struct RootView: View {
                         }.disabled(model.busy)
                     }
                 }
-                Text("本机审批需在完整审阅后进行系统认证；外部签名请求继续使用独立审批工具。").font(.system(size: 12)).foregroundStyle(.secondary)
+                if lab { Text("本机审批需在完整审阅后进行系统认证；外部签名请求继续使用独立审批工具。").font(.system(size: 12)).foregroundStyle(.secondary) }
             }.padding(.horizontal, 28).padding(.bottom, 28)
         }
     }
@@ -482,22 +541,22 @@ struct RootView: View {
                     Label(message, systemImage: "exclamationmark.circle").foregroundStyle(.red)
                 }
                 if let activity = model.activity {
-                    Text("UTC 当日 · 截至 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("UTC 当日 · 更新于 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary)
                     if activity.complete {
                         if !activity.reauthorization.connections.isEmpty { reauthorization(activity.reauthorization.connections) }
                         HStack(spacing: 28) {
-                            activityMetric("执行准入", activity.totals.admitted)
-                            activityMetric("执行拒绝", activity.totals.denied)
-                            activityMetric("触发审批", activity.totals.approvals)
-                            activityMetric("实测输出 token", activity.totals.measuredTokens)
-                            activityMetric("按上限计入 token", activity.totals.estimatedTokens)
+                            activityMetric("已开始执行", activity.totals.admitted)
+                            activityMetric("被拒绝", activity.totals.denied)
+                            activityMetric("请求批准", activity.totals.approvals)
+                            activityMetric("输出 token", activity.totals.measuredTokens)
+                            activityMetric("预估 token（未测得）", activity.totals.estimatedTokens)
                         }
                         Divider()
                         if activity.rows.isEmpty { Text("此快照内没有已保留的活动记录。").foregroundStyle(.secondary) }
                         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 15) {
                             GridRow {
-                                Text("调用方"); Text("连接 / 读写")
-                                Text("准入"); Text("拒绝"); Text("审批"); Text("实测 token"); Text("按上限计入")
+                                Text("Agent"); Text("连接 / 读写")
+                                Text("开始执行"); Text("被拒绝"); Text("请求批准"); Text("输出 token"); Text("预估 token")
                             }.font(.system(size: 12, weight: .semibold))
                             ForEach(activity.rows) { row in
                                 GridRow {
@@ -508,7 +567,7 @@ struct RootView: View {
                                         }
                                     }
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Button {activityDetail=row} label:{Text(row.context.map { "\($0.connection ?? $0.instance_slug ?? "—") / \($0.classification)" } ?? "上下文未记录")}.buttonStyle(.plain).disabled(row.recent.isEmpty).help("查看最近 50 条调用")
+                                        Button {activityDetail=row} label:{Text(row.context.map { "\($0.connection ?? $0.instance_slug ?? "—") / \($0.classification) · 查看最近调用" } ?? "上下文未记录")}.buttonStyle(.link).disabled(row.recent.isEmpty).help("查看最近 50 条调用")
                                         Text(row.context?.model ?? "—").foregroundStyle(.secondary)
                                     }
                                     Text(String(row.counts.admitted)); Text(String(row.counts.denied)); Text(String(row.counts.approvals))
@@ -516,7 +575,7 @@ struct RootView: View {
                                 }.font(.system(size: 12))
                             }
                         }
-                        Text("完整读取此快照的已保留记录（\(activity.pages) 页）。已清理的历史不在统计内；准入与拒绝可以来自同一请求。输出 token 按终态时间展示，跨日预算仍按准入日记账。")
+                        Text("统计只含 Rekey 仍保留的记录（读取 \(activity.pages) 页）。点连接名查看最近的调用；“开始执行”不代表上游一定成功，结果以明细为准。")
                             .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: 820, alignment: .leading)
                     } else {
                         HStack {
@@ -569,8 +628,12 @@ struct RootView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(model.audit?.events ?? []) { event in
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack { Text(event.event_type).font(.system(size: 13, weight: .medium, design: .monospaced)); Spacer(); Text(event.outcome).font(.system(size: 11)).foregroundStyle(event.outcome == "success" ? green : .secondary) }
-                            HStack { Text(displayDate(event.created_at_ms)); Spacer(); Text(event.reason_code).lineLimit(2) }.font(.system(size: 11)).foregroundStyle(.secondary)
+                            HStack {
+                                Text(auditLabels[event.event_type] ?? event.event_type).font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                Text(auditOutcomeLabels[event.outcome] ?? event.outcome).font(.system(size: 11)).foregroundStyle(event.outcome == "success" ? green : event.outcome == "denied" || event.outcome == "failure" ? .red : .secondary)
+                            }
+                            HStack { Text(displayDate(event.created_at_ms)); Text(event.event_type).font(.system(size: 11, design: .monospaced)); Spacer(); Text(event.reason_code).lineLimit(2) }.font(.system(size: 11)).foregroundStyle(.secondary)
                         }.padding(.vertical, 14)
                         Divider()
                     }
@@ -656,7 +719,8 @@ struct RootView: View {
 }
 
 func info(_ label: String, _ value: String) -> some View {
-    HStack(alignment: .top) { Text(label).foregroundStyle(.secondary); Spacer(minLength: 18); Text(value).multilineTextAlignment(.trailing).textSelection(.enabled) }.font(.system(size: 12))
+    // Values sit next to their labels so wide cards still read row by row.
+    HStack(alignment: .top, spacing: 12) { Text(label).foregroundStyle(.secondary).frame(width: 96, alignment: .leading); Text(value).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.font(.system(size: 13))
 }
 struct StatusPill: View {
     let active: Bool
@@ -665,7 +729,7 @@ struct StatusPill: View {
 }
 struct PrimaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(.system(size: 13, weight: .medium)).padding(.horizontal, 16).padding(.vertical, 10).foregroundStyle(.white).background(green.opacity(!enabled ? 0.4 : configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 7)) }
+    func makeBody(configuration: Configuration) -> some View { configuration.label.font(.system(size: 13, weight: .medium)).padding(.horizontal, 16).padding(.vertical, 10).foregroundStyle(.white).background(buttonFill.opacity(!enabled ? 0.4 : configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 7)) }
 }
 struct SecondaryButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label.font(.system(size: 13, weight: .medium)).padding(.horizontal, 14).padding(.vertical, 9).foregroundStyle(green).background(configuration.isPressed ? sage : .clear, in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(green.opacity(0.6))) }
@@ -678,5 +742,5 @@ struct SectionCard<Content: View>: View {
     let title: String
     let icon: String
     @ViewBuilder let content: Content
-    var body: some View { VStack(alignment: .leading, spacing: 17) { Label(title, systemImage: icon).font(.system(size: 17, weight: .medium)); content }.padding(22).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 9)).overlay(RoundedRectangle(cornerRadius: 9).stroke(.gray.opacity(0.17))) }
+    var body: some View { VStack(alignment: .leading, spacing: 17) { Label(title, systemImage: icon).font(.system(size: 17, weight: .medium)); content }.padding(22).frame(maxWidth: .infinity, alignment: .leading).background(surface.opacity(0.65), in: RoundedRectangle(cornerRadius: 9)).overlay(RoundedRectangle(cornerRadius: 9).stroke(.gray.opacity(0.17))) }
 }

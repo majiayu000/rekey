@@ -22,7 +22,7 @@ struct OperationForm: View {
     @State private var confirmation = ""
     @State private var recovery = false
     @State private var presence = false
-    @State private var rememberPresence = false
+    @State private var rememberPresence = true
     @State private var protectedFlow = false
     @State private var sessionID = ""
     @State private var hash = ""
@@ -55,11 +55,14 @@ struct OperationForm: View {
             Label(operation.title, systemImage: "lock.shield").font(.system(size: 23, weight: .semibold))
             Text(operation.detail).font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if isInit {
-                Picker("策略签名模式", selection: $policyMode) {
-                    Text("个人 · 此设备签名").tag("personal")
-                    Text("团队 · 外部签名器").tag("team")
-                }
-                Text("创建后模式不可更改；切换模式需要新建保险库。").font(.system(size: 11)).foregroundStyle(.secondary)
+                // Personal is the default; team mode is an explicit, irreversible choice.
+                DisclosureGroup("高级：团队模式") {
+                    Picker("策略签名模式", selection: $policyMode) {
+                        Text("个人 · 此设备签名").tag("personal")
+                        Text("团队 · 外部签名器").tag("team")
+                    }
+                    Text("团队模式由外部签名器管理规则，个人使用不需要。创建后模式不可更改。").font(.system(size: 11)).foregroundStyle(.secondary)
+                }.font(.system(size: 12))
             }
             if revokeSession { TextField("会话 ID", text: $sessionID).textFieldStyle(.roundedBorder) }
             if isRestore {
@@ -89,7 +92,7 @@ struct OperationForm: View {
             }
             if !presence { SecureField(recovery ? "恢复密钥" : operation.arguments.first == "init" ? "设置保险库密码" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
             if operation.arguments == ["unlock"] {
-                Toggle("启用系统认证（授权有效期 \(model.securitySettings.passwordInterval.label)）", isOn: $rememberPresence).disabled(model.busy || model.securitySettings.passwordInterval == .everyUnlock)
+                Toggle("启用系统认证：之后用 Touch ID 解锁和批准 Agent 的写请求（有效期 \(model.securitySettings.passwordInterval.label)）", isOn: $rememberPresence).disabled(model.busy || model.securitySettings.passwordInterval == .everyUnlock)
                 Text("仅在本次解锁成功后保存受系统认证保护的新授权；不会导入旧授权。").font(.system(size: 11)).foregroundStyle(.secondary)
                 Button("用系统认证解锁") {
                     let revision = model.nativeFlowRevision
@@ -98,7 +101,10 @@ struct OperationForm: View {
                 }.disabled(model.busy)
             }
             if operation.newSecret { SecureField(operation.arguments.first == "password" ? "新密码" : "新凭证值", text: $secret).textFieldStyle(.roundedBorder) }
-            if operation.confirmSecret { SecureField("再次输入新密码", text: $confirmation).textFieldStyle(.roundedBorder) }
+            if operation.confirmSecret {
+                SecureField("再次输入新密码", text: $confirmation).textFieldStyle(.roundedBorder)
+                if !confirmation.isEmpty && confirmation != (operation.newSecret ? secret : proof) { Text("两次输入的密码不一致。").font(.system(size: 11)).foregroundStyle(.red) }
+            }
             Text("输入仅用于本次操作，不会保存。").font(.system(size: 11)).foregroundStyle(.secondary)
             HStack {
                 Button("取消") { clear(); if isRestore || isRollback { model.clearNativeFlow() }; dismiss() }.keyboardShortcut(.cancelAction)
@@ -176,12 +182,15 @@ struct AddCredentialForm: View {
     var body:some View {
         VStack(alignment:.leading,spacing:18) {
             Text("添加密钥与连接").font(.system(size:24,weight:.semibold))
-            Text("密钥只交给 Rekey。选择预设、审阅规则并签署后，Agent 照常启动即可使用。").foregroundStyle(.secondary)
-            if !OAuthSetup.presets.contains(preset) {TextField("密钥名称",text:$label).textFieldStyle(.roundedBorder).disabled(saved != nil)
-            TextField("连接名称，例如 github-personal",text:$connectionName).textFieldStyle(.roundedBorder)}
-            Picker("服务预设",selection:$preset) {
+            Text("Key 只交给 Rekey。选好服务、审阅规则并签署后，再用 rekey connect 接入 Agent。").foregroundStyle(.secondary)
+            Picker("服务",selection:$preset) {
                 ForEach(ConnectionPreset.apiKeyPresets+OAuthSetup.presets,id:\.self) {Text($0).tag($0)}
             }.disabled(saved != nil || model.busy)
+                .onChange(of:preset){old,new in if connectionName.isEmpty || connectionName==old {connectionName=new}}
+            if !OAuthSetup.presets.contains(preset) {
+                LabeledContent("连接名称") {TextField("Agent 调用时使用，例如 github",text:$connectionName).textFieldStyle(.roundedBorder)}
+                LabeledContent("Key 名称") {TextField("可留空，默认同连接名称",text:$label).textFieldStyle(.roundedBorder).disabled(saved != nil)}
+            }
             if OAuthSetup.presets.contains(preset) {OAuthAddForm(preset:preset,signerMode:$signerMode).id(preset)} else {
             if generic {
                 TextField("固定 origin，例如 https://api.example.com",text:$origin).textFieldStyle(.roundedBorder)
@@ -198,7 +207,7 @@ struct AddCredentialForm: View {
                     Text("保存新的 API Key").tag("")
                     ForEach(model.credentials.filter{$0.active && $0.kind=="opaque-token"}) {Text("使用已保存："+$0.label).tag($0.id)}
                 }
-                if existingID.isEmpty {SecureField("粘贴 API Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder).disabled(signerMode == nil)}
+                if existingID.isEmpty {LabeledContent("API Key") {SecureField("粘贴 Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder).disabled(signerMode == nil)}}
             }
             else {Label("密钥已保存；连接尚未激活。继续审阅规则，不会再次添加密钥。",systemImage:"checkmark.shield")}
             PeerSecurityWarning()
@@ -207,11 +216,12 @@ struct AddCredentialForm: View {
             if let signerMode {Text(signerMode.label).font(.caption).foregroundStyle(.secondary)}
             else {Button("检查签名密钥"){Task{await checkSigner()}}.disabled(model.busy)}
             if let message {Text(message).foregroundStyle(.red).textSelection(.enabled)}
-            HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction).disabled(model.busy);Spacer();Button(saved != nil || !existingID.isEmpty ? "继续审阅规则":"保存并审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || signerMode == nil || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && existingID.isEmpty && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty || llm && modelList.isEmpty)}
+            HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction).disabled(model.busy);Spacer();Button(saved != nil || !existingID.isEmpty ? "继续审阅规则":"保存并审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || signerMode == nil || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && existingID.isEmpty && !singleLine(secret) || generic && origin.isEmpty || llm && modelList.isEmpty)}
             }
         }.padding(30).frame(width:530).background(canvas).interactiveDismissDisabled(model.busy)
         .task {
             preset=model.addPreset
+            if connectionName.isEmpty {connectionName=preset}
             if case .add(let request)=model.onboardingRoute {
                 connectionName=request.name ?? request.provider;label=request.label ?? connectionName
                 existingID=request.credentialID ?? "";origin=request.origin ?? "";header=request.header ?? "x-api-key";prefix=request.prefix ?? ""
@@ -226,7 +236,8 @@ struct AddCredentialForm: View {
         catch {signerMode=nil;message=error.localizedDescription}
     }
     private func prepare() {
-        let value=secret,name=label,connection=connectionName,reuseID=existingID,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix,selectedModels=modelList
+        let connection=connectionName.isEmpty ? preset : connectionName
+        let value=secret,name=label.isEmpty ? connection : label,reuseID=existingID,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix,selectedModels=modelList
         secret="";message=nil
         Task {
             do {
@@ -499,10 +510,11 @@ struct LocalApprovalView: View {
     @State private var window = "once"
     @State private var customMinutes = "30"
     @FocusState private var rejectFocused: Bool
+    private var windowMinutes: Int { window == "30" ? 30 : Int(customMinutes) ?? 0 }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let details = model.localApprovalDetails {
-                Text(details.review?.title ?? "本机审批").font(.system(size: 22, weight: .semibold))
+                Text(details.review.map { review in review.ssh == nil ? (review.action_name ?? "本机审批") + (model.operation(for: review).map { " · " + $0.name } ?? "") : review.title } ?? "本机审批").font(.system(size: 22, weight: .semibold))
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(details.state.label).foregroundStyle(.secondary)
@@ -513,32 +525,40 @@ struct LocalApprovalView: View {
                                 if ssh.bound_host_key==nil || ssh.host=="unknown-host" {Text("目标尚未绑定或未登记；本次批准不能验证 host 身份。").font(.caption).foregroundStyle(.orange)}
                                 if let unverified=ssh.use.unverified_host {Text("请求声明的 host key（未经验证）：\(unverified)").font(.caption).textSelection(.enabled)}
                                 Text("签名数据 SHA-256：\(ssh.data_sha256)").font(.system(size:11,design:.monospaced)).textSelection(.enabled)
-                            } else {Text("\(review.method ?? "") \(review.origin ?? "")").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)}
-                            Text("资源：\(review.challenge.resource.type) / \(review.challenge.resource.id)").textSelection(.enabled)
+                            } else {
+                                ApprovalFacts(review: review)
+                            }
+                            Text("连接：\(review.challenge.resource.id)").font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
                             Text("有效期至 \(displayDate(review.challenge.max_expires_at_ms))").font(.system(size: 12)).foregroundStyle(.secondary)
                         }
                         Text("请完整审阅下方请求。批准后由 Agent 继续调用。").font(.system(size: 12)).foregroundStyle(.secondary)
                         if details.review?.windowAllowed == true {
-                            Picker("批准范围",selection:$window) { Text("仅这次").tag("once");Text("30 分钟").tag("30");Text("自定义").tag("custom") }.pickerStyle(.segmented)
+                            Picker("批准范围",selection:$window) { Text("仅这次").tag("once");Text("此规则 30 分钟内都放行").tag("30");Text("自定义时长").tag("custom") }.pickerStyle(.segmented)
                             if window == "custom" { TextField("分钟（1–480）",text:$customMinutes).textFieldStyle(.roundedBorder) }
-                            Text("时间窗只适用于同一连接、规则和调用方；锁定或更改策略后失效，拒绝规则始终有效。").font(.system(size:11)).foregroundStyle(.secondary)
+                            Text(window == "once" ? "只放行这一个请求。" : "接下来 \(windowMinutes) 分钟内，同一调用方经 \(details.review?.challenge.resource.id ?? "此连接") 发出、匹配规则“\(model.ruleSummary(details.review))”的请求都会直接放行；锁定保险库或改规则后失效，拒绝规则始终有效。")
+                                .font(.system(size:12)).foregroundStyle(window == "once" ? .secondary : Color.orange).fixedSize(horizontal:false,vertical:true)
                         }
                         if !details.raw.isEmpty {
+                            Text("完整请求（批准绑定这份内容，此处已格式化显示）").font(.system(size: 12, weight: .medium))
                             ScrollView([.vertical, .horizontal]) {
-                                Text(details.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                                Text(details.displayText).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .topLeading).padding(12)
                             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black.opacity(0.03))
                             Text(details.review?.ssh == nil ? "正文包含目标、参数、查询、请求体、请求头与策略的完整快照。":"正文包含用途、用户、host 绑定、公钥以及完整待签数据 base64；请审阅后明确决定。").font(.system(size: 11)).foregroundStyle(.secondary)
                         } else { Spacer(); Text("此请求已结束，完整正文已释放。"); Spacer() }
-                        if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red).textSelection(.enabled) }
+                        if let failure {
+                            Text(failure).font(.system(size: 12)).foregroundStyle(.red).textSelection(.enabled)
+                            Button("重新解锁并启用系统认证") { model.clearNativeFlow(); dismiss(); model.requestDesktopLogin() }
+                                .help("在 App 里批准需要系统认证；解锁时勾选“启用系统认证”即可")
+                        }
                         PeerSecurityWarning()
                         HStack {
                             Button("关闭") { model.clearNativeFlow(); dismiss() }.keyboardShortcut(.cancelAction)
                             Button("查询最新状态") { failure = nil; Task { await model.reviewLocalApproval(details.id) } }.disabled(model.busy)
                             Spacer()
-                            Button("拒绝") { decide(details, approve: false) }.keyboardShortcut(.defaultAction).focused($rejectFocused)
+                            Button("拒绝") { decide(details, approve: false) }.focused($rejectFocused)
                                 .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh)
-                            Button("系统认证并批准") { decide(details, approve: true) }
+                            Button(details.review?.windowAllowed == true && window != "once" ? "认证并放行 \(windowMinutes) 分钟" : "认证并批准这一次") { decide(details, approve: true) }.buttonStyle(PrimaryButton())
                                 .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh || (details.review?.windowAllowed == true && window == "custom" && !(1...480).contains(Int(customMinutes) ?? 0)))
                         }
                     }
@@ -700,7 +720,7 @@ private struct ConnectionSummary:View {
             ForEach(connection.rules) {rule in Text("\(rule.methods.text) \(rule.path) → \(rule.effect)").font(.system(size:12,design:.monospaced))}
             Text("调用方识别用于记录，不是身份认证；覆盖规则只能收紧。").font(.caption).foregroundStyle(.secondary)
             if connection.grade=="T1" {Text("Agent 进程会拿到短期、权限受限的临时凭证。").foregroundStyle(.orange)}
-        }.frame(maxWidth:.infinity,alignment:.leading).padding(12).background(.white.opacity(0.6),in:RoundedRectangle(cornerRadius:8))
+        }.frame(maxWidth:.infinity,alignment:.leading).padding(12).background(surface.opacity(0.6),in:RoundedRectangle(cornerRadius:8))
     }
 }
 struct ConnectionEditor:View {
@@ -718,7 +738,7 @@ struct ConnectionEditor:View {
                     TextField("read / write / POST",text:Binding(get:{connection.rules[i].methods.text},set:{connection.rules[i].methods = .init(text:$0)})).frame(width:125)
                     TextField("路径模式",text:$connection.rules[i].path)
                     Picker("判定",selection:$connection.rules[i].effect) {Text("允许").tag("allow");Text("审批").tag("approve");Text("拒绝").tag("deny")}.frame(width:110)
-                    Button(role:.destructive){connection.rules.remove(at:i)}label:{Image(systemName:"minus.circle")}
+                    Button(role:.destructive){connection.rules.remove(at:i)}label:{Image(systemName:"minus.circle")}.accessibilityLabel("删除这条规则").help("删除这条规则")
                 }
             }
             Button("添加规则"){connection.rules.append(.init(id:UUID().uuidString.lowercased(),methods:.category("write"),path:"/**",effect:"approve"))}
@@ -796,6 +816,9 @@ struct PersonalPolicyDraftForm:View {
     @State private var sshPresence=true
     @State private var sshRecovery=false
     @State private var sshProof=""
+    @State private var advanced=false
+    @State private var activated=false
+    @State private var editRules=false
     @State private var showRootCredential=false
     @State private var derivedCredential=""
     @State private var derivedKind="aws-assume-role"
@@ -829,44 +852,55 @@ struct PersonalPolicyDraftForm:View {
                         Toggle("使用系统认证签署并激活",isOn:$presence).disabled(model.busy || attempted)
                         PeerSecurityWarning()
                         if !presence {Toggle("使用恢复密钥",isOn:$recovery);SecureField(recovery ? "恢复密钥":"保险库密码",text:$proof)}
-                        Button(model.personalPolicySigning ? "等待系统认证…":"签署并激活一次"){activate(draft)}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || attempted || !presence && proof.isEmpty)
                         Button("放弃草稿，继续编辑"){clear()}.disabled(model.busy)
                     } else if baseline != nil {
-                        Text("编辑完整已签署授权集合。allow 不打扰；approve 进入审批；deny 直接拒绝。HTTP / SSH / T1 将一起审阅并保存。")
-                        ForEach(connections.indices,id:\.self){i in Button{selectedIndex=i}label:{HStack{Image(systemName:selectedIndex==i ? "checkmark.circle.fill":"circle");Text(connections[i].name);Spacer();Text(connections[i].origin).font(.caption)}}.buttonStyle(.plain)}
-                        if let i=selectedIndex,connections.indices.contains(i){ConnectionEditor(connection:$connections[i]).disabled(model.busy);Button("删除此连接",role:.destructive){connections.remove(at:i);selectedIndex=nil}.disabled(model.busy)}
-                        Button("添加连接"){dismiss();model.showAddCredential=true}.disabled(model.busy)
-                        if let i=selectedIndex,connections.indices.contains(i),connections[i].oauth != nil {Button("打开浏览器 OAuth 授权"){let name=connections[i].name;dismiss();model.showPolicyDraft=false;model.onboardingRoute = .oauth(name)}}
-                        Divider()
-                        Text("SSH · 私钥不导出").font(.headline)
-                        if !sshSocket.isEmpty {Text("IdentityAgent："+sshSocket).font(.system(size:12,design:.monospaced)).textSelection(.enabled)}
-                        Text("已加载完整签名 SSH 集合。删除连接只撤销签名权限；不会删除保险库里的密钥。未知 host 或缺少 session-bind 需要审批，明确 deny 不能用窗口绕过。").font(.caption)
-                        ForEach(sshKeys.indices,id:\.self){i in
-                            SSHKeyEditor(key:$sshKeys[i]).disabled(model.busy)
-                            Button("撤销此 SSH 连接",role:.destructive){sshKeys.remove(at:i)}.disabled(model.busy)
+                        if let seed, !editRules {
+                            Text("新连接“\(seed.name)”将按服务预设生效：").font(.headline)
+                            ConnectionRulesSummary(connection: connections.first { $0.name == seed.name } ?? seed)
+                                .padding(12).background(surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                            Button("修改规则（可选）") { editRules = true; selectedIndex = connections.firstIndex { $0.name == seed.name } }.disabled(model.busy)
+                        } else {
+                            Text("选择一个连接查看或修改规则：允许 = 直接放行，审批 = 需要你批准，拒绝 = 直接拒绝。下一步会完整展示所有改动，签署后才生效。")
+                            ForEach(connections.indices,id:\.self){i in Button{selectedIndex=i}label:{HStack{Image(systemName:selectedIndex==i ? "checkmark.circle.fill":"circle");Text(connections[i].name);Spacer();Text(connections[i].origin).font(.caption)}}.buttonStyle(.plain)}
+                            if let i=selectedIndex,connections.indices.contains(i){ConnectionEditor(connection:$connections[i]).disabled(model.busy);Button("删除此连接",role:.destructive){connections.remove(at:i);selectedIndex=nil}.disabled(model.busy)}
+                            Button("添加连接"){dismiss();model.showAddCredential=true}.disabled(model.busy)
+                            if let i=selectedIndex,connections.indices.contains(i),connections[i].oauth != nil {Button("打开浏览器 OAuth 授权"){let name=connections[i].name;dismiss();model.showPolicyDraft=false;model.onboardingRoute = .oauth(name)}}
                         }
-                        TextField("新 SSH 密钥的凭据名称",text:$sshLabel)
-                        Picker("密钥存储",selection:$sshMode){ForEach(SSHKeyMode.allCases,id:\.self){mode in Text(mode.label).tag(mode)}}
-                        Text("默认使用 macOS Secure Enclave；不自动回退软件。生成后只显示公钥，仍须审阅并签署 SSH 连接规则。").font(.caption).foregroundStyle(.secondary)
-                        Toggle("使用系统认证生成 SSH 密钥",isOn:$sshPresence).disabled(model.busy)
-                        if !sshPresence {Toggle("使用恢复密钥生成",isOn:$sshRecovery);SecureField(sshRecovery ? "恢复密钥":"保险库密码",text:$sshProof)}
-                        PeerSecurityWarning()
-                        Button("生成密钥并添加待签署 SSH 连接"){generateSSH()}.disabled(model.busy || sshLabel.isEmpty || !sshPresence && sshProof.isEmpty)
-                        Divider()
-                        Text("T1 · 派生临时凭据").font(.headline)
-                        ForEach(derived.indices,id:\.self){i in DerivedGrantEditor(grant:$derived[i]);Button("撤销此T1连接",role:.destructive){derived.remove(at:i)}}
-                        Picker("根凭据",selection:$derivedCredential){Text("选择已保存的 AWS / GitHub App 根凭据").tag("");ForEach(model.credentials.filter{$0.active && ["aws-static","github-app-installation"].contains($0.kind)}){Text($0.label).tag($0.id)}}
-                        Picker("派生方式",selection:$derivedKind){Text("AWS AssumeRole").tag("aws-assume-role");Text("EKS kubectl").tag("kubernetes-eks");Text("GitHub App").tag("github-app")}
-                        HStack{Button("添加T1授权"){addDerived()}.disabled(derivedCredential.isEmpty || model.busy);Button("保存派生根凭据"){showRootCredential=true}.disabled(model.busy)}
                         DatePicker("策略有效期至",selection:$expiry,displayedComponents:[.date,.hourAndMinute])
                         if connections.isEmpty {Text("签署空集合将撤销全部 HTTP 连接。").foregroundStyle(.orange)}
-                        Button("生成完整审阅草稿"){generate()}.buttonStyle(PrimaryButton()).disabled(model.busy || expiry<=Date())
+                        DisclosureGroup("高级：SSH 签名与派生临时凭据（T1）",isExpanded:$advanced) {
+                            VStack(alignment:.leading,spacing:10) {
+                                Text("SSH · 私钥不导出").font(.headline)
+                                if !sshSocket.isEmpty {Text("IdentityAgent："+sshSocket).font(.system(size:12,design:.monospaced)).textSelection(.enabled)}
+                                Text("已加载完整签名 SSH 集合。删除连接只撤销签名权限；不会删除保险库里的密钥。未知 host 或缺少 session-bind 需要审批，明确 deny 不能用窗口绕过。").font(.caption)
+                                ForEach(sshKeys.indices,id:\.self){i in
+                                    SSHKeyEditor(key:$sshKeys[i]).disabled(model.busy)
+                                    Button("撤销此 SSH 连接",role:.destructive){sshKeys.remove(at:i)}.disabled(model.busy)
+                                }
+                                TextField("新 SSH 密钥的凭据名称",text:$sshLabel)
+                                Picker("密钥存储",selection:$sshMode){ForEach(SSHKeyMode.allCases,id:\.self){mode in Text(mode.label).tag(mode)}}
+                                Text("默认使用 macOS Secure Enclave；不自动回退软件。生成后只显示公钥，仍须审阅并签署 SSH 连接规则。").font(.caption).foregroundStyle(.secondary)
+                                Toggle("使用系统认证生成 SSH 密钥",isOn:$sshPresence).disabled(model.busy)
+                                if !sshPresence {Toggle("使用恢复密钥生成",isOn:$sshRecovery);SecureField(sshRecovery ? "恢复密钥":"保险库密码",text:$sshProof)}
+                                PeerSecurityWarning()
+                                Button("生成密钥并添加待签署 SSH 连接"){generateSSH()}.disabled(model.busy || sshLabel.isEmpty || !sshPresence && sshProof.isEmpty)
+                                Divider()
+                                Text("T1 · 派生临时凭据").font(.headline)
+                                ForEach(derived.indices,id:\.self){i in DerivedGrantEditor(grant:$derived[i]);Button("撤销此T1连接",role:.destructive){derived.remove(at:i)}}
+                                Picker("根凭据",selection:$derivedCredential){Text("选择已保存的 AWS / GitHub App 根凭据").tag("");ForEach(model.credentials.filter{$0.active && ["aws-static","github-app-installation"].contains($0.kind)}){Text($0.label).tag($0.id)}}
+                                Picker("派生方式",selection:$derivedKind){Text("AWS AssumeRole").tag("aws-assume-role");Text("EKS kubectl").tag("kubernetes-eks");Text("GitHub App").tag("github-app")}
+                                HStack{Button("添加T1授权"){addDerived()}.disabled(derivedCredential.isEmpty || model.busy);Button("保存派生根凭据"){showRootCredential=true}.disabled(model.busy)}
+                            }
+                        }
                     } else {Text("先加载已认证连接列表。");Button("重新加载"){Task{await load()}}.disabled(model.busy)}
-                    if let message{Text(message).foregroundStyle(.red).textSelection(.enabled)}
+                    if let message{Text(message).foregroundStyle(activated ? green : .red).textSelection(.enabled)}
+                    if activated {ConnectCommands()}
                 }.frame(maxWidth:.infinity,alignment:.leading)
             }
             Text("未确认或认证取消时不激活。签名与激活失败不会自动重试。").font(.caption).foregroundStyle(.secondary)
-            HStack {if model.busy{ProgressView()};Spacer();Button("关闭"){clear();model.showPolicyDraft=false;dismiss();Task{await model.refresh()}}.disabled(model.busy)}
+            HStack {if model.busy{ProgressView()};Spacer();Button("关闭"){clear();model.showPolicyDraft=false;dismiss();Task{await model.refresh()}}.keyboardShortcut(.cancelAction).disabled(model.busy)
+                if draft==nil && baseline != nil && !activated {Button("下一步：审阅全部改动"){generate()}.buttonStyle(PrimaryButton()).disabled(model.busy || expiry<=Date())}
+                if let draft, !activated {Button(model.personalPolicySigning ? "等待系统认证…" : confirmed ? "签署并激活" : "先勾选“已审阅”"){activate(draft)}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || attempted || !presence && proof.isEmpty)}}
         }.padding(28).frame(width:780,height:720).background(canvas).interactiveDismissDisabled(model.busy)
         .task{await load()}
         .onChange(of:model.nativeFlowRevision){_,_ in clear();baseline=nil;connections=[];derived=[];sshKeys=[];sshSocket="";selectedIndex=nil}
@@ -920,7 +954,7 @@ struct PersonalPolicyDraftForm:View {
     private func activate(_ draft:PersonalPolicyDraft){
         guard confirmed,!attempted,!model.busy else{return}
         let value=proof,usePresence=presence,useRecovery=recovery;proof="";attempted=true;confirmed=false
-        Task{do{try await model.activatePersonalPolicy(draft,proof:value,recovery:useRecovery,presence:usePresence);guard model.acceptsNativeCompletion(draft.revision,workspace:draft.workspace)else{return};message="规则已激活。运行 rekey connect 完成接入，Agent 照常启动。"}catch{if model.acceptsNativeCompletion(draft.revision,workspace:draft.workspace){message=error.localizedDescription}}}
+        Task{do{try await model.activatePersonalPolicy(draft,proof:value,recovery:useRecovery,presence:usePresence);guard model.acceptsNativeCompletion(draft.revision,workspace:draft.workspace)else{return};activated=true;message="规则已签署生效。最后一步：在项目目录运行下面的命令接入 Agent。"}catch{if model.acceptsNativeCompletion(draft.revision,workspace:draft.workspace){message=error.localizedDescription}}}
     }
 }
 
@@ -1163,36 +1197,6 @@ private struct AnthropicOnboardingView:View {
     }
 }
 
-struct AccessRequestsPanel:View {
-    @EnvironmentObject var model:AppModel
-    var body:some View {
-        SectionCard(title:"连接与权限请求",icon:"person.crop.circle.badge.questionmark") {
-            Text("理由来自调用方，作为不可信文本展示。调用方识别用于记录，不是身份认证。授权只有在对应规则已签署激活后才能完成。").font(.caption).foregroundStyle(.secondary)
-            if let inbox=model.accessInbox {
-                let pending=inbox.requests.filter{$0.status=="PENDING"}
-                if pending.isEmpty{Text("没有待处理访问请求。").foregroundStyle(.secondary)}
-                ForEach(pending){request in
-                    VStack(alignment:.leading,spacing:8){
-                        Text("\(request.caller) → \(request.connection ?? request.provider ?? "未指定连接")").font(.headline)
-                        if let operation=request.operation{Text("操作："+operation)}
-                        Text(request.reason).textSelection(.enabled).font(.system(size:12)).padding(8).background(sage.opacity(0.3),in:RoundedRectangle(cornerRadius:6))
-                        Text("有效期至："+displayDate(request.expires_at_ms)).font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            Button("添加连接"){model.addPreset=request.suggestedPreset;model.showAddCredential=true}
-                            Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}
-                            Button("规则已激活，完成请求"){Task{await model.resolveAccess(request,granted:true)}}
-                            Button("拒绝",role:.destructive){Task{await model.resolveAccess(request,granted:false)}}
-                        }.disabled(model.busy)
-                        Button("屏蔽此调用方并拒绝",role:.destructive){Task{await model.resolveAccess(request,granted:false,blockCaller:true)}}.font(.caption).disabled(model.busy)
-                    }.padding(.vertical,8)
-                }
-                ForEach(inbox.blocked_callers,id:\.self){caller in HStack{Text("已屏蔽："+caller);Spacer();Button("解除屏蔽"){Task{await model.setAccessBlocked(caller,blocked:false)}}.disabled(model.busy)}}
-            } else {Text("访问请求列表尚未加载。").foregroundStyle(.secondary)}
-            Button("刷新访问请求"){Task{do{try await model.loadAccessInbox()}catch{model.error=error.localizedDescription}}}.disabled(model.busy)
-        }
-    }
-}
-
 struct ActivityRecentView:View {
     let row:ActivityRow
     @EnvironmentObject var model:AppModel
@@ -1205,9 +1209,9 @@ struct ActivityRecentView:View {
             ScrollView {
                 VStack(alignment:.leading,spacing:12) {
                     ForEach(row.recent) {event in
-                        DisclosureGroup("\(displayDate(event.created_at_ms)) · \(event.outcome) · \(event.request_context?.normalized_path ?? event.event_type)") {
+                        DisclosureGroup("\(displayDate(event.created_at_ms)) · \(auditLabels[event.event_type] ?? event.event_type) · \(auditOutcomeLabels[event.outcome] ?? event.outcome) · \(event.request_context?.normalized_path ?? "")") {
                             VStack(alignment:.leading,spacing:6) {
-                                Text("结果：\(event.event_type) / \(event.reason_code)")
+                                Text("原始记录：\(event.event_type) / \(event.outcome) / \(event.reason_code)").font(.system(size:11,design:.monospaced)).foregroundStyle(.secondary)
                                 Text("请求：\(event.request_id ?? "—")")
                                 if let target=event.request_context?.target {
                                     Text("签名目标与权限：\n"+target.text)
