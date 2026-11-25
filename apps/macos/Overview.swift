@@ -79,17 +79,19 @@ func remaining(_ expiresMs: Int64, now: Date) -> String {
 struct ApprovalFacts: View {
     @EnvironmentObject var model: AppModel
     let review: LocalApprovalDetails.Review
+    /// The review sheet shows every field in full; the inbox card stays short.
+    var complete = false
     var body: some View {
         let operation = model.operation(for: review)
         VStack(alignment: .leading, spacing: 8) {
             Text(review.target).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).lineLimit(3)
-            let rows = (operation.map { pathParameters(template: $0.path, path: review.requestPath ?? "") } ?? []) + bodyFields
+            let rows = (operation.map { pathParameters(template: $0.path, path: review.requestPath ?? "") } ?? []) + queryFields + bodyFields
             if !rows.isEmpty {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
                     ForEach(rows.indices, id: \.self) { i in
                         GridRow {
                             Text(rows[i].0).foregroundStyle(.secondary)
-                            Text(rows[i].1).textSelection(.enabled).lineLimit(4)
+                            Text(rows[i].1).textSelection(.enabled).lineLimit(complete ? nil : 3)
                         }.font(.system(size: 13))
                     }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(sage.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
@@ -104,10 +106,17 @@ struct ApprovalFacts: View {
         guard review.canonical_request?["body_encoding"]?.stringValue == "text",
               let text = review.canonical_request?["body"]?.stringValue,
               let object = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else { return [] }
-        return object.keys.sorted().prefix(12).map { key in
-            let value = object[key].map { $0 as? String ?? (try? JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed])).map { String(decoding: $0, as: UTF8.self) } ?? "…" } ?? ""
-            return (key, value.count > 200 ? String(value.prefix(200)) + "…（已截断）" : value)
+        let keys = object.keys.sorted()
+        var rows: [(String, String)] = (complete ? keys : Array(keys.prefix(6))).map { key in
+            let value = object[key].map { $0 as? String ?? (try? JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed, .sortedKeys])).map { String(decoding: $0, as: UTF8.self) } ?? "…" } ?? ""
+            return ("正文 · " + key, complete || value.count <= 160 ? value : String(value.prefix(160)) + "…（已截断，打开查看全部）")
         }
+        if !complete && keys.count > 6 { rows.append(("…", "还有 \(keys.count - 6) 个字段，打开查看全部")) }
+        return rows
+    }
+    private var queryFields: [(String, String)] {
+        guard case .object(let query)? = review.canonical_request?["query"] else { return [] }
+        return query.keys.sorted().map { ("查询 · " + $0, query[$0]?.stringValue ?? "…") }
     }
 }
 
@@ -190,19 +199,30 @@ struct ConnectionRulesSummary: View {
     }
 }
 
-/// The commands that connect an Agent to this vault, with copy buttons.
+/// The commands that connect an Agent to this vault, as three steps with copy buttons.
 struct ConnectCommands: View {
     @EnvironmentObject var model: AppModel
     @State private var copied: String?
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            command("Claude Code", "rekey\(stateFlag) connect claude-code")
-            command("Codex", "rekey\(stateFlag) connect codex")
-            Text("命令会先显示要写入的 MCP 配置和说明，确认后才写入，不含任何 Key。Codex 第一次在项目里运行时会问是否信任该文件夹，选择信任才会加载 Rekey。")
-                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            command("验证：在 Agent 里输入", "用 Rekey 列出你能调用的服务和操作")
-            Text("Agent 应该列出上面签署的连接。再让它做一次读取（比如列出某个仓库的 issue），“活动”页会出现这次调用。没有反应时，确认 Agent 是在运行命令的项目目录里启动的。")
-                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 14) {
+            step(1, "在项目目录的终端里运行（二选一）", "命令会先显示要写入的 MCP 配置和说明，确认后才写入，不含任何 Key。") {
+                command("Claude Code", "rekey\(stateFlag) connect claude-code")
+                command("Codex", "rekey\(stateFlag) connect codex")
+            }
+            step(2, "在同一目录启动 Agent，输入", "Codex 第一次会问是否信任该文件夹，选择信任才会加载 Rekey。Agent 应该列出你签署的连接。") {
+                command("验证接入", "用 Rekey 列出你能调用的服务和操作，然后做一次只读调用")
+            }
+            step(3, "到“活动”页确认", "只读调用完成后，“最近调用”里会出现这一条。没有出现时，确认 Agent 是在第 1 步的目录里启动的。") { EmptyView() }
+        }
+    }
+    private func step<Content: View>(_ number: Int, _ title: String, _ note: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(String(number)).font(.system(size: 13, weight: .semibold)).frame(width: 24, height: 24).overlay(Circle().stroke(green))
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.system(size: 14, weight: .semibold))
+                content()
+                Text(note).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
     private var stateFlag: String {
@@ -217,20 +237,25 @@ struct ConnectCommands: View {
             Spacer()
             Button(copied == text ? "已复制" : "复制") {
                 NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); copied = text
-            }.accessibilityLabel("复制 \(label) 接入命令")
+            }.accessibilityLabel("复制\(label)命令")
         }.padding(12).background(surface, in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.2)))
     }
 }
 
 struct ConnectAgentGuide: View {
+    @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("接入 Agent").font(.system(size: 22, weight: .semibold))
-            Text("在要使用 Rekey 的项目目录运行一条命令。之后 Agent 读数据直接返回，写操作会出现在审批收件箱。")
+            Text("接入后，Agent 读数据直接返回，写操作会出现在审批收件箱等你决定。")
                 .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             ConnectCommands()
-            HStack { Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.defaultAction) }
+            HStack {
+                Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("查看活动") { dismiss(); model.page = .activity; model.clearActivity(); Task { await model.refresh() } }.buttonStyle(PrimaryButton())
+            }
         }.padding(28).frame(width: 600).background(canvas)
     }
 }
@@ -259,9 +284,12 @@ struct AccessRequestsPanel:View {
                             } else {
                                 Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}.buttonStyle(PrimaryButton())
                             }
-                            let ready = model.connections.contains { $0.name == request.connection || $0.preset == request.suggestedPreset }
-                            Button(ready ? "已签署，通知 Agent" : "签署后再通知 Agent"){Task{await model.resolveAccess(request,granted:true)}}
-                                .disabled(!ready).help("对应连接签署生效后，Agent 的等待会返回 GRANTED")
+                            let match = model.connections.first { connection in
+                                connection.enabled && (request.connection.map { $0 == connection.name } ?? (connection.preset == request.suggestedPreset))
+                                    && (request.operation.map { op in connection.operations.contains { $0.name == op } } ?? true)
+                            }
+                            Button(match.map { "已签署 \($0.name)，通知 Agent" } ?? "签署后再通知 Agent"){Task{await model.resolveAccess(request,granted:true)}}
+                                .disabled(match == nil).help(match == nil ? "还没有匹配这项申请的已启用连接" : "Rekey 会再次核对这条连接；通过后 Agent 的等待返回 GRANTED")
                             Spacer()
                             Menu("拒绝") {
                                 Button("拒绝这次申请"){Task{await model.resolveAccess(request,granted:false)}}
@@ -298,6 +326,22 @@ func presetDisplayName(_ preset: String) -> String {
     return names[preset].map { "\($0) · \(preset)" } ?? preset
 }
 
+/// Rule-level differences of one Connection, as short readable lines.
+func ruleChanges(_ before: ConnectionDefinition, _ after: ConnectionDefinition) -> [String] {
+    func key(_ rule: ConnectionRule) -> String { "\(methodLabel(rule.methods)) \(rule.path)" }
+    let old = Dictionary(before.rules.map { (key($0), $0.effect) }, uniquingKeysWith: { first, _ in first })
+    let new = Dictionary(after.rules.map { (key($0), $0.effect) }, uniquingKeysWith: { first, _ in first })
+    var lines: [String] = []
+    if before.enabled != after.enabled { lines.append(after.enabled ? "重新启用连接" : "停用连接（Agent 将不能调用）") }
+    for rule in after.rules.map(key) where old[rule] != new[rule] {
+        let now = effectLabels[new[rule] ?? ""] ?? ""
+        lines.append(old[rule].map { "\(rule)：\(effectLabels[$0] ?? $0) → \(now)" } ?? "新增 \(rule)：\(now)")
+    }
+    for rule in before.rules.map(key) where new[rule] == nil { lines.append("删除 \(rule)（原为 \(effectLabels[old[rule] ?? ""] ?? "")）") }
+    if lines.isEmpty { lines.append("规则判定不变（其他设置有改动，见下方 before / after）") }
+    return lines
+}
+
 /// What a draft changes, by Connection name, above the full before/after text.
 struct DraftChangeSummary: View {
     let before: [ConnectionDefinition]
@@ -312,7 +356,10 @@ struct DraftChangeSummary: View {
             Text("本次改动").font(.headline)
             if added.isEmpty && removed.isEmpty && changed.isEmpty { Text("连接没有变化（可能只更新了有效期、SSH 或 T1）。") }
             if !added.isEmpty { Label("新增连接：" + added.joined(separator: "、"), systemImage: "plus.circle").foregroundStyle(green) }
-            if !changed.isEmpty { Label("修改了规则：" + changed.joined(separator: "、") + "（详见下方 before / after）", systemImage: "pencil.circle").foregroundStyle(.orange) }
+            ForEach(changed, id: \.self) { name in
+                Label("修改了 \(name)：", systemImage: "pencil.circle").foregroundStyle(.orange)
+                ForEach(ruleChanges(old[name]!, new[name]!), id: \.self) { Text("    " + $0) }
+            }
             if !removed.isEmpty { Label("删除连接：" + removed.joined(separator: "、") + "（Agent 将不能再调用）", systemImage: "minus.circle").foregroundStyle(.red) }
             let unchanged = after.count - added.count - changed.count
             if unchanged > 0 { Text("其余 \(unchanged) 个连接不变。").foregroundStyle(.secondary) }

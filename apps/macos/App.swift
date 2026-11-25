@@ -173,12 +173,13 @@ struct RootView: View {
             Divider().padding(.vertical, 15)
             HStack(spacing: 6) {
                 Circle().fill(model.status == nil ? Color.gray : green).frame(width: 7, height: 7)
-                Text(model.status?.label ?? "未连接").font(.system(size: 11))
+                Text(model.status.map { $0.unlocked ? (model.desktopLocked ? "保险库已解锁 · 界面已锁" : "保险库已解锁") : $0.label } ?? "未连接").font(.system(size: 11))
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
                 Button(model.desktopReady ? "锁定界面" : "解锁界面") {
                     if model.desktopReady { model.lockDesktop() } else { unlock() }
                 }.font(.system(size: 11, weight: .medium)).disabled(model.busy || model.status == nil || model.pendingDesktopLocks > 0)
+                .help("只锁定这个管理界面；已签署的 Agent 调用继续工作。要停用 Agent，在设置里锁定整个保险库。")
             }
             if let status = model.status {
                 Text(status.protectionLabel).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 7)
@@ -278,9 +279,9 @@ struct RootView: View {
             if model.needsSetup {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("三步开始").font(.system(size: 13, weight: .semibold))
-                    Label("设置保险库密码，保存好只显示一次的恢复密钥", systemImage: "1.circle")
+                    Label("设置保险库密码，保存好只显示一次的恢复密钥；再设置一次本机规则签名", systemImage: "1.circle")
                     Label("添加 API Key，审阅并签署它的规则（读取放行、写入需批准）", systemImage: "2.circle")
-                    Label("在项目里运行 rekey connect codex 或 claude-code 接入 Agent", systemImage: "3.circle")
+                    Label("在项目里运行 rekey connect codex 或 claude-code 接入 Agent，让它试一次读取", systemImage: "3.circle")
                 }.font(.system(size: 13)).foregroundStyle(.secondary).padding(.top, 8)
             }
             if let error = model.connectionError {
@@ -354,7 +355,8 @@ struct RootView: View {
                 if lab {
                     step(2, "配置固定操作", "注册允许执行的请求") { model.page = .actions }
                 } else {
-                    step(2, "审阅连接规则", model.connections.isEmpty ? "签署后 Agent 才能调用" : "\(model.connections.count) 个连接已生效", done: !model.connections.isEmpty) { model.page = .policy }
+                    let active = model.connections.filter(\.enabled).count
+                    step(2, "审阅连接规则", active == 0 ? "签署后 Agent 才能调用" : "\(active) 个连接已生效", done: active > 0) { model.page = .policy }
                 }
                 step(3, "接入 Agent", "在项目里运行 rekey connect") { showConnectGuide = true }
             }.padding(.vertical, 24)
@@ -371,8 +373,9 @@ struct RootView: View {
     }
     /// Saved is not the same as usable: a key works for Agents only through a signed Connection.
     private func keyStatus(_ item: Credential) -> some View {
-        let linked = lab || model.connectionsUnavailable || model.connections.contains { $0.credential_id == item.id && $0.enabled }
-        return StatusPill(active: item.active && linked, text: !item.active ? "已撤销" : linked ? "可用" : "待签署连接", warning: item.active)
+        let mine = model.connections.filter { $0.credential_id == item.id }
+        let text = !item.active ? "已撤销" : lab ? "可用" : model.connectionsUnavailable ? "连接状态未知" : mine.contains(where: \.enabled) ? "可调用" : mine.isEmpty ? "待签署连接" : "连接已停用"
+        return StatusPill(active: text == "可用" || text == "可调用", text: text, warning: item.active)
     }
     private func credentialDetail(_ item: Credential) -> some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -552,7 +555,7 @@ struct RootView: View {
                     Label(message, systemImage: "exclamationmark.circle").foregroundStyle(.red)
                 }
                 if let activity = model.activity {
-                    HStack { Text("UTC 当日 · 更新于 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary); Button("刷新活动") { Task { await model.refresh() } }.disabled(model.busy) }
+                    HStack { Text("UTC 当日 · 更新于 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary); Button("刷新活动") { Task { model.clearActivity(); await model.refresh() } }.disabled(model.busy) }
                     if activity.complete {
                         if !activity.reauthorization.connections.isEmpty { reauthorization(activity.reauthorization.connections) }
                         HStack(spacing: 28) {
@@ -566,7 +569,7 @@ struct RootView: View {
                         }
                         RecentCalls(rows: activity.rows)
                         Divider()
-                        if activity.rows.isEmpty { Text("此快照内没有已保留的活动记录。").foregroundStyle(.secondary) }
+                        if activity.rows.isEmpty { Text("今天还没有调用。让 Agent 做一次读取，然后点“刷新活动”。").foregroundStyle(.secondary) }
                         let tokens = activity.totals.measuredTokens + activity.totals.estimatedTokens > 0
                         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 15) {
                             GridRow {

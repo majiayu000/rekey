@@ -1449,7 +1449,7 @@ final class AppModel: ObservableObject {
               let vaultID = UUID(uuidString: policy.vault_id) else {
             error = "请先解锁尚未安装信任根的个人保险库。"; return
         }
-        var request = Operation(title: "创建个人策略信任根", detail: "在此设备的 Secure Enclave 中创建策略签名密钥。以后签名需要系统在场认证；此私钥不会随备份转移到其他设备。", arguments: ["policy", "trust", "install", "--stdin-request"], proofFlag: "--step-up-stdin", targetDirectory: stateDirectory)
+        var request = Operation(title: "设置本机规则签名", detail: "只需设置一次。Rekey 会在此设备的 Secure Enclave 中创建签名密钥；以后 Agent 的权限规则只有经你在本机确认签署后才生效。这个私钥不随备份转移到其他设备。", arguments: ["policy", "trust", "install", "--stdin-request"], proofFlag: "--step-up-stdin", targetDirectory: stateDirectory)
         request.personalTrustVaultID = vaultID
         operation = request
     }
