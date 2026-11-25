@@ -14,6 +14,8 @@ let green = adaptive((0.10, 0.36, 0.24), (0.45, 0.78, 0.60))
 let canvas = adaptive((0.975, 0.98, 0.966), (0.11, 0.12, 0.115))
 let sage = adaptive((0.92, 0.95, 0.92), (0.17, 0.23, 0.20))
 let surface = adaptive((1, 1, 1), (0.15, 0.165, 0.158))
+/// Warnings stay readable on light backgrounds.
+let warn = adaptive((0.72, 0.36, 0.0), (1.0, 0.64, 0.25))
 /// Filled buttons keep white text readable in both appearances.
 let buttonFill = adaptive((0.10, 0.36, 0.24), (0.16, 0.48, 0.33))
 
@@ -223,12 +225,19 @@ struct RootView: View {
                 }
                 Spacer()
                 if model.page == .credentials {
-                    if !lab { Button { showConnectGuide = true } label: { Label("接入 Agent", systemImage: "terminal") }.buttonStyle(SecondaryButton()) }
+                    let pendingKey = lab ? nil : model.credentials.first { credential in credential.active && !model.connectionsUnavailable && !model.connections.contains { $0.credential_id == credential.id } }
+                    if let pendingKey {
+                        Button { model.addCredentialID = pendingKey.id; if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } label: { Label("继续设置 \(pendingKey.label)", systemImage: "arrow.forward.circle") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
+                    } else if !lab && model.connections.contains(where: \.enabled) && model.policy?.status != "expired" {
+                        Button { showConnectGuide = true } label: { Label("接入 Agent", systemImage: "terminal") }.buttonStyle(PrimaryButton())
+                    }
                     if model.policy?.mode == .personal && model.policy?.trust_installed == false {
                         Button { model.beginPersonalPolicySetup() } label: { Label("先设置本机签名", systemImage: "signature") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
                             .help("添加 Key 前需要一次性创建本机签名密钥，用来签署规则")
                     } else {
-                        Button { if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } label: { Label("添加 API Key", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
+                        let first = lab || model.credentials.isEmpty
+                        Button { if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } label: { Label("添加 API Key", systemImage: "plus") }
+                            .buttonStyle(ConditionalButton(primary: first)).disabled(!model.unlocked || model.busy)
                     }
                 } else if model.page == .actions {
                     Button("固定操作") { showActionForm = true }.disabled(!model.unlocked || model.busy)
@@ -409,7 +418,7 @@ struct RootView: View {
                             Button("继续设置连接") { model.addCredentialID = item.id; if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } }.buttonStyle(PrimaryButton())
                         }
                         ForEach(linked) { connection in
-                            ConnectionRulesSummary(connection: connection, compact: true).padding(12)
+                            ConnectionRulesSummary(connection: connection, compact: true, expired: model.policy?.status == "expired").padding(12)
                                 .background(surface.opacity(0.4), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.18)))
                         }
                     }
@@ -473,7 +482,7 @@ struct RootView: View {
                             Label("规则已过期，Agent 的调用都会被拒绝。点“编辑并签署规则”重新签署即可恢复。", systemImage: "clock.badge.exclamationmark").foregroundStyle(.orange).font(.system(size: 13, weight: .medium))
                         }
                         ForEach(model.connections) { connection in
-                            ConnectionRulesSummary(connection: connection, pending: model.policy?.status == "expired")
+                            ConnectionRulesSummary(connection: connection, expired: model.policy?.status == "expired")
                             if connection.id != model.connections.last?.id { Divider() }
                         }
                         HStack {
@@ -671,7 +680,7 @@ struct RootView: View {
                                 Spacer()
                                 Text(auditOutcomeLabels[event.outcome] ?? event.outcome).font(.system(size: 11)).foregroundStyle(event.outcome == "success" ? green : event.outcome == "denied" || event.outcome == "failure" ? .red : .secondary)
                             }
-                            HStack { Text(displayDate(event.created_at_ms)); Text(event.event_type).font(.system(size: 11, design: .monospaced)); Spacer(); Text(event.reason_code).lineLimit(2) }.font(.system(size: 11)).foregroundStyle(.secondary)
+                            HStack { Text(displayDate(event.created_at_ms)); Text(event.event_type).font(.system(size: 11, design: .monospaced)); if let status = event.upstream_status { Text("上游 HTTP \(status)").foregroundStyle((200..<300).contains(status) ? Color.secondary : .red) }; Spacer(); Text(event.reason_code).lineLimit(2) }.font(.system(size: 11)).foregroundStyle(.secondary)
                         }.padding(.vertical, 14)
                         Divider()
                     }
@@ -765,7 +774,7 @@ struct StatusPill: View {
     let text: String
     var warning = false
     var body: some View {
-        let color: Color = active ? green : warning ? .orange : .red
+        let color: Color = active ? green : warning ? warn : .red
         Text(text).font(.system(size: 11, weight: .medium)).lineLimit(1).padding(.horizontal, 9).padding(.vertical, 4).foregroundStyle(color).background(active ? sage : color.opacity(0.1), in: Capsule())
     }
 }

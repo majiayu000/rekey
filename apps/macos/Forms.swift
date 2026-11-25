@@ -827,7 +827,8 @@ struct PersonalPolicyDraftForm:View {
                     if let message, !activated {Text(message).foregroundStyle(.red).textSelection(.enabled)}
                 }.frame(maxWidth:.infinity,alignment:.leading)
             }
-            Text("未确认或认证取消时不激活。签名与激活失败不会自动重试。").font(.caption).foregroundStyle(.secondary)
+            if let message {Text(message).font(.system(size:13,weight:.medium)).foregroundStyle(activated ? green : .red).lineLimit(3).textSelection(.enabled)}
+            else {Text("未确认或认证取消时不激活。签名与激活失败不会自动重试。").font(.caption).foregroundStyle(.secondary)}
             HStack {if model.busy{ProgressView()};Spacer();Button("关闭"){clear();model.showPolicyDraft=false;dismiss();Task{await model.refresh()}}.keyboardShortcut(.cancelAction).disabled(model.busy)
                 if draft==nil && baseline != nil && !activated {Button("下一步：审阅全部改动"){generate()}.buttonStyle(PrimaryButton()).disabled(model.busy || expiry<=Date())}
                 if draft != nil, !activated {Toggle("我已审阅完整变化",isOn:$confirmed).disabled(model.busy || attempted)}

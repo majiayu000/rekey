@@ -19,7 +19,7 @@ struct LocalApprovalView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             Text(title(details)).font(.system(size: 22, weight: .semibold))
                             if details.state == .expired || details.state == .pending && !details.canDecide(at: timeline.date) {
-                                Label("请求已过期，不能再批准。请让 Agent 重新发起。", systemImage: "clock.badge.exclamationmark").font(.system(size: 14, weight: .medium)).foregroundStyle(.orange)
+                                Label("请求已过期，不能再批准。请让 Agent 重新发起。", systemImage: "clock.badge.exclamationmark").font(.system(size: 14, weight: .medium)).foregroundStyle(warn)
                             } else {
                                 Text(details.state.label).font(.system(size: 13)).foregroundStyle(.secondary)
                             }
@@ -34,7 +34,7 @@ struct LocalApprovalView: View {
                                 if let ssh = review.ssh {
                                     Text("用途：\(ssh.purposeLabel) · 用户：\(ssh.use.username ?? "不适用")").textSelection(.enabled)
                                     Text("host：\(ssh.host)").textSelection(.enabled)
-                                    if ssh.bound_host_key == nil || ssh.host == "unknown-host" { Text("目标尚未绑定或未登记；本次批准不能验证 host 身份。").foregroundStyle(.orange) }
+                                    if ssh.bound_host_key == nil || ssh.host == "unknown-host" { Text("目标尚未绑定或未登记；本次批准不能验证 host 身份。").foregroundStyle(warn) }
                                     if let unverified = ssh.use.unverified_host { Text("请求声明的 host key（未经验证）：\(unverified)").textSelection(.enabled) }
                                     Text("签名数据 SHA-256：\(ssh.data_sha256)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                                 } else {
@@ -58,7 +58,7 @@ struct LocalApprovalView: View {
                                             Picker("时长", selection: $minutes) { Text("15 分钟").tag("15"); Text("30 分钟").tag("30"); Text("1 小时").tag("60"); Text("2 小时").tag("120"); Text("自定义").tag("custom") }.frame(width: 200)
                                             if minutes == "custom" { TextField("分钟（1–480）", text: $customMinutes).textFieldStyle(.roundedBorder).frame(width: 120) }
                                         }
-                                        Text(scopeText(details)).font(.system(size: 13)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                                        Text(scopeText(details)).font(.system(size: 13)).foregroundStyle(warn).fixedSize(horizontal: false, vertical: true)
                                     }
                                 }.padding(12).background(surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
                             }
@@ -82,7 +82,7 @@ struct LocalApprovalView: View {
                             }
                         }
                         PeerSecurityWarning()
-                        if windowed { Text(scopeText(details)).font(.system(size: 12)).foregroundStyle(.orange).lineLimit(2) }
+                        if windowed { Text(scopeText(details)).font(.system(size: 12)).foregroundStyle(warn).fixedSize(horizontal: false, vertical: true) }
                         HStack {
                             Button("关闭") { model.clearNativeFlow(); dismiss() }.keyboardShortcut(.cancelAction)
                             Button("查询最新状态") { failure = nil; Task { await model.reviewLocalApproval(details.id) } }.disabled(model.busy)
@@ -105,8 +105,8 @@ struct LocalApprovalView: View {
     }
     private func scopeText(_ details: LocalApprovalDetails) -> String {
         let rule = model.ruleSummary(details.review)
-        let broad = rule.contains("**") ? "，也包括这个连接上其他地址（例如其他仓库）的同类请求" : ""
-        return "接下来 \(windowMinutes) 分钟内，同一调用方经 \(details.review?.challenge.resource.id ?? "此连接") 发出、匹配“\(rule)”的请求都会直接放行\(broad)。锁定保险库或修改规则后失效，拒绝规则始终有效。"
+        let broad = rule.contains("**") ? "，包括其他地址（例如其他仓库）" : ""
+        return "适用范围：连接 \(details.review?.challenge.resource.id ?? "此连接") 上匹配“\(rule)”的请求\(broad)，且调用方标注与这次相同（标注由 Agent 填写，不验证身份）。\n截止时间：\(windowMinutes) 分钟后，或规则到期、保险库锁定、规则修改时，以先到者为准；拒绝规则始终有效。"
     }
     private func decide(_ details: LocalApprovalDetails, approve: Bool) {
         failure = nil

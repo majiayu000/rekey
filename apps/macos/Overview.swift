@@ -99,7 +99,7 @@ struct ApprovalFacts: View {
     var body: some View {
         let operation = model.operation(for: review)
         VStack(alignment: .leading, spacing: 8) {
-            Text(review.target).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).lineLimit(3)
+            Text(review.target).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).lineLimit(complete ? nil : 2)
             let rows = (operation.map { pathParameters(template: $0.path, path: review.requestPath ?? "") } ?? []) + queryFields + bodyFields
             if !rows.isEmpty {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
@@ -147,7 +147,7 @@ struct ApprovalSummaryCard: View {
                 Text(title(review)).font(.system(size: 16, weight: .semibold))
                 Spacer()
                 TimelineView(.periodic(from: .now, by: 30)) { context in
-                    Text(remaining(item.max_expires_at_ms, now: context.date)).font(.system(size: 13, weight: .medium)).foregroundStyle(.orange)
+                    Text(remaining(item.max_expires_at_ms, now: context.date)).font(.system(size: 13, weight: .medium)).foregroundStyle(warn)
                 }
             }
             if let review {
@@ -175,7 +175,7 @@ struct ApprovalSummaryCard: View {
 }
 
 let effectLabels = ["allow": "直接放行", "approve": "需要你批准", "deny": "拒绝"]
-func effectColor(_ effect: String) -> Color { effect == "allow" ? green : effect == "deny" ? .red : .orange }
+func effectColor(_ effect: String) -> Color { effect == "allow" ? green : effect == "deny" ? .red : warn }
 func methodLabel(_ methods: ConnectionRule.Methods) -> String {
     switch methods {
     case .category("read"): return "读取"
@@ -191,13 +191,15 @@ struct ConnectionRulesSummary: View {
     var compact = false
     /// A draft that is not signed yet.
     var pending = false
+    /// The signed rules have expired; calls are refused until re-signed.
+    var expired = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(connection.name).font(.system(size: compact ? 13 : 15, weight: .semibold))
                 if !compact { Text(connection.origin).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary) }
                 Spacer()
-                StatusPill(active: connection.enabled && !pending, text: pending ? "待签署" : connection.enabled ? "已生效" : "已停用", warning: pending)
+                StatusPill(active: connection.enabled && !pending && !expired, text: pending ? "待签署" : expired ? "规则已过期" : connection.enabled ? "已生效" : "已停用", warning: pending || expired)
             }
             if compact { Text(connection.origin).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary) }
             ForEach(connection.rules) { rule in
@@ -226,8 +228,8 @@ struct ConnectCommands: View {
                 command("Claude Code", "rekey\(stateFlag) connect claude-code")
                 command("Codex", "rekey\(stateFlag) connect codex")
             }
-            step(2, "在同一目录启动 Agent，依次输入", "Codex 第一次会问是否信任该文件夹，选择信任才会加载 Rekey。第一句应列出你签署的连接；没有列出就是没加载 Rekey，看下方排查。") {
-                command("先确认接入", "用 Rekey 列出你能调用的服务和操作")
+            step(2, "在同一目录启动 Agent，依次输入", "Codex 第一次会问是否信任该文件夹，选择信任才会加载 Rekey。Agent 说没有 Rekey 工具，看下方排查；返回错误码时按它的 next 处理（例如规则过期就回到授权页重新签署）。") {
+                command("先确认接入", "调用 Rekey 的 list_capabilities 列出你能调用的服务；如果报错，告诉我错误码和 next")
                 command("再试一次调用", "用 Rekey 做一次只读调用，告诉我结果和 execution_id")
             }
             step(3, "到“活动”页确认", "只读调用完成后，“最近调用”里会出现这一条。") { EmptyView() }
@@ -300,7 +302,7 @@ struct AccessRequestsPanel:View {
                         HStack {
                             Text("\(request.caller) 想使用 \(request.connection ?? request.provider ?? "未指定的服务")").font(.headline)
                             Spacer()
-                            TimelineView(.periodic(from:.now,by:30)){context in Text(remaining(request.expires_at_ms,now:context.date)).font(.system(size:13,weight:.medium)).foregroundStyle(.orange)}
+                            TimelineView(.periodic(from:.now,by:30)){context in Text(remaining(request.expires_at_ms,now:context.date)).font(.system(size:13,weight:.medium)).foregroundStyle(warn)}
                         }
                         if let operation=request.operation{Text("操作："+operation).font(.system(size:12))}
                         Text(request.reason).textSelection(.enabled).font(.system(size:12)).padding(8).background(sage.opacity(0.3),in:RoundedRectangle(cornerRadius:6))
@@ -311,7 +313,7 @@ struct AccessRequestsPanel:View {
                                 Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}.buttonStyle(PrimaryButton())
                             }
                             let match = model.connections.first { connection in
-                                connection.enabled && (request.connection.map { $0 == connection.name } ?? (connection.preset == request.suggestedPreset))
+                                model.policy?.status != "expired" && connection.enabled && (request.connection.map { $0 == connection.name } ?? (connection.preset == request.suggestedPreset))
                                     && (request.operation.map { op in connection.operations.contains { $0.name == op } } ?? true)
                             }
                             Button(match.map { "已签署 \($0.name)，通知 Agent" } ?? "签署后再通知 Agent"){Task{await model.resolveAccess(request,granted:true)}}
@@ -383,7 +385,7 @@ struct DraftChangeSummary: View {
             if added.isEmpty && removed.isEmpty && changed.isEmpty { Text("连接没有变化（可能只更新了有效期、SSH 或 T1）。") }
             if !added.isEmpty { Label("新增连接：" + added.joined(separator: "、"), systemImage: "plus.circle").foregroundStyle(green) }
             ForEach(changed, id: \.self) { name in
-                Label("修改了 \(name)：", systemImage: "pencil.circle").foregroundStyle(.orange)
+                Label("修改了 \(name)：", systemImage: "pencil.circle").foregroundStyle(warn)
                 ForEach(ruleChanges(old[name]!, new[name]!), id: \.self) { Text("    " + $0) }
             }
             if !removed.isEmpty { Label("删除连接：" + removed.joined(separator: "、") + "（Agent 将不能再调用）", systemImage: "minus.circle").foregroundStyle(.red) }
@@ -425,14 +427,25 @@ struct RecentCalls: View {
     }
     static func result(_ event: AuditEvent) -> (String, String, Color) {
         switch (event.event_type, event.outcome) {
-        case ("execution.finished", "success"): return ("checkmark.circle.fill", "调用完成", green)
-        case ("approval.requested", _): return ("hourglass", "曾请求批准", .orange)
-        case ("approval.approved", _): return ("checkmark.seal", "已批准，等待执行", green)
+        case ("execution.finished", "success"):
+            guard let status = event.upstream_status else { return ("checkmark.circle.fill", "调用完成", green) }
+            return (200..<300).contains(status) ? ("checkmark.circle.fill", "调用完成 · HTTP \(status)", green)
+                : ("exclamationmark.circle.fill", (status == 401 || status == 403 ? "上游拒绝 Key" : "上游返回错误") + " · HTTP \(status)", .red)
+        case ("approval.requested", _): return ("hourglass", "曾请求批准", warn)
+        case ("approval.approved", _): return ("checkmark.seal", "曾批准", green)
         case ("approval.rejected", _): return ("xmark.seal", "已拒绝批准", .red)
-        case (_, "indeterminate"): return ("questionmark.circle", "结果未知", .orange)
+        case (_, "indeterminate"): return ("questionmark.circle", "结果未知", warn)
         case (_, "denied"): return ("hand.raised.fill", "被规则拒绝", .red)
         case (_, "success"): return ("circle", auditLabels[event.event_type] ?? event.event_type, .secondary)
         default: return ("xmark.circle.fill", "失败", .red)
         }
+    }
+}
+
+/// Primary for the step that comes next, secondary otherwise.
+struct ConditionalButton: ButtonStyle {
+    let primary: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        Group { if primary { PrimaryButton().makeBody(configuration: configuration) } else { SecondaryButton().makeBody(configuration: configuration) } }
     }
 }

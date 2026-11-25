@@ -731,6 +731,7 @@ struct AuditEvent: Decodable, Identifiable {
     let credential_id: String?
     let request_context: ActivityContext?
     let usage: ActivityUsage?
+    var upstream_status: UInt16? = nil
     var id: UInt64 { sequence }
 }
 struct AuditPage: Decodable {
