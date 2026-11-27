@@ -51,7 +51,7 @@ struct EnvImportView:View {
                                     if items[i].preset=="generic-header" {TextField("凭据头",text:$items[i].header);TextField("前缀（可为空）",text:$items[i].prefix)}
                                 }
                             }
-                        }.textFieldStyle(.roundedBorder).padding(12).background(.white.opacity(0.6),in:RoundedRectangle(cornerRadius:8))
+                        }.textFieldStyle(.roundedBorder).padding(12).background(surface.opacity(0.6),in:RoundedRectangle(cornerRadius:8))
                     }
                     Button("读取预设并审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !items.contains(where:{$0.choice == .importKey}) || model.policy?.mode != .personal || model.policy?.trust_installed != true)
                 } else if let draft {

@@ -1,6 +1,7 @@
 use rekey_domain::ipc::ProofKind;
 #[cfg(feature = "lab")]
 use std::collections::BTreeSet;
+use std::io::IsTerminal;
 #[cfg(feature = "lab")]
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -25,6 +26,8 @@ use super::{admin, print_json, proof_body, read_bounded, read_step_up, stdin_lin
 
 #[cfg(feature = "lab")]
 use super::{ACTION_RESPONSE_TIMEOUT, parse_action_ref};
+
+mod review_text;
 
 type FileIdentity = (u64, u64);
 
@@ -333,7 +336,18 @@ pub fn approval_review(state_dir: &Path, id: ApprovalRequestId) -> Result<(), Cl
     .map_err(|_| CliError::local("USAGE", "cannot encode approval review request"))?;
     let (metadata, body) =
         admin(state_dir)?.call(admin_msg::APPROVAL_LOCAL_REVIEW, &metadata, &[])?;
-    write_json(&local_review_response(id, &metadata, &body)?)
+    let output = local_review_response(id, &metadata, &body)?;
+    if !crate::client::json_output() && std::io::stdout().is_terminal() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        print!(
+            "{}",
+            review_text::render(id, &output.metadata, output.review_json, now_ms)
+        );
+        return Ok(());
+    }
+    write_json(&output)
 }
 
 fn local_state_response(

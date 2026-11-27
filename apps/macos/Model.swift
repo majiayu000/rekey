@@ -230,7 +230,7 @@ struct Credential: Decodable, Identifiable {
     var active: Bool { state == "active" }
     var typeName: String {
         switch kind {
-        case "opaque-token": return "固定令牌"
+        case "opaque-token": return "API Key"
         case "github-app-installation": return "GitHub App"
         case "vault-kv-v2-source": return "Vault KV v2"
         case "vault-dynamic-source": return "动态租约"
@@ -731,6 +731,7 @@ struct AuditEvent: Decodable, Identifiable {
     let credential_id: String?
     let request_context: ActivityContext?
     let usage: ActivityUsage?
+    var upstream_status: UInt16? = nil
     var id: UInt64 { sequence }
 }
 struct AuditPage: Decodable {
@@ -976,6 +977,14 @@ final class AppModel: ObservableObject {
     @Published var actions: [FixedAction] = []
     @Published var policy: PolicyStatus?
     @Published var approvals: [PendingApproval] = []
+    /// The signed policy for the personal overview, empty when locked or not loaded.
+    @Published var overviewPolicy: ConnectionList?
+    var connections: [ConnectionDefinition] { overviewPolicy?.connections ?? [] }
+    @Published var connectionsUnavailable = false
+    /// A saved key the add form should reuse instead of asking for it again.
+    @Published var addCredentialID: String?
+    /// Read-only local approval reviews shown as inbox summaries, keyed by request ID.
+    @Published var approvalReviews: [String: LocalApprovalDetails] = [:]
     @Published var approvalDetails: ApprovalDetails?
     @Published var localApprovalDetails: LocalApprovalDetails?
     @Published private(set) var localApprovalNeedsRefresh = false
@@ -1291,6 +1300,19 @@ final class AppModel: ObservableObject {
         busy = false
         if injectedClient == nil { await refresh() }
     }
+    /// Reads the immutable review of up to 10 pending local approvals so the inbox can
+    /// say what each one would send. Reviews are cached by ID; finished ones are dropped.
+    func loadApprovalReviews(client: CLI) async {
+        let pending = approvals.filter { if case .localPresence = $0.approver { return true }; return false }.prefix(10)
+        let wanted = Set(pending.map(\.id))
+        approvalReviews = approvalReviews.filter { wanted.contains($0.key) }
+        let revision = nativeFlowRevision
+        for item in pending where approvalReviews[item.id] == nil {
+            guard let details = try? await Task.detached(operation: { try client.localApprovalReview(item.id, revision: revision) }).value,
+                  client.stateDirectory == stateDirectory, unlocked else { continue }
+            approvalReviews[item.id] = details
+        }
+    }
     func loadConnectionEditor(client injectedClient:CLI?=nil) async throws -> ConnectionList {
         guard !busy,unlocked else {throw UIError(message:"请先解锁并等待当前操作完成。")}
         busy=true;defer{busy=false};let client=injectedClient ?? cli,revision=nativeFlowRevision
@@ -1422,7 +1444,7 @@ final class AppModel: ObservableObject {
               let vaultID = UUID(uuidString: policy.vault_id) else {
             error = "请先解锁尚未安装信任根的个人保险库。"; return
         }
-        var request = Operation(title: "创建个人策略信任根", detail: "在此设备的 Secure Enclave 中创建策略签名密钥。以后签名需要系统在场认证；此私钥不会随备份转移到其他设备。", arguments: ["policy", "trust", "install", "--stdin-request"], proofFlag: "--step-up-stdin", targetDirectory: stateDirectory)
+        var request = Operation(title: "设置本机规则签名", detail: "只需设置一次。Rekey 会在此设备的 Secure Enclave 中创建签名密钥；以后 Agent 的权限规则只有经你在本机确认签署后才生效。这个私钥不随备份转移到其他设备。", arguments: ["policy", "trust", "install", "--stdin-request"], proofFlag: "--step-up-stdin", targetDirectory: stateDirectory)
         request.personalTrustVaultID = vaultID
         operation = request
     }
@@ -1480,6 +1502,7 @@ final class AppModel: ObservableObject {
         oidcSessionFile = nil; oidcIdentity = nil
         desktopToken = nil
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
+        overviewPolicy = nil; approvalReviews = [:]
         if let token, let owner { revokeDesktop(token, client: owner) }
     }
     func changeDirectory(_ path: String) {
@@ -1530,12 +1553,13 @@ final class AppModel: ObservableObject {
                 guard currentRefresh(), !desktopLocked else { return }
                 credentials=lists.0.credentials;actions=lists.1;policy=loadedPolicy
                 if !credentials.contains(where: { $0.id == selectedCredential }) { selectedCredential = credentials.first?.id }
+                await loadOverviewConnections(client: client)
             }
             switch page {
             case .policy: break
             case .approvals where unlocked:
                 let items = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
-                if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items);try await loadAccessInbox(client:client) }
+                if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items);try await loadAccessInbox(client:client);await loadApprovalReviews(client:client) }
             case .audit:
                 var args = ["audit", "list", "--limit", "50"]
                 if !auditOutcome.isEmpty { args += ["--outcome", auditOutcome] }
@@ -1618,7 +1642,7 @@ final class AppModel: ObservableObject {
         }
         busy = true; error = nil
         let client = injectedClient ?? CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)
-        let desktopLogin = op.arguments == ["unlock"]
+        let desktopLogin = op.isDesktopUnlock
         if desktopLogin && pendingDesktopLocks > 0 { busy = false; error = "请先重试完成服务端会话撤销。"; return }
         let desktopAttempt = desktopRevision
         let revision = presenceRevision ?? nativeFlowRevision
@@ -1781,7 +1805,7 @@ final class AppModel: ObservableObject {
             // Drain stderr while the service lives; only bounded diagnostics remain in memory.
             let captured = ServiceDiagnostic()
             errors.fileHandleForReading.readabilityHandler = { file in captured.append(file.availableData) }
-            child.terminationHandler = { process in
+            child.terminationHandler = { [weak self] process in
                 errors.fileHandleForReading.readabilityHandler = nil
                 Task { @MainActor [weak self] in
                     guard let self, self.stateDirectory == serviceDirectory else { return }
@@ -1835,6 +1859,11 @@ final class AppModel: ObservableObject {
         let client = injectedClient ?? cli, revision = nativeFlowRevision
         do {
             let details = try await Task.detached { try client.localApprovalReview(id, revision: revision) }.value
+            if let review = details.review, review.ssh?.window_allowed == true,
+               overviewPolicy?.policy_sha256 != review.challenge.policy_sha256,
+               acceptsNativeCompletion(revision, workspace: client.stateDirectory) {
+                await loadOverviewConnections(client: client)
+            }
             guard (active ?? NSApp.isActive), acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { return }
             localApprovalDetails = details; localApprovalNeedsRefresh = false
         } catch {

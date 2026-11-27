@@ -130,6 +130,14 @@ impl ConnectClient {
             Self::Cursor => (Some(".cursor"), "mcp.json"),
         }
     }
+    fn done_message(self) -> &'static str {
+        match self {
+            Self::Codex => {
+                "Rekey configured. Codex reads .codex/config.toml only in a trusted project: when Codex asks whether to trust this folder, choose yes. Rekey tools then run without a Codex prompt per call; Rekey still asks you to approve writes. Inside the Codex sandbox the `rekey` command cannot reach Rekey, so the Agent uses the Rekey MCP tools. No token is required."
+            }
+            _ => "Rekey configured. Start your Agent normally; no token is required.",
+        }
+    }
 }
 fn invalid(message: &str) -> CliError {
     CliError::local("USAGE", message)
@@ -211,6 +219,10 @@ fn preview_fields<'a>(keys: impl Iterator<Item = &'a str>) -> Result<String, Cli
     let fields: BTreeMap<_, _> = keys.map(|key| (key, "<existing value hidden>")).collect();
     serde_json::to_string_pretty(&fields).map_err(|_| invalid("cannot encode MCP preview"))
 }
+// Rekey enforces signed rules and write approvals itself, so Codex does not
+// add a second prompt for every Rekey tool call.
+const CODEX_APPROVAL_KEY: &str = "default_tools_approval_mode";
+const CODEX_APPROVAL: &str = "approve";
 // (new bytes, existing subtree field comparison with values hidden, already equal)
 // `state_dir` is set only for a non-default vault.
 fn prepare(
@@ -233,8 +245,9 @@ fn prepare(
             .ok_or_else(|| invalid("mcp_servers must be a TOML table"))?;
         let old = servers.get("rekey");
         let same = old.and_then(Item::as_table_like).is_some_and(|t| {
-            t.len() == 1 + usize::from(state_dir.is_some())
+            t.len() == 2 + usize::from(state_dir.is_some())
                 && t.get("command").and_then(Item::as_str) == Some(executable)
+                && t.get(CODEX_APPROVAL_KEY).and_then(Item::as_str) == Some(CODEX_APPROVAL)
                 && state_dir.is_none_or(|state| {
                     t.get("args").and_then(Item::as_array).is_some_and(|args| {
                         args.len() == 2
@@ -255,6 +268,7 @@ fn prepare(
         if let Some(state) = state_dir {
             server["args"] = value(Array::from_iter(["--state-dir", state]));
         }
+        server[CODEX_APPROVAL_KEY] = value(CODEX_APPROVAL);
         servers.insert("rekey", Item::Table(server));
         Ok((doc.to_string().into_bytes(), before, same))
     } else {
@@ -293,7 +307,8 @@ const INSTRUCTIONS: &str = "<!-- rekey:begin -->
 ## 使用密钥
 - 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `{rekey} list` / `{rekey} call`。
 - 不要向用户索要 API Key，不要读取或写入 .env 中的密钥，不要把密钥写进代码。
-- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时用错误里的 `approval.challenge_id`（不是顶层 `request_id`）调用 `await_approval`，批准后带同一个 ID 重试原请求。
+- 沙箱里 `{rekey}` 命令连不上 Rekey（Operation not permitted）时改用 MCP 工具。
+- 缺少权限或连接时调用 `request_access` 并说明理由，先告诉用户在等什么；等一次仍未处理就问用户是否继续等。上游返回 401/403 说明 Key 无效或权限不足，请用户在 Rekey 里更换 Key，不要用 `request_access`。收到 APPROVAL_REQUIRED 时用错误里的 `approval.challenge_id`（不是顶层 `request_id`）调用 `await_approval`，批准后带同一个 ID 重试原请求。
 - Agent 写的程序使用 `{rekey} list` 给出的本机服务地址和占位 Key `rekey`。
 <!-- rekey:end -->
 ";
@@ -357,7 +372,7 @@ pub fn connect(args: ConnectArgs, state_dir: &Path) -> Result<(), CliError> {
         edits,
         args.print,
         "Apply Rekey configuration and instructions?",
-        "Rekey configured. Start your Agent normally; no token is required.",
+        client.done_message(),
     )
 }
 

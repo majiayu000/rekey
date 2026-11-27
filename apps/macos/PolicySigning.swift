@@ -221,3 +221,22 @@ enum PolicySigning {
         }
     }
 }
+
+extension LocalApprovalDetails.Review {
+    /// Describe a broker-permitted window using the exact signed policy in the review.
+    func matchedSSHHostRule(in policy: ConnectionList) -> SSHHostDefinition? {
+        guard let ssh, ssh.window_allowed, policy.policy_sha256 == challenge.policy_sha256,
+              let key = policy.ssh_keys.first(where: { $0.name == challenge.resource.id }) else { return nil }
+        return key.hosts.first { $0.rule_id == challenge.policy_rule_id && $0.effect == "approve" }
+    }
+}
+
+extension AppModel {
+    /// Loads the signed Connections shown on the credentials and policy pages.
+    /// A failure only empties the overview; it never blocks the refresh.
+    func loadOverviewConnections(client: CLI) async {
+        let list = try? await Task.detached { try client.decode(ConnectionList.self, ["connection", "list"]) }.value
+        guard client.stateDirectory == stateDirectory, unlocked else { return }
+        overviewPolicy = list; connectionsUnavailable = list == nil
+    }
+}

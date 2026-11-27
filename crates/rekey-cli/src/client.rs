@@ -20,6 +20,10 @@ use zeroize::Zeroizing;
 #[path = "client/macos_peer.rs"]
 mod macos_peer;
 
+#[path = "client/guidance.rs"]
+mod guidance;
+use guidance::local_next;
+pub use guidance::upstream_status_next;
 #[path = "client/human.rs"]
 pub(crate) mod human;
 
@@ -125,23 +129,6 @@ pub struct CliError {
 
 /// Generic Agent guidance for locally raised errors; anything else in `next`
 /// is instance-specific and must survive human rendering.
-fn local_next(code: &str) -> &'static str {
-    match code {
-        "IPC_UNAVAILABLE" => {
-            "Open Rekey or start rekeyd serve; wait for unlock before issuing a new call. Do not replay a write whose outcome is unknown."
-        }
-        "USAGE" | "INVALID_INPUT" => {
-            "Check the command arguments; use describe for the named operation's parameters."
-        }
-        "UPSTREAM_ERROR" => {
-            "Inspect the returned status and sealed response body. Do not automatically repeat a write."
-        }
-        _ => {
-            "Review the error and Rekey status before taking another action. Do not automatically repeat a write."
-        }
-    }
-}
-
 impl CliError {
     pub fn local(code: &str, message: impl Into<String>) -> Self {
         Self {
@@ -490,7 +477,7 @@ impl Client {
         response_timeout: Duration,
     ) -> Result<Self, CliError> {
         let socket_metadata = verify_socket_contract(socket, channel)?;
-        let stream = UnixStream::connect(socket).map_err(io_err)?;
+        let stream = UnixStream::connect(socket).map_err(guidance::connect_error)?;
         verify_connected_peer(&stream, socket, &socket_metadata, channel)?;
         #[cfg(target_os = "macos")]
         let peer_security = macos_peer::verify(&stream)?;

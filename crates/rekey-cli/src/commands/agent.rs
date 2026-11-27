@@ -461,6 +461,7 @@ fn execute(
             "upstream returned a non-success status; inspect the sealed response",
         );
         error.execution_id = metadata.execution_id;
+        error.next = Some(crate::client::upstream_status_next(metadata.status).to_owned());
         return Err(error);
     }
     Ok(())

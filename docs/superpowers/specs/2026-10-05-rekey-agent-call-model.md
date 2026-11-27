@@ -426,6 +426,12 @@ OPENAI_API_KEY=rekey
   - 上游拒绝原因：出站前因目标解析到非公网地址而拒绝时，返回公开错误码 `UPSTREAM_ADDRESS_BLOCKED`（CLI 退出码与 `UPSTREAM_ERROR` 相同），`next` 说明“目标域名解析到了非公网地址，常见原因是本机代理的 fake-IP DNS；Rekey 不会连接非公网地址”。错误中不回显解析到的 IP。其他出站拒绝原因仍为 `UPSTREAM_ERROR`。
   - 插件 skill、`rekey connect` 说明中出现的 MCP 工具名与 `rekey` 子命令，必须由测试核对确实存在。（2026-11-17）反引号中每个形如工具名的小写标识符都要核对，包括 `call`、`describe` 这类不含下划线的词；只有列出的参数名、字段名和占位 Key 可以例外，反引号中的 `rekey <子命令>` 由 CLI 测试核对。
 - `await_unlock(timeout_s≤120)`。
+- **（2026-11-26 修订）Codex 实测后的引导**：
+  - 每个工具带 MCP `annotations`。`list_capabilities`、`describe`、`await_*` 为 `readOnlyHint=true`；`request_access`、`cancel_approval` 只改本机状态（`destructiveHint=false`、`openWorldHint=false`）；`call`、`http` 为可能写入的外部调用。具名工具在方法为 GET/HEAD 或预设声明了读语义时为只读。标注只影响客户端是否追加提示，签名规则与审批仍由 daemon 执行。
+  - `request_access` 结果的 `next` 要求 Agent 先告诉用户在等什么；等一次仍未处理就问用户是否继续等，不轮询到过期。`user_hint` 同时写出 App 收件箱与基础模式的 `rekey access list` / `rekey access resolve`（缺 Key 时先 `rekey add`）。
+  - 已完成调用的上游状态为 401/403 时，`UPSTREAM_ERROR` 的 `next` 说明保存的 Key 被上游拒绝（无效、过期、吊销或权限不足），请用户在 Rekey 里更换 Key，`request_access` 解决不了；其他非 2xx 状态的 `next` 不变。CLI `rekey call` 与 MCP 使用同一文案。
+  - 基础模式 `rekey approval review ID`：stdout 与 stderr 都是终端且未设 `REKEY_OUTPUT=json` 时输出可读摘要（连接、方法与完整地址、请求头、正文、剩余时间及带 `review_sha256` 的批准/拒绝命令）；App 与管道仍得到 daemon 原样字节的 JSON，摘要只用于阅读，批准仍绑定 `review_sha256`。
+  - CLI 连接 socket 收到 EPERM（Agent 沙箱，如 Codex Seatbelt 阻止 Unix socket）时仍为 `IPC_UNAVAILABLE`，但 `next` 说明是沙箱拦截、Rekey 可能正常运行，改用 MCP 工具或请用户放开沙箱的 Unix socket；EACCES 等其他错误保持原文案。
 
 **协议与返回**
 - 协议版本协商沿用 0.3（2025-06-18、2025-11-25）。
@@ -445,6 +451,7 @@ OPENAI_API_KEY=rekey
    - Claude Code：`.mcp.json`；
    - Codex：`.codex/config.toml` 中的 `mcp_servers.rekey`；
    - Cursor：`.cursor/mcp.json`。
+   - （2026-11-26 修订）Codex 的 `mcp_servers.rekey` 另写 `default_tools_approval_mode = "approve"`：写操作的审批由 Rekey 执行，Codex 不再对每次 Rekey 工具调用追加提示。Codex 只在受信任项目中读取 `.codex/config.toml`，`connect codex` 写入后的完成提示要说明信任项目，并说明 Codex 沙箱内 `rekey` 命令连不上 daemon、Agent 应使用 MCP 工具。
    - 不写 env，不写令牌。`command` 固定为 `rekey-mcp`，由客户端按 PATH 找到 Homebrew 或 pkg 安装的稳定位置（如 `/usr/local/bin/rekey-mcp`），不写开发机上的二进制绝对路径；`args` 只在非默认 vault 时出现（见上）。预览时若 PATH 找到的 `rekey-mcp` / `rekey` 不是当前 `rekey` 旁边的同名文件（例如旧安装版遮住了源码构建），或 PATH 中找不到它们，预览给出警告并写明 Agent 实际会启动的路径；写入内容不变。
 2. **Agent 说明书**：在 `AGENTS.md` 或 `CLAUDE.md` 中写入一个带标记的段落，再次执行时替换而不是追加。下例为默认 vault；非默认 vault 时其中的 `rekey` 带 `--state-dir`：
 
@@ -453,7 +460,8 @@ OPENAI_API_KEY=rekey
 ## 使用密钥
 - 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `rekey list` / `rekey call`。
 - 不要向用户索要 API Key，不要读取或写入 .env 中的密钥，不要把密钥写进代码。
-- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时用错误里的 `approval.challenge_id`（不是顶层 `request_id`）调用 `await_approval`，批准后带同一个 ID 重试原请求。
+- 沙箱里 `rekey` 命令连不上 Rekey（Operation not permitted）时改用 MCP 工具。
+- 缺少权限或连接时调用 `request_access` 并说明理由，先告诉用户在等什么；等一次仍未处理就问用户是否继续等。上游返回 401/403 说明 Key 无效或权限不足，请用户在 Rekey 里更换 Key，不要用 `request_access`。收到 APPROVAL_REQUIRED 时用错误里的 `approval.challenge_id`（不是顶层 `request_id`）调用 `await_approval`，批准后带同一个 ID 重试原请求。
 - Agent 写的程序使用 `rekey list` 给出的本机服务地址和占位 Key `rekey`。
 <!-- rekey:end -->
 ```

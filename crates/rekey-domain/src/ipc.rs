@@ -410,56 +410,8 @@ pub const LOCAL_APPROVAL_REVIEW_RECORD_TYPE: &str = "rekey.approval.local-review
 /// Review body written by the lab session approval path.
 pub const SESSION_APPROVAL_REVIEW_RECORD_TYPE: &str = "rekey.approval.review.v1";
 
-/// Validates one `APPROVAL_LOCAL_REVIEW` reply exactly as the daemon emits it.
-/// Returns the metadata and the original UTF-8 review body (None when the
-/// review was already cleared). Clients must not re-serialize the body: the
-/// review digest covers these exact bytes.
-pub fn validate_local_review_reply<'a>(
-    id: ApprovalRequestId,
-    metadata: &[u8],
-    body: &'a [u8],
-) -> Result<(LocalApprovalReviewResponse, Option<&'a str>), FrameError> {
-    let metadata: LocalApprovalReviewResponse =
-        serde_json::from_slice(metadata).map_err(|_| FrameError::InvalidField)?;
-    let lower_hex_digest = metadata.review_sha256.len() == 64
-        && metadata
-            .review_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if metadata.approval_request_id != id
-        || metadata.record_type != LOCAL_APPROVAL_REVIEW_RECORD_TYPE
-        || !lower_hex_digest
-        || metadata.body_len as usize != body.len()
-        || body.len() > RESPONSE_BODY_MAX_BYTES as usize
-    {
-        return Err(FrameError::InvalidField);
-    }
-    if body.is_empty() {
-        if matches!(
-            metadata.state,
-            LocalApprovalState::Pending | LocalApprovalState::Approved
-        ) {
-            return Err(FrameError::InvalidField);
-        }
-        return Ok((metadata, None));
-    }
-    let original = std::str::from_utf8(body).map_err(|_| FrameError::InvalidField)?;
-    let review: LocalApprovalReview =
-        serde_json::from_str(original).map_err(|_| FrameError::InvalidField)?;
-    review
-        .challenge
-        .validate()
-        .map_err(|_| FrameError::InvalidField)?;
-    if !matches!(
-        review.record_type.as_str(),
-        LOCAL_APPROVAL_REVIEW_RECORD_TYPE | SESSION_APPROVAL_REVIEW_RECORD_TYPE
-    ) || review.challenge.approval_request_id != id
-        || !matches!(review.challenge.approver, ApproverSpec::LocalPresence {})
-    {
-        return Err(FrameError::InvalidField);
-    }
-    Ok((metadata, Some(original)))
-}
+mod local_review;
+pub use local_review::validate_local_review_reply;
 
 /// Zero-copy parse; the caller owns zeroization of the backing buffer.
 pub fn parse_proof_and_secret_body(body: &[u8]) -> Result<(ProofKind, &[u8], &[u8]), FrameError> {
@@ -1697,6 +1649,35 @@ mod tests {
         let decoded: LocalApprovalReview = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.canonical_request.get(), canonical);
         assert_eq!(LOCAL_APPROVAL_REVIEW_HASH_PREFIX, b"RKREVIEW\0\x01");
+    }
+
+    #[test]
+    fn local_review_reply_accepts_ssh_and_preserves_original_bytes() {
+        let mut challenge = approval_challenge(ApproverSpec::LocalPresence {});
+        challenge.schema_id = SchemaId::new("rekey.ssh-sign.v1".into()).unwrap();
+        let id = challenge.approval_request_id;
+        let mut review = serde_json::json!({
+            "record_type": LOCAL_APPROVAL_REVIEW_RECORD_TYPE,
+            "challenge": challenge,
+            "ssh": {"key": "synthetic", "host": "example.test", "data_base64": "dGVzdA=="}
+        });
+        let parse = |review: &serde_json::Value| {
+            let body = serde_json::to_string_pretty(review).unwrap();
+            let metadata = serde_json::to_vec(&serde_json::json!({
+                "record_type": LOCAL_APPROVAL_REVIEW_RECORD_TYPE,
+                "approval_request_id": id, "review_sha256": "ab".repeat(32),
+                "state": "pending", "body_len": body.len()
+            }))
+            .unwrap();
+            validate_local_review_reply(id, &metadata, body.as_bytes())
+                .map(|(_, original)| original.map(str::to_owned) == Some(body.clone()))
+        };
+        assert!(parse(&review).unwrap());
+        review["canonical_request"] = serde_json::json!({"body": null});
+        assert!(parse(&review).is_err());
+        review.as_object_mut().unwrap().remove("canonical_request");
+        review["challenge"]["schema_id"] = serde_json::json!("test/v1");
+        assert!(parse(&review).is_err());
     }
 
     #[test]

@@ -177,3 +177,11 @@ enum PresenceKey {
         }
     }
 }
+
+extension Operation {
+    var isDesktopUnlock: Bool { arguments == ["unlock"] }
+
+    func canRememberPresence(interval: DesktopPasswordInterval) -> Bool {
+        isDesktopUnlock && interval != .everyUnlock
+    }
+}
