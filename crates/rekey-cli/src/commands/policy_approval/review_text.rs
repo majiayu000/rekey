@@ -51,36 +51,14 @@ pub(super) fn render(
             text(ssh.get("host")),
             text(field(ssh, &["use", "purpose"])),
         ));
-        // The summary is only a preview. Preserve every reviewed field before
-        // printing decision commands, without emitting request-supplied controls.
-        out.push_str("完整请求（格式化显示，批准绑定原始内容）：\n");
-        for line in format!("{review:#}").split('\n') {
-            out.push_str(&terminal_text(line));
-            out.push('\n');
-        }
     } else {
         let request = review.get("canonical_request").cloned().unwrap_or_default();
-        let mut target = format!(
-            "{}{}",
-            text(review.get("origin")),
-            text(request.get("path"))
-        );
-        if let Some(query) = request
-            .get("query")
-            .and_then(Value::as_object)
-            .filter(|q| !q.is_empty())
-        {
-            let pairs: Vec<String> = query
-                .iter()
-                .map(|(k, v)| format!("{}={}", terminal_text(k), text(Some(v))))
-                .collect();
-            target.push('?');
-            target.push_str(&pairs.join("&"));
-        }
         out.push_str(&format!(
-            "连接：{}\n请求：{} {target}\n",
+            "连接：{}\n请求：{} {}{}\n",
             text(review.get("action_name")),
             text(review.get("method")),
+            text(review.get("origin")),
+            text(request.get("path")),
         ));
         if let Some(headers) = request
             .get("headers")
@@ -115,6 +93,12 @@ pub(super) fn render(
             }
             _ => out.push_str("正文：无\n"),
         }
+    }
+    // Keep query boundaries and encoded bodies intact in the structured review.
+    out.push_str("完整请求（格式化显示，批准绑定原始内容）：\n");
+    for line in format!("{review:#}").split('\n') {
+        out.push_str(&terminal_text(line));
+        out.push('\n');
     }
     if let Some(expires) =
         field(&review, &["challenge", "max_expires_at_ms"]).and_then(Value::as_i64)
@@ -161,9 +145,10 @@ mod tests {
         let text = render(id, &metadata, Some(review), 5_000);
         assert!(text.contains("连接：github-pat"), "{text}");
         assert!(
-            text.contains("请求：POST https://api.github.com/repos/o/r/issues?a=1"),
+            text.contains("请求：POST https://api.github.com/repos/o/r/issues\n"),
             "{text}"
         );
+        assert!(text.contains(r#""a": "1""#), "{text}");
         assert!(text.contains("请求头：accept: application/json"), "{text}");
         assert!(text.contains("正文：{\"title\":\"Hi\"}"), "{text}");
         assert!(text.contains("剩余时间：2 分 0 秒"), "{text}");
@@ -191,9 +176,42 @@ mod tests {
             0,
         );
         assert!(!rendered.contains('\t'));
-        for visible in [r"one\ttwo=three\tfour", r"five\tsix", r"seven\teight"] {
+        for visible in [
+            r#""one\ttwo": "three\tfour""#,
+            r"five\tsix",
+            r"seven\teight",
+        ] {
             assert!(rendered.contains(visible), "{rendered}");
         }
+    }
+
+    #[test]
+    fn http_review_keeps_structured_query_and_encoded_body_before_decision_commands() {
+        let metadata = pending();
+        let review = serde_json::json!({
+            "action_name": "catalog",
+            "origin": "https://example.test",
+            "method": "POST",
+            "canonical_request": {
+                "path": "/items",
+                "query": {"calendar": "Spring & Summer", "label": "edition=2026"},
+                "headers": [["content-type", "application/octet-stream"]],
+                "body": "dGVzdA==",
+                "body_encoding": "base64"
+            }
+        });
+        let rendered = render(
+            metadata.approval_request_id,
+            &metadata,
+            Some(&review.to_string()),
+            0,
+        );
+        let (before_decision, _) = rendered.split_once("批准：rekey approval approve").unwrap();
+        let (summary, details) = before_decision
+            .split_once("完整请求（格式化显示，批准绑定原始内容）：\n")
+            .unwrap();
+        assert!(summary.contains("请求：POST https://example.test/items\n"));
+        assert_eq!(serde_json::from_str::<Value>(details).unwrap(), review);
     }
 
     #[test]
