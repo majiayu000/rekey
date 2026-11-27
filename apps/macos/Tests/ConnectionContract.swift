@@ -42,6 +42,14 @@ import CryptoKit
         var ssh:[String:Any] = ["record_type":"rekey.approval.local-review.v1","challenge":challenge,"ssh":["key":"synthetic","host":"unknown-host","bound_host_key":NSNull(),"session_id":NSNull(),"public_key":"c3ludGhldGlj","data_sha256":String(repeating:"ab",count:32),"data_base64":"c3ludGhldGlj","use":["purpose":"authentication","username":"synthetic","unverified_host":NSNull()],"window_allowed":false]]
         let sshReview=try LocalApprovalDetails.parse(reviewResponse(ssh,id:approvalID),id:approvalID,workspace:"/tmp/synthetic",revision:UUID())
         precondition(sshReview.review?.ssh?.use.username=="synthetic" && sshReview.review?.windowAllowed==false)
+
+        let unlock = Operation(title: "unlock", detail: "synthetic", arguments: ["unlock"])
+        precondition(unlock.canRememberPresence(interval: .sevenDays))
+        precondition(!unlock.canRememberPresence(interval: .everyUnlock))
+        for arguments in [["init"], ["policy", "trust", "install"], ["credential", "rotate"], ["credential", "revoke"]] {
+            let operation = Operation(title: "operation", detail: "synthetic", arguments: arguments)
+            precondition(!operation.canRememberPresence(interval: .sevenDays))
+        }
         ssh["record_type"]="rekey.approval.review.v1"
         do{_=try LocalApprovalDetails.parse(reviewResponse(ssh,id:approvalID),id:approvalID,workspace:"/tmp/synthetic",revision:UUID());fatalError("old review record accepted")}catch{}
         let newestID=UUID().uuidString.lowercased()
@@ -82,6 +90,33 @@ import CryptoKit
         let publicBlob=publicWire.base64EncodedString(),hostRuleID=UUID().uuidString.lowercased()
         let sshKey=SSHKeyDefinition(name:"synthetic-ssh",credential_id:UUID().uuidString.lowercased(),user_public_key:publicBlob,hosts:[.init(host:"github.com",host_key:publicBlob,rule_id:hostRuleID,effect:"deny")],git_signing:"approve")
         let sshObject=try JSONSerialization.jsonObject(with:JSONEncoder().encode(sshKey))
+
+        var approvingKey = sshKey
+        approvingKey.hosts[0].effect = "approve"
+        var eligibleSSH = ssh
+        var eligibleChallenge = challenge
+        eligibleChallenge["resource"] = ["type": "connection", "id": approvingKey.name]
+        eligibleChallenge["policy_rule_id"] = hostRuleID
+        eligibleSSH["record_type"] = "rekey.approval.local-review.v1"
+        eligibleSSH["challenge"] = eligibleChallenge
+        var eligibleDetails = eligibleSSH["ssh"] as! [String: Any]
+        eligibleDetails["key"] = approvingKey.name
+        eligibleDetails["host"] = approvingKey.hosts[0].host
+        eligibleDetails["bound_host_key"] = publicBlob
+        eligibleDetails["window_allowed"] = true
+        eligibleSSH["ssh"] = eligibleDetails
+        let windowReview = try LocalApprovalDetails.parse(reviewResponse(eligibleSSH, id: approvalID), id: approvalID, workspace: "/tmp/synthetic", revision: UUID()).review!
+        func windowPolicy(_ key: SSHKeyDefinition, digest: String) throws -> ConnectionList {
+            let serializedKey = try JSONSerialization.jsonObject(with: JSONEncoder().encode(key))
+            let values: [String: Any] = ["connections": [], "ssh_keys": [serializedKey], "derived_credentials": [], "policy_sha256": digest, "expires_at_ms": 4_000_000_000_000 as Int64]
+            return try JSONDecoder().decode(ConnectionList.self, from: JSONSerialization.data(withJSONObject: values))
+        }
+        let matching = try windowPolicy(approvingKey, digest: windowReview.challenge.policy_sha256)
+        let stale = try windowPolicy(approvingKey, digest: String(repeating: "ef", count: 32))
+        let denies = try windowPolicy(sshKey, digest: windowReview.challenge.policy_sha256)
+        precondition(windowReview.matchedSSHHostRule(in: matching) == approvingKey.hosts[0])
+        precondition(windowReview.matchedSSHHostRule(in: stale) == nil && windowReview.matchedSSHHostRule(in: denies) == nil)
+        precondition(sshReview.review?.matchedSSHHostRule(in: matching) == nil)
         var externalSSH=sshKey
         externalSSH.approver = .init(kind:"ed25519",keys:["first","second"],threshold:2)
         externalSSH.session_budget = .init(max_signatures:3,max_seconds:45)
@@ -137,6 +172,15 @@ import CryptoKit
         var customOnly=accessJSON;customOnly["provider"]="stripe";customOnly["presets"]=["team-billing"]
         let suggested=try [accessJSON,olderDaemon,oauthFamily,customOnly].map{try accessItem($0).suggestedPreset}
         precondition(suggested==["github-pat","generic-bearer","google-drive","stripe"],"\(suggested)")
+
+        var familyRequest = accessJSON
+        familyRequest["operation"] = oauthOperation.name
+        let family = try accessItem(familyRequest)
+        var oauthConnection = oauth.connection(name: "github-oauth", credentialID: UUID().uuidString.lowercased())
+        precondition(family.suggestedPreset == "github-pat" && family.matches(oauthConnection))
+        precondition(!family.matches(connection))
+        oauthConnection.enabled = false
+        precondition(!family.matches(oauthConnection))
         var metadata=response["metadata"] as! [String:Any];var tampered=object as! [String:Any];tampered["origin"]="https://evil.example";metadata["connections"]=[tampered];response["metadata"]=metadata
         do {_ = try PersonalPolicyDraft(response:JSONSerialization.data(withJSONObject:response),expectedPolicySHA256:nil,expiresAtMs:10000,workspace:"/tmp/synthetic",revision:UUID());fatalError("mismatched displayed definition accepted")}catch{}
         let temporary=FileManager.default.temporaryDirectory.appendingPathComponent("rekey-import-contract-"+UUID().uuidString)

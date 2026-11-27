@@ -16,9 +16,14 @@ extension AppModel {
 
 extension AppModel {
     /// The signed rule a reviewed request matched, as "写入 /**".
-    func ruleSummary(_ review: LocalApprovalDetails.Review?) -> String {
-        guard let review, let connection = connections.first(where: { $0.name == review.challenge.resource.id }),
-              let rule = connection.rules.first(where: { $0.id == review.challenge.policy_rule_id }) else { return "此规则" }
+    func ruleSummary(_ review: LocalApprovalDetails.Review?) -> String? {
+        guard let review else { return nil }
+        if review.ssh != nil {
+            guard let overviewPolicy, let host = review.matchedSSHHostRule(in: overviewPolicy) else { return nil }
+            return "SSH · \(host.host)"
+        }
+        guard let connection = connections.first(where: { $0.name == review.challenge.resource.id }),
+              let rule = connection.rules.first(where: { $0.id == review.challenge.policy_rule_id }) else { return nil }
         return "\(methodLabel(rule.methods)) \(rule.path)"
     }
     /// One plain sentence for well-known operations; nil when Rekey cannot say it exactly.
@@ -42,8 +47,12 @@ extension AppModel {
 
 /// Path parameters named by the operation template, in template order.
 func pathParameters(template: String, path: String) -> [(String, String)] {
-    zip(template.split(separator: "/"), path.split(separator: "/")).compactMap { name, value in
-        name.hasPrefix("{") ? (String(name.dropFirst().dropLast()), String(value).removingPercentEncoding ?? String(value)) : nil
+    let segments = zip(template.split(separator: "/"), path.split(separator: "/"))
+    return segments.compactMap { name, value -> (String, String)? in
+        guard name.hasPrefix("{") else { return nil }
+        let parameter = String(name.dropFirst().dropLast())
+        let raw = String(value)
+        return (parameter, raw.removingPercentEncoding ?? raw)
     }
 }
 
@@ -313,8 +322,7 @@ struct AccessRequestsPanel:View {
                                 Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}.buttonStyle(PrimaryButton())
                             }
                             let match = model.connections.first { connection in
-                                model.policy?.status != "expired" && connection.enabled && (request.connection.map { $0 == connection.name } ?? (connection.preset == request.suggestedPreset))
-                                    && (request.operation.map { op in connection.operations.contains { $0.name == op } } ?? true)
+                                model.policy?.status != "expired" && request.matches(connection)
                             }
                             Button(match.map { "已签署 \($0.name)，通知 Agent" } ?? "签署后再通知 Agent"){Task{await model.resolveAccess(request,granted:true)}}
                                 .disabled(match == nil).help(match == nil ? "还没有匹配这项申请的已启用连接" : "Rekey 会再次核对这条连接；通过后 Agent 的等待返回 GRANTED")

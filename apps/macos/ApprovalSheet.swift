@@ -13,7 +13,9 @@ struct LocalApprovalView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             if let details = model.localApprovalDetails {
-                let windowed = details.review?.windowAllowed == true && limited
+                let rule = model.ruleSummary(details.review)
+                let canLimit = details.review?.windowAllowed == true && rule != nil
+                let windowed = canLimit && limited
                 VStack(alignment: .leading, spacing: 0) {
                     ScrollView(.vertical) {
                         VStack(alignment: .leading, spacing: 14) {
@@ -45,20 +47,21 @@ struct LocalApprovalView: View {
                             if details.review?.windowAllowed == true {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("批准范围").font(.system(size: 14, weight: .semibold))
-                                    let rule = model.ruleSummary(details.review)
-                                    Picker("批准范围", selection: $limited) {
-                                        Text("仅这一个请求（推荐）").tag(false)
-                                        Text("限时放行之后匹配“\(rule)”的请求").tag(true)
-                                    }.pickerStyle(.radioGroup).labelsHidden().disabled(rule == "此规则")
-                                    if !limited {
-                                        Text(rule == "此规则" ? "读不到匹配的规则，只能批准这一次。" : "限时放行会覆盖同一连接上匹配这条规则的其他请求\(rule.contains("**") ? "，例如其他仓库" : "")。").font(.system(size: 12)).foregroundStyle(.secondary)
+                                    if let rule {
+                                        Picker("批准范围", selection: $limited) {
+                                            Text("仅这一个请求（推荐）").tag(false)
+                                            Text("限时放行之后匹配“\(rule)”的请求").tag(true)
+                                        }.pickerStyle(.radioGroup).labelsHidden()
                                     }
-                                    if limited {
+                                    if !windowed {
+                                        Text(canLimit ? "限时放行会覆盖同一连接上匹配这条规则的其他请求\(rule?.contains("**") == true ? "，例如其他仓库" : "")。" : "读不到匹配的规则，只能批准这一次。").font(.system(size: 12)).foregroundStyle(.secondary)
+                                    }
+                                    if windowed, let rule {
                                         HStack {
                                             Picker("时长", selection: $minutes) { Text("15 分钟").tag("15"); Text("30 分钟").tag("30"); Text("1 小时").tag("60"); Text("2 小时").tag("120"); Text("自定义").tag("custom") }.frame(width: 200)
                                             if minutes == "custom" { TextField("分钟（1–480）", text: $customMinutes).textFieldStyle(.roundedBorder).frame(width: 120) }
                                         }
-                                        Text(scopeText(details)).font(.system(size: 13)).foregroundStyle(warn).fixedSize(horizontal: false, vertical: true)
+                                        Text(scopeText(details, rule: rule)).font(.system(size: 13)).foregroundStyle(warn).fixedSize(horizontal: false, vertical: true)
                                     }
                                 }.padding(12).background(surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
                             }
@@ -82,14 +85,14 @@ struct LocalApprovalView: View {
                             }
                         }
                         PeerSecurityWarning()
-                        if windowed { Text(scopeText(details)).font(.system(size: 12)).foregroundStyle(warn).fixedSize(horizontal: false, vertical: true) }
+                        if windowed, let rule { Text(scopeText(details, rule: rule)).font(.system(size: 12)).foregroundStyle(warn).fixedSize(horizontal: false, vertical: true) }
                         HStack {
                             Button("关闭") { model.clearNativeFlow(); dismiss() }.keyboardShortcut(.cancelAction)
                             Button("查询最新状态") { failure = nil; Task { await model.reviewLocalApproval(details.id) } }.disabled(model.busy)
                             Spacer()
                             let blocked = !details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh
                             Button("认证并拒绝") { decide(details, approve: false) }.disabled(blocked)
-                            Button(windowed ? "认证并限时放行 \(windowMinutes) 分钟" : "认证并批准这一次") { decide(details, approve: true) }.buttonStyle(PrimaryButton())
+                            Button(windowed ? "认证并限时放行 \(windowMinutes) 分钟" : "认证并批准这一次") { decide(details, approve: true, windowed: windowed) }.buttonStyle(PrimaryButton())
                                 .disabled(blocked || windowed && !(1...480).contains(windowMinutes))
                         }
                     }.padding(.horizontal, 28).padding(.vertical, 16)
@@ -103,14 +106,14 @@ struct LocalApprovalView: View {
         if review.ssh != nil { return review.title }
         return (review.action_name ?? "本机审批") + (model.operation(for: review).map { " · " + $0.name } ?? "")
     }
-    private func scopeText(_ details: LocalApprovalDetails) -> String {
-        let rule = model.ruleSummary(details.review)
+    private func scopeText(_ details: LocalApprovalDetails, rule: String) -> String {
         let broad = rule.contains("**") ? "，包括其他地址（例如其他仓库）" : ""
         return "适用范围：连接 \(details.review?.challenge.resource.id ?? "此连接") 上匹配“\(rule)”的请求\(broad)，且调用方标注与这次相同（标注由 Agent 填写，不验证身份）。\n截止时间：\(windowMinutes) 分钟后，或规则到期、保险库锁定、规则修改时，以先到者为准；拒绝规则始终有效。"
     }
-    private func decide(_ details: LocalApprovalDetails, approve: Bool) {
+    private func decide(_ details: LocalApprovalDetails, approve: Bool, windowed: Bool = false) {
+        guard !windowed || (1...480).contains(windowMinutes) else { return }
         failure = nil
-        let seconds = approve && details.review?.windowAllowed == true && limited ? UInt32(windowMinutes * 60) : nil
+        let seconds = approve && windowed ? UInt32(windowMinutes * 60) : nil
         Task {
             do { try await model.decideLocalApproval(details, approve: approve, windowSeconds: seconds) }
             catch {

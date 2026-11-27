@@ -91,8 +91,8 @@ struct OperationForm: View {
                 Toggle("使用恢复密钥", isOn: $recovery).font(.system(size: 12)).disabled(model.busy)
             }
             if !presence { SecureField(recovery ? "恢复密钥" : operation.arguments.first == "init" ? "设置保险库密码" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
-            if operation.arguments == ["unlock"] {
-                Toggle("启用系统认证：之后用 Touch ID 解锁和批准 Agent 的写请求（有效期 \(model.securitySettings.passwordInterval.label)）", isOn: $rememberPresence).disabled(model.busy || model.securitySettings.passwordInterval == .everyUnlock)
+            if operation.isDesktopUnlock {
+                Toggle("启用系统认证：之后用 Touch ID 解锁和批准 Agent 的写请求（有效期 \(model.securitySettings.passwordInterval.label)）", isOn: $rememberPresence).disabled(model.busy || !operation.canRememberPresence(interval: model.securitySettings.passwordInterval))
                 Text("仅在本次解锁成功后保存受系统认证保护的新授权；不会导入旧授权。").font(.system(size: 11)).foregroundStyle(.secondary)
                 Button("用系统认证解锁") {
                     let revision = model.nativeFlowRevision
@@ -117,8 +117,8 @@ struct OperationForm: View {
                     var op = operation
                     if isInit { op = Operation(title: op.title, detail: op.detail, arguments: op.arguments + ["--mode", policyMode], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false) }
                     if revokeSession { op = Operation(title: op.title, detail: op.detail, arguments: op.arguments + [sessionID]) }
-                    let p = proof, s = secret, useRecovery = recovery, usePresence = presence, remember = rememberPresence
-                    let revision = model.nativeFlowRevision
+                    let p = proof, s = secret, useRecovery = recovery, usePresence = presence
+                    let revision = model.nativeFlowRevision, remember = rememberPresence && operation.canRememberPresence(interval: model.securitySettings.passwordInterval)
                     protectedFlow = usePresence || remember
                     clear(); if !protectedFlow { dismiss() }
                     Task {

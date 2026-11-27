@@ -112,3 +112,12 @@ extension AppModel {
         return (mode, credential, definition.connection(name: name, credentialID: credential.id, models: models))
     }
 }
+
+extension AccessRequestItem {
+    func matches(_ candidate: ConnectionDefinition) -> Bool {
+        candidate.enabled
+            && (connection.map { $0 == candidate.name } ?? true)
+            && (provider == nil || presets?.contains(candidate.preset) == true)
+            && (operation.map { name in candidate.operations.contains { $0.name == name } } ?? true)
+    }
+}

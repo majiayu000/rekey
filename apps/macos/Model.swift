@@ -977,8 +977,9 @@ final class AppModel: ObservableObject {
     @Published var actions: [FixedAction] = []
     @Published var policy: PolicyStatus?
     @Published var approvals: [PendingApproval] = []
-    /// Signed Connections for the personal overview; empty when locked or not loaded.
-    @Published var connections: [ConnectionDefinition] = []
+    /// The signed policy for the personal overview, empty when locked or not loaded.
+    @Published var overviewPolicy: ConnectionList?
+    var connections: [ConnectionDefinition] { overviewPolicy?.connections ?? [] }
     @Published var connectionsUnavailable = false
     /// A saved key the add form should reuse instead of asking for it again.
     @Published var addCredentialID: String?
@@ -1299,13 +1300,6 @@ final class AppModel: ObservableObject {
         busy = false
         if injectedClient == nil { await refresh() }
     }
-    /// Loads the signed Connections shown on the credentials and policy pages.
-    /// A failure only empties the overview; it never blocks the refresh.
-    func loadOverviewConnections(client: CLI) async {
-        let list = try? await Task.detached { try client.decode(ConnectionList.self, ["connection", "list"]) }.value
-        guard client.stateDirectory == stateDirectory, unlocked else { return }
-        connections = list?.connections ?? []; connectionsUnavailable = list == nil
-    }
     /// Reads the immutable review of up to 10 pending local approvals so the inbox can
     /// say what each one would send. Reviews are cached by ID; finished ones are dropped.
     func loadApprovalReviews(client: CLI) async {
@@ -1508,7 +1502,7 @@ final class AppModel: ObservableObject {
         oidcSessionFile = nil; oidcIdentity = nil
         desktopToken = nil
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
-        connections = []; approvalReviews = [:]
+        overviewPolicy = nil; approvalReviews = [:]
         if let token, let owner { revokeDesktop(token, client: owner) }
     }
     func changeDirectory(_ path: String) {
@@ -1648,7 +1642,7 @@ final class AppModel: ObservableObject {
         }
         busy = true; error = nil
         let client = injectedClient ?? CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)
-        let desktopLogin = op.arguments == ["unlock"]
+        let desktopLogin = op.isDesktopUnlock
         if desktopLogin && pendingDesktopLocks > 0 { busy = false; error = "请先重试完成服务端会话撤销。"; return }
         let desktopAttempt = desktopRevision
         let revision = presenceRevision ?? nativeFlowRevision
@@ -1865,6 +1859,11 @@ final class AppModel: ObservableObject {
         let client = injectedClient ?? cli, revision = nativeFlowRevision
         do {
             let details = try await Task.detached { try client.localApprovalReview(id, revision: revision) }.value
+            if let review = details.review, review.ssh?.window_allowed == true,
+               overviewPolicy?.policy_sha256 != review.challenge.policy_sha256,
+               acceptsNativeCompletion(revision, workspace: client.stateDirectory) {
+                await loadOverviewConnections(client: client)
+            }
             guard (active ?? NSApp.isActive), acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { return }
             localApprovalDetails = details; localApprovalNeedsRefresh = false
         } catch {

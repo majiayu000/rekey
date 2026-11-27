@@ -9,10 +9,22 @@ fn field<'a>(review: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter().try_fold(review, |value, key| value.get(key))
 }
 
+fn terminal_text(text: &str) -> String {
+    let mut visible = String::new();
+    for c in text.chars() {
+        if c.is_control() {
+            visible.extend(c.escape_default());
+        } else {
+            visible.push(c);
+        }
+    }
+    visible
+}
+
 fn text(value: Option<&Value>) -> String {
     match value {
-        Some(Value::String(text)) => text.clone(),
-        Some(value) => value.to_string(),
+        Some(Value::String(text)) => terminal_text(text),
+        Some(value) => terminal_text(&value.to_string()),
         None => "—".into(),
     }
 }
@@ -39,6 +51,13 @@ pub(super) fn render(
             text(ssh.get("host")),
             text(field(ssh, &["use", "purpose"])),
         ));
+        // The summary is only a preview. Preserve every reviewed field before
+        // printing decision commands, without emitting request-supplied controls.
+        out.push_str("完整请求（格式化显示，批准绑定原始内容）：\n");
+        for line in format!("{review:#}").split('\n') {
+            out.push_str(&terminal_text(line));
+            out.push('\n');
+        }
     } else {
         let request = review.get("canonical_request").cloned().unwrap_or_default();
         let mut target = format!(
@@ -53,7 +72,7 @@ pub(super) fn render(
         {
             let pairs: Vec<String> = query
                 .iter()
-                .map(|(k, v)| format!("{k}={}", text(Some(v))))
+                .map(|(k, v)| format!("{}={}", terminal_text(k), text(Some(v))))
                 .collect();
             target.push('?');
             target.push_str(&pairs.join("&"));
@@ -85,10 +104,14 @@ pub(super) fn render(
             request.get("body_encoding").and_then(Value::as_str),
         ) {
             (Some(Value::String(body)), Some("text")) if !body.is_empty() => {
-                out.push_str(&format!("正文：{body}\n"));
+                out.push_str(&format!("正文：{}\n", terminal_text(body)));
             }
             (Some(Value::String(body)), Some(encoding)) if !body.is_empty() => {
-                out.push_str(&format!("正文：{encoding} 编码，{} 个字符\n", body.len()));
+                out.push_str(&format!(
+                    "正文：{} 编码，{} 个字符\n",
+                    terminal_text(encoding),
+                    body.len()
+                ));
             }
             _ => out.push_str("正文：无\n"),
         }
@@ -117,18 +140,23 @@ mod tests {
     use super::*;
     use rekey_domain::ipc::LocalApprovalState;
 
-    #[test]
-    fn pending_http_review_names_the_target_body_and_decision_commands() {
+    fn pending() -> LocalApprovalReviewResponse {
         let id: ApprovalRequestId =
             serde_json::from_value(serde_json::json!("6f9619ff-8b86-4011-b42d-00c04fc964ff"))
                 .unwrap();
-        let metadata = LocalApprovalReviewResponse {
+        LocalApprovalReviewResponse {
             record_type: "rekey.approval.local-review.v1".into(),
             approval_request_id: id,
             review_sha256: "a".repeat(64),
             state: LocalApprovalState::Pending,
             body_len: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn pending_http_review_names_the_target_body_and_decision_commands() {
+        let metadata = pending();
+        let id = metadata.approval_request_id;
         let review = r#"{"action_name":"github-pat","method":"POST","origin":"https://api.github.com","canonical_request":{"path":"/repos/o/r/issues","query":{"a":"1"},"headers":[["accept","application/json"]],"body":"{\"title\":\"Hi\"}","body_encoding":"text"},"challenge":{"max_expires_at_ms":125000}}"#;
         let text = render(id, &metadata, Some(review), 5_000);
         assert!(text.contains("连接：github-pat"), "{text}");
@@ -140,5 +168,62 @@ mod tests {
         assert!(text.contains("正文：{\"title\":\"Hi\"}"), "{text}");
         assert!(text.contains("剩余时间：2 分 0 秒"), "{text}");
         assert!(text.contains(&format!("--review-sha256 {}", "a".repeat(64))));
+    }
+
+    #[test]
+    fn request_text_keeps_tabs_visible_instead_of_expanding_them() {
+        let metadata = pending();
+        let review = serde_json::json!({
+            "origin": "https://example.test",
+            "method": "POST",
+            "canonical_request": {
+                "path": "/items",
+                "query": {"one\ttwo": "three\tfour"},
+                "headers": [["description", "five\tsix"]],
+                "body": "seven\teight",
+                "body_encoding": "text"
+            }
+        });
+        let rendered = render(
+            metadata.approval_request_id,
+            &metadata,
+            Some(&review.to_string()),
+            0,
+        );
+        assert!(!rendered.contains('\t'));
+        for visible in [r"one\ttwo=three\tfour", r"five\tsix", r"seven\teight"] {
+            assert!(rendered.contains(visible), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn ssh_summary_keeps_full_review_before_decision_commands() {
+        let metadata = pending();
+        let review = serde_json::json!({
+            "ssh": {
+                "key": "test-key",
+                "host": "example.test",
+                "bound_host_key": "synthetic-bound-key",
+                "use": {"purpose": "authentication", "username": "test-user", "unverified_host": "synthetic-unverified-host"},
+                "data_base64": "dGVzdA==",
+                "data_sha256": "synthetic-fingerprint",
+            }
+        });
+        let rendered = render(
+            metadata.approval_request_id,
+            &metadata,
+            Some(&review.to_string()),
+            0,
+        );
+        let (details, _) = rendered.split_once("批准：").unwrap();
+        for value in [
+            "test-user",
+            "synthetic-bound-key",
+            "synthetic-unverified-host",
+            "dGVzdA==",
+            "synthetic-fingerprint",
+        ] {
+            assert!(details.contains(value), "{rendered}");
+        }
     }
 }
